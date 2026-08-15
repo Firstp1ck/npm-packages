@@ -741,9 +741,17 @@ const streamOutputController = createStreamOutputController({
   isOwnerCurrent: (owner) => owner === transcriptStreamOwner(),
   applyTextUpdate: (event) => handleMessageUpdate(event),
   applyThinkingUpdate: (event) => handleMessageUpdate(event),
-  applyToolCallUpdate: (event) => handleMessageUpdate(event),
+  applyToolCallUpdate: (event) => {
+    if (isIntercomToolCallUpdate(event)) {
+      streamToolCallSeen = true;
+      suppressStreamingAssistantTextBeforeToolCall();
+      resetStreamingToolCallState({ remove: true });
+      return;
+    }
+    handleMessageUpdate(event);
+  },
   applyToolExecutionUpdate: (event) => {
-    if (!compactOutputActive()) applyTranscriptToolExecutionUpdate(event);
+    if (!compactOutputActive() && !isIntercomTransportToolName(event?.toolName)) applyTranscriptToolExecutionUpdate(event);
   },
   applyStreamError: (event) => handleMessageUpdate(event),
   applyFollowScroll: () => {
@@ -947,6 +955,7 @@ let subagentsClearingFinished = false;
 let subagentAutoClearEnabled = false;
 let refreshSubagentsTimer = null;
 const dismissedSubagentGateKeys = new Set();
+const collapsedSubagentWorkflowRunKeys = new Set();
 let subagentOverlaySelection = null;
 let subagentOverlayData = null;
 let subagentOverlayError = "";
@@ -6225,11 +6234,16 @@ function renderIntercomConversationTags(tabId = activeTabId) {
     }
     tag.setAttribute("aria-label", `Open agent conversation ${label}`);
     tag.title = `${label} · ${conversation.messageCount} message${conversation.messageCount === 1 ? "" : "s"}`;
-    const children = [make("span", "composer-intercom-tag-icon", "↔"), make("span", "composer-intercom-tag-label", label)];
-    if (conversation.messageCount > 0) children.push(make("span", "composer-intercom-tag-count", String(conversation.messageCount)));
-    tag.replaceChildren(...children);
+    const visualSignature = JSON.stringify([label, conversation.messageCount]);
+    if (tag.dataset.intercomVisualSignature !== visualSignature) {
+      const children = [make("span", "composer-intercom-tag-icon", "↔"), make("span", "composer-intercom-tag-label", label)];
+      if (conversation.messageCount > 0) children.push(make("span", "composer-intercom-tag-count", String(conversation.messageCount)));
+      tag.replaceChildren(...children);
+      tag.dataset.intercomVisualSignature = visualSignature;
+    }
     orderedTags.push(tag);
   }
+  container.classList.toggle("dense", orderedTags.length > 8);
   for (const staleTag of existingTags.values()) staleTag.remove();
   const currentTags = [...container.querySelectorAll(":scope > .composer-intercom-tag")];
   if (currentTags.length !== orderedTags.length || orderedTags.some((tag, index) => currentTags[index] !== tag)) {
@@ -23637,6 +23651,64 @@ function subagentAgentStatus(run = {}, agent = null) {
   return SUBAGENT_LIFECYCLE_STATES.has(status) ? status : status === "pending" ? "queued" : "running";
 }
 
+function subagentIsWorkflowController(run = {}, agent = {}) {
+  if (String(agent?.name || "").trim().toLowerCase() !== "workflow") return false;
+  if (String(agent?.model || "").trim() || String(agent?.thinking || "").trim()) return false;
+  const launcher = String(agent?.launcher || run?.launcher || "").trim();
+  const legacyProvisional = run?.source === "foreground" && /(?:^|:)workflow$/i.test(String(agent?.id || ""));
+  return launcher === "pi-subagents" || legacyProvisional;
+}
+
+function subagentWorkflowController(run = {}) {
+  return (Array.isArray(run?.agents) ? run.agents : []).find((agent) => subagentIsWorkflowController(run, agent)) || null;
+}
+
+function subagentRunAgents(run = {}) {
+  const controller = subagentWorkflowController(run);
+  return (Array.isArray(run?.agents) ? run.agents : []).filter((agent) => agent !== controller);
+}
+
+function subagentRunAgentCounts(runs = []) {
+  return (Array.isArray(runs) ? runs : []).reduce((counts, run) => {
+    for (const agent of subagentRunAgents(run)) {
+      counts.total += 1;
+      const status = subagentAgentStatus(run, agent);
+      if (status === "running") counts.running += 1;
+      if (status === "stale") counts.stale += 1;
+    }
+    return counts;
+  }, { total: 0, running: 0, stale: 0 });
+}
+
+function subagentRunPresentations(runs = []) {
+  const presentations = [];
+  let recoveredWorkflow = null;
+  for (const run of Array.isArray(runs) ? runs : []) {
+    const controller = subagentWorkflowController(run);
+    const agents = subagentRunAgents(run).map((agent) => ({ run, agent }));
+    if (controller) {
+      const presentation = { run, controller, agents };
+      presentations.push(presentation);
+      const launcher = String(controller?.launcher || run?.launcher || "").trim();
+      recoveredWorkflow = run?.source === "recovered" && launcher === "pi-subagents" ? presentation : null;
+      continue;
+    }
+    const launcher = String(run?.launcher || "").trim();
+    if (recoveredWorkflow && run?.source === "recovered" && launcher === "pi-subagents" && agents.length) {
+      recoveredWorkflow.agents.push(...agents);
+      continue;
+    }
+    recoveredWorkflow = null;
+    presentations.push({ run, controller: null, agents });
+  }
+  return presentations;
+}
+
+function subagentWorkflowPresentationStatus(run = {}, agents = []) {
+  const statuses = [subagentAgentStatus(run), ...(Array.isArray(agents) ? agents : []).map((entry) => subagentAgentStatus(entry.run, entry.agent))];
+  return ["running", "queued", "stale", "lost", "failed", "cancelled", "done"].find((status) => statuses.includes(status)) || "running";
+}
+
 function subagentCapabilities(run = {}, agent = null) {
   const agentCapabilities = agent?.capabilities && typeof agent.capabilities === "object" ? agent.capabilities : null;
   const runCapabilities = run?.capabilities && typeof run.capabilities === "object" ? run.capabilities : null;
@@ -23652,6 +23724,7 @@ function subagentOverviewGroups(data = latestSubagents) {
       const legacy = legacyTabs.get(group.tabId) || {};
       const gates = visibleSubagentGates({ ...legacy, gates: group.gates || legacy.gates || [] }, dismissedSubagentGateKeys, now);
       const runs = Array.isArray(group.runs) ? group.runs : [];
+      const agentCounts = subagentRunAgentCounts(runs);
       return {
         ...legacy,
         ...group,
@@ -23665,15 +23738,27 @@ function subagentOverviewGroups(data = latestSubagents) {
         gates,
         gateCount: gates.length,
         displayRuns: runs,
-        agentCount: runs.reduce((count, run) => count + (Array.isArray(run.agents) ? run.agents.length : 0), 0),
-        runningAgents: runs.reduce((count, run) => count + (Array.isArray(run.agents) ? run.agents.filter((agent) => subagentAgentStatus(run, agent) === "running").length : 0), 0),
-        staleAgents: runs.reduce((count, run) => count + (Array.isArray(run.agents) ? run.agents.filter((agent) => subagentAgentStatus(run, agent) === "stale").length : 0), 0),
+        agentCount: agentCounts.total,
+        runningAgents: agentCounts.running,
+        staleAgents: agentCounts.stale,
       };
     });
   }
   return (Array.isArray(data?.tabs) ? data.tabs : []).map((tab) => {
     const gates = visibleSubagentGates(tab, dismissedSubagentGateKeys, now);
-    return { ...tab, groupId: `tab:${tab.tabId}`, groupKind: "tab", gates, gateCount: gates.length, displayRuns: ungatedSubagentRuns(tab) };
+    const displayRuns = ungatedSubagentRuns(tab);
+    const agentCounts = subagentRunAgentCounts(displayRuns);
+    return {
+      ...tab,
+      groupId: `tab:${tab.tabId}`,
+      groupKind: "tab",
+      gates,
+      gateCount: gates.length,
+      displayRuns,
+      agentCount: agentCounts.total,
+      runningAgents: agentCounts.running,
+      staleAgents: agentCounts.stale,
+    };
   });
 }
 
@@ -23798,7 +23883,7 @@ function subagentCancelTargetLabel(selection = subagentCancelSelection) {
 
 function openSubagentCancelDialog(tab, run, agent = null) {
   if (!tab?.groupId || !run?.id || !subagentRunCanCancel(run, agent) || !elements.subagentCancelDialog) return;
-  const agentCount = Array.isArray(run.agents) ? run.agents.length : 0;
+  const agentCount = subagentRunAgents(run).length;
   subagentCancelSelection = {
     groupId: tab.groupId,
     tabId: tab.tabId,
@@ -24624,7 +24709,7 @@ function materializeRetainedSubagentTerminalViews() {
     subagentTerminalRestoredParentTabs.add(restoreKey);
     for (const run of tab.displayRuns) {
       if (["queued", "running", "stale"].includes(subagentAgentStatus(run)) || run?.source === "workflow") continue;
-      for (const agent of Array.isArray(run.agents) ? run.agents : []) {
+      for (const agent of subagentRunAgents(run)) {
         const id = subagentTerminalViewId(tab, run, agent);
         if (subagentTerminalViews.has(id)) continue;
         if (ensureSubagentTerminalView(tab, run, agent)) materialized = true;
@@ -24765,6 +24850,40 @@ function openSubagentOutput(tab, run, agent) {
   return subagentOpenMode === "tab" ? openSubagentTerminal(tab, run, agent) : openSubagentOverlay(tab, run, agent);
 }
 
+function subagentWorkflowRunKey(tab, run) {
+  return `${tab?.groupId || tab?.tabId || ""}:${run?.id || ""}`;
+}
+
+function renderSubagentWorkflow(tab, run, controller, agents) {
+  const status = subagentWorkflowPresentationStatus(run, agents);
+  const key = subagentWorkflowRunKey(tab, run);
+  const details = make("details", `subagent-workflow state-${status}`);
+  details.open = !collapsedSubagentWorkflowRunKeys.has(key);
+  details.addEventListener("toggle", () => {
+    if (details.open) collapsedSubagentWorkflowRunKeys.delete(key);
+    else collapsedSubagentWorkflowRunKeys.add(key);
+  });
+
+  const summary = make("summary", "subagent-workflow-header");
+  summary.dataset.subagentContinuityKey = `workflow:${tab?.tabId || ""}:${run?.id || ""}`;
+  summary.setAttribute("aria-label", `Workflow ${status}, ${agents.length} ${agents.length === 1 ? "agent" : "agents"}`);
+  const dot = make("span", `subagent-state-dot ${status}`);
+  dot.setAttribute("aria-hidden", "true");
+  const identity = make("span", "subagent-agent-identity");
+  identity.append(
+    make("strong", "subagent-workflow-name", "Workflow"),
+    make("span", "subagent-source-badge", subagentLauncherLabel(controller?.launcher || run?.launcher)),
+    make("span", "subagent-agent-inline-meta", `· ${status} · ${agents.length} ${agents.length === 1 ? "agent" : "agents"}`),
+  );
+  summary.append(dot, identity);
+
+  const children = make("div", "subagent-workflow-agents");
+  for (const entry of agents) children.append(renderSubagentAgent(tab, entry.run, entry.agent));
+  if (!children.childElementCount) children.append(make("div", "subagents-empty", "Waiting for workflow agents…"));
+  details.append(summary, children);
+  return details;
+}
+
 function renderSubagentAgent(tab, run, agent) {
   const status = subagentAgentStatus(run, agent);
   const running = ["queued", "running"].includes(status);
@@ -24799,15 +24918,18 @@ function renderSubagentAgent(tab, run, agent) {
   return row;
 }
 
-function renderSubagentRun(tab, run) {
+function renderSubagentRun(tab, run, workflowAgents = null) {
   const running = subagentRunIsRunning(run);
   const card = make("section", `subagent-run ${running ? "running" : run?.status || "done"}`);
-  const agents = (Array.isArray(run?.agents) ? run.agents : [])
+  const controller = subagentWorkflowController(run);
+  const agents = subagentRunAgents(run)
     .slice()
     .sort((a, b) => Number(a.index || 0) - Number(b.index || 0) || String(a.name || "").localeCompare(String(b.name || "")));
-  card.setAttribute("aria-label", `Subagent run with ${agents.length} ${agents.length === 1 ? "agent" : "agents"}`);
+  const presentedAgents = controller && Array.isArray(workflowAgents) ? workflowAgents : agents.map((agent) => ({ run, agent }));
+  card.setAttribute("aria-label", `${controller ? "Workflow" : "Subagent"} run with ${presentedAgents.length} ${presentedAgents.length === 1 ? "agent" : "agents"}`);
   const list = make("div", "subagent-run-agents");
-  for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
+  if (controller) list.append(renderSubagentWorkflow(tab, run, controller, presentedAgents));
+  else for (const agent of agents) list.append(renderSubagentAgent(tab, run, agent));
   if (!list.childElementCount) list.append(make("div", "subagents-empty", "No agents were captured."));
   card.append(list);
 
@@ -24937,11 +25059,12 @@ function renderSubagentTabGroup(tab) {
   const runs = (Array.isArray(tab.displayRuns) ? tab.displayRuns : ungatedSubagentRuns(tab))
     .slice()
     .sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0) || String(a.id || "").localeCompare(String(b.id || "")));
-  const runningAgents = Number(tab.runningAgents || 0);
-  const staleAgents = Number(tab.staleAgents || 0);
+  const agentCounts = subagentRunAgentCounts(runs);
+  const runningAgents = agentCounts.running;
+  const staleAgents = agentCounts.stale;
   const retainedRuns = runs.filter((run) => !["queued", "running", "stale"].includes(subagentAgentStatus(run))).length;
   const countLabel = [
-    `${tab.agentCount || 0} total`,
+    `${agentCounts.total} total`,
     runningAgents ? `${runningAgents} running` : "",
     staleAgents ? `${staleAgents} stale` : "",
     retainedRuns ? `${retainedRuns} retained` : "",
@@ -24952,7 +25075,7 @@ function renderSubagentTabGroup(tab) {
   group.append(header);
 
   const list = make("div", "subagent-agent-list");
-  for (const run of runs) list.append(renderSubagentRun(tab, run));
+  for (const presentation of subagentRunPresentations(runs)) list.append(renderSubagentRun(tab, presentation.run, presentation.agents));
   for (const gate of (Array.isArray(tab.gates) ? tab.gates : []).slice().sort((a, b) => Number(a.startedAt || 0) - Number(b.startedAt || 0))) {
     list.append(renderSubagentGate(tab, gate));
   }
@@ -24973,9 +25096,9 @@ function renderSubagents() {
   const restoreFocus = () => restoreScopedControlContinuity(box, continuityContextKey, focusSnapshot, (key) => [...box.querySelectorAll("[data-subagent-continuity-key]")].find((node) => subagentPanelControlKey(node) === key));
   const activeTabs = subagentTabsWithRunningAgents();
   const finishedRuns = finishedSubagentRunSelections();
-  const totalAgents = Number(latestSubagents?.counts?.totalAgents ?? latestSubagents?.totalAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.agentCount || 0), 0));
-  const runningAgents = Number(latestSubagents?.counts?.runningAgents ?? latestSubagents?.runningAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0));
-  const staleAgents = Number(latestSubagents?.counts?.staleAgents ?? activeTabs.reduce((count, tab) => count + Number(tab.staleAgents || 0), 0));
+  const totalAgents = activeTabs.reduce((count, tab) => count + Number(tab.agentCount || 0), 0);
+  const runningAgents = activeTabs.reduce((count, tab) => count + Number(tab.runningAgents || 0), 0);
+  const staleAgents = activeTabs.reduce((count, tab) => count + Number(tab.staleAgents || 0), 0);
   const totalRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.length, 0);
   const runningRuns = activeTabs.reduce((count, tab) => count + tab.displayRuns.filter((run) => run?.status === "running").length, 0);
   const retainedRuns = Math.max(0, totalRuns - runningRuns);
@@ -34373,6 +34496,17 @@ function assistantHasToolCallAfter(content, index) {
 
 function assistantToolCallName(part) {
   return String(part?.name || part?.toolName || part?.toolCall?.name || "unknown");
+}
+
+function isIntercomTransportToolName(value) {
+  return String(value || "").trim().toLowerCase() === "intercom";
+}
+
+function isIntercomToolCallUpdate(event) {
+  const update = event?.assistantMessageEvent || {};
+  const part = assistantToolCallPartFromUpdate(event, update);
+  const rawName = update.name || update.toolName || update.toolCall?.name || (part ? assistantToolCallName(part) : "");
+  return isIntercomTransportToolName(rawName);
 }
 
 function assistantToolCallArguments(part) {
@@ -45418,6 +45552,11 @@ function handleEvent(event) {
     case "tool_execution_start":
       streamToolCallSeen = true;
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: true });
+      if (isIntercomTransportToolName(event.toolName)) {
+        resetStreamingToolCallState({ remove: true });
+        setRunIndicatorActivity("Agent is coordinating with another agent…");
+        break;
+      }
       if (compactOutputActive()) {
         compactLiveScheduler.flushNow();
         renderCompactToolShell(event);
@@ -45431,6 +45570,12 @@ function handleEvent(event) {
       break;
     case "tool_execution_end": {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
+      if (isIntercomTransportToolName(event.toolName)) {
+        resetStreamingToolCallState({ remove: true });
+        setRunIndicatorActivity("Agent coordination finished; waiting for the next step…");
+        scheduleSemanticReconcile({ messages: true, footerData: true }, tabContext);
+        break;
+      }
       const imagePayloadError = toolImagePayloadError(event);
       if (imagePayloadError) surfaceRuntimeDiagnostic("Tool image payload error", imagePayloadError);
       if (compactOutputActive()) {

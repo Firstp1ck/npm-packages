@@ -88,16 +88,17 @@ assert.match(functionSource("scheduleIntercomConversationDetailRefresh"), /INTER
 assert.match(functionSource("resetIntercomConversationDialog"), /intercomDetailRequestSerial \+= 1[\s\S]*clearTimeout\(intercomDetailRefreshTimer\)[\s\S]*intercomConversationDialogState = null/, "dialog close should invalidate requests, cancel polling, and clear selection state");
 assert.match(app, /elements\.intercomConversationDialog\?\.addEventListener\("close", resetIntercomConversationDialog\)/, "native Escape and close-button paths should share polling cleanup");
 
-assert.match(css, /\.composer-intercom-tags \{[\s\S]*overflow-x: auto;[\s\S]*overscroll-behavior-inline: contain;/, "all conversation tags should remain horizontally reachable");
+assert.match(css, /\.composer-intercom-tags \{[\s\S]*display: grid;[\s\S]*grid-auto-columns: minmax\(0, 1fr\);[\s\S]*min-width: 0;/, "all conversation tags should share the available width without a horizontal scroller");
+assert.doesNotMatch(css, /\.composer-intercom-tags \{[^}]*overflow-x:\s*(?:auto|scroll)/, "the conversation tag group should not restore horizontal scrolling");
 assert.match(css, /\.composer-intercom-tag:hover,[\s\S]*\.composer-intercom-tag:focus-visible/, "tags should expose pointer and keyboard focus states");
 assert.match(css, /\.extension-dialog\.intercom-conversation-dialog \{[\s\S]*width: min\(76rem,[\s\S]*height: min\(54rem,/, "the viewer should use a large in-app modal");
 assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.composer-intercom-tag \{ min-height: 44px;[\s\S]*\.extension-dialog\.intercom-conversation-dialog[\s\S]*width: calc\(100vw - 0\.7rem\)/, "tags and the dialog should remain reachable on narrow and coarse-pointer layouts");
 
-assert.match(html, /\/styles\.css\?v=120/, "the stylesheet URL should advance for the accepted viewer fixes");
-assert.match(html, /data-app-src="\/app\.js\?v=139"/, "the guarded app URL should advance for incremental viewer wiring");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v101"/, "the PWA cache identity should advance with browser assets");
+assert.match(html, /\/styles\.css\?v=121/, "the stylesheet URL should advance for the accepted viewer fixes");
+assert.match(html, /data-app-src="\/app\.js\?v=141"/, "the guarded app URL should advance for incremental viewer wiring");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v103"/, "the PWA cache identity should advance with browser assets");
 
-assert.match(readme, /one tag per conversation appears beneath the composer/i, "the README should explain the user-visible entry point");
+assert.match(readme, /one compact tag per conversation appears beneath the composer/i, "the README should explain the user-visible entry point");
 assert.match(technical, /## Agent conversation viewer[\s\S]*Attachments, tool calls and results, thinking, stdout\/stderr, filesystem paths, raw session records/i, "the advanced guide should document privacy exclusions");
 assert.match(development, /## Intercom conversation projection and viewer[\s\S]*GET \/api\/intercom\/conversations[\s\S]*five-second open-dialog refresh/i, "the contributor guide should document the endpoint and browser lifecycle");
 

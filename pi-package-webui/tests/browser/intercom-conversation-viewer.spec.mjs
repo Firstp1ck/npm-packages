@@ -12,6 +12,9 @@ import { expect, test } from "@playwright/test";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const serverScript = join(root, "bin", "pi-webui.mjs");
 const fakePi = join(root, "tests", "fixtures", "fake-pi.mjs");
+const longPeerId = "peer-browser-long-layout";
+const longPeerName = "An Exceptionally Long Browser Peer Name That Must Be Visually Truncated";
+const expectedConversationCount = 32;
 
 async function freePort() {
   const server = createServer();
@@ -69,6 +72,41 @@ test.beforeAll(async () => {
     messageId: "browser-out-1",
     timestamp: 1_700_000_001_000,
   });
+  for (const peer of [
+    {
+      id: longPeerId,
+      name: longPeerName,
+      messageId: "browser-layout-long",
+      timestamp: 1_699_999_999_000,
+      text: "Long-label conversation selected correctly",
+    },
+    {
+      id: "peer-browser-layout-alpha",
+      name: "Layout Peer Alpha",
+      messageId: "browser-layout-alpha",
+      timestamp: 1_699_999_998_000,
+      text: "Alpha layout fixture",
+    },
+    {
+      id: "peer-browser-layout-beta",
+      name: "Layout Peer Beta",
+      messageId: "browser-layout-beta",
+      timestamp: 1_699_999_997_000,
+      text: "Beta layout fixture",
+    },
+    ...Array.from({ length: 28 }, (_, index) => ({
+      id: `peer-browser-dense-${String(index + 1).padStart(2, "0")}`,
+      name: `Dense Layout Peer ${String(index + 1).padStart(2, "0")}`,
+      messageId: `browser-layout-dense-${String(index + 1).padStart(2, "0")}`,
+      timestamp: 1_699_999_996_000 - index * 1_000,
+      text: `Dense layout fixture ${index + 1}`,
+    })),
+  ]) {
+    manager.appendCustomMessageEntry("intercom_message", `rendered prose for ${peer.id} must stay hidden`, true, {
+      from: { id: peer.id, name: peer.name },
+      message: { id: peer.messageId, timestamp: peer.timestamp, content: { text: peer.text } },
+    });
+  }
   manager.appendMessage({
     role: "assistant",
     content: [{ type: "text", text: "ordinary assistant output must stay outside the conversation" }],
@@ -92,6 +130,7 @@ test.beforeAll(async () => {
       PI_WEBUI_SETTINGS_FILE: settingsFile,
       FAKE_PI_CONTINUITY_MODE: "1",
       FAKE_PI_CONTINUITY_SESSION_FILE: sessionFile,
+      FAKE_PI_INTERCOM_LIVE: "1",
     },
   });
   child.stdout.on("data", (chunk) => { output += String(chunk); });
@@ -105,15 +144,62 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true }).catch(() => {});
 });
 
+test("the 32-conversation dense grid stays contained and opens the correct truncated conversation", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 760 });
+  await page.goto(baseURL);
+  const container = page.locator("#intercomConversationTags");
+  const tags = container.locator(":scope > .composer-intercom-tag");
+  const longTag = tags.filter({ hasText: longPeerName });
+  const longLabel = longTag.locator(".composer-intercom-tag-label");
+
+  await expect(tags).toHaveCount(expectedConversationCount);
+  await expect(container).toHaveClass(/\bdense\b/);
+  for (let index = 0; index < expectedConversationCount; index += 1) await expect(tags.nth(index)).toBeVisible();
+
+  const layout = await container.evaluate((element) => {
+    const containerRect = element.getBoundingClientRect();
+    const tagRects = [...element.querySelectorAll(":scope > .composer-intercom-tag")].map((tag) => tag.getBoundingClientRect());
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      widths: tagRects.map((rect) => rect.width),
+      rowTops: [...new Set(tagRects.map((rect) => Math.round(rect.top)))],
+      allContained: tagRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
+    };
+  });
+  assert.ok(layout.allContained, "every desktop conversation tag should remain within the tag container");
+  assert.ok(layout.scrollWidth <= layout.clientWidth, `the desktop tag grid should not overflow horizontally (${layout.scrollWidth} > ${layout.clientWidth})`);
+  assert.ok(Math.min(...layout.widths) >= 44, `every dense desktop target should be at least 44px wide (minimum ${Math.min(...layout.widths)})`);
+  assert.ok(layout.rowTops.length > 1, "the 32-conversation desktop fixture should wrap into multiple rows");
+
+  await expect(longTag).toHaveCount(1);
+  const fullVisualLabel = await longLabel.textContent();
+  assert.ok(fullVisualLabel?.includes(longPeerName), "the long label fixture should retain its full DOM text");
+  await expect(longTag).toHaveAttribute("aria-label", `Open agent conversation ${fullVisualLabel}`);
+  await expect(longTag).toHaveAttribute("title", `${fullVisualLabel} · 1 message`);
+  const truncation = await longLabel.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
+  assert.ok(truncation.scrollWidth > truncation.clientWidth, `the long label should be visually truncated (${truncation.scrollWidth} <= ${truncation.clientWidth})`);
+
+  await longTag.click();
+  await expect(page.locator("#intercomConversationDialog")).toBeVisible();
+  await expect(page.locator("#intercomConversationParticipants")).toContainText(`${longPeerName} (${longPeerId})`);
+  await expect(page.locator("#intercomConversationTranscript")).toContainText("Long-label conversation selected correctly");
+  await page.locator("#intercomConversationCloseButton").click();
+  await expect(longTag).toBeFocused();
+});
+
 test("conversation tag opens a safe chat dialog, refreshes, and restores focus", async ({ page }) => {
   await page.goto(baseURL);
   const tags = page.locator("#intercomConversationTags .composer-intercom-tag");
-  const tag = tags.first();
+  const tag = tags.filter({
+    has: page.locator(".composer-intercom-tag-label").filter({ hasText: /↔ Browser Peer \(peer-browser\)$/ }),
+  });
   const dialog = page.locator("#intercomConversationDialog");
   const transcript = page.locator("#intercomConversationTranscript");
   const close = page.locator("#intercomConversationCloseButton");
 
-  await expect(tags).toHaveCount(1);
+  await expect(tags).toHaveCount(expectedConversationCount);
+  await expect(tag).toHaveCount(1);
   await expect(tag).toContainText("Browser Peer");
   await tag.click();
   await expect(dialog).toBeVisible();
@@ -163,11 +249,14 @@ test("conversation tag opens a safe chat dialog, refreshes, and restores focus",
   await expect(dialog).toBeHidden();
   await expect(tag).toBeFocused();
   await expect(tag.locator(".composer-intercom-tag-count")).toHaveText("4");
+  const stableTagLabel = tag.locator(".composer-intercom-tag-label");
+  await stableTagLabel.evaluate((node) => { node.dataset.stableVisualMarker = "retained"; });
   await tag.press("Enter");
   await expect(dialog).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(tag).toBeFocused();
+  await expect(stableTagLabel).toHaveAttribute("data-stable-visual-marker", "retained");
 });
 
 test("conversation tags remain reachable through the narrow composer disclosure", async ({ page }) => {
@@ -178,11 +267,89 @@ test("conversation tags remain reachable through the narrow composer disclosure"
   await more.focus();
   await more.press("Enter");
   const tags = page.locator("#intercomConversationTags");
-  const tag = tags.locator(".composer-intercom-tag").first();
+  const tagButtons = tags.locator(":scope > .composer-intercom-tag");
+  const tag = tagButtons.filter({
+    has: page.locator(".composer-intercom-tag-label").filter({ hasText: /↔ Browser Peer \(peer-browser\)$/ }),
+  });
   await expect(tags).toBeVisible();
-  await expect(tag).toBeVisible();
-  await expect(tag).toHaveCSS("min-height", "44px");
-  await tag.click();
+  await expect(tagButtons).toHaveCount(expectedConversationCount);
+  for (let index = 0; index < expectedConversationCount; index += 1) {
+    await expect(tagButtons.nth(index)).toBeVisible();
+    await expect(tagButtons.nth(index)).toHaveCSS("min-height", "44px");
+  }
+  const layout = await tags.evaluate((element) => {
+    const containerRect = element.getBoundingClientRect();
+    const tagRects = [...element.querySelectorAll(":scope > .composer-intercom-tag")].map((button) => button.getBoundingClientRect());
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      widths: tagRects.map((rect) => rect.width),
+      heights: tagRects.map((rect) => rect.height),
+      rowTops: [...new Set(tagRects.map((rect) => Math.round(rect.top)))],
+      allContained: tagRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
+    };
+  });
+  assert.ok(layout.allContained, "every narrow conversation tag should remain within the tag container");
+  assert.ok(layout.scrollWidth <= layout.clientWidth, `the narrow tag grid should not overflow horizontally (${layout.scrollWidth} > ${layout.clientWidth})`);
+  assert.ok(Math.min(...layout.widths) >= 44, `every narrow touch target should be at least 44px wide (minimum ${Math.min(...layout.widths)})`);
+  assert.ok(Math.min(...layout.heights) >= 44, `every narrow touch target should be at least 44px high (minimum ${Math.min(...layout.heights)})`);
+  assert.ok(layout.rowTops.length > 1, "the 32-conversation narrow fixture should wrap into multiple rows");
+  const clippedLabels = await tagButtons.locator(".composer-intercom-tag-label").evaluateAll((labels) => labels.filter((label) => label.scrollWidth > label.clientWidth).length);
+  assert.ok(clippedLabels > 0, "dense narrow labels should be allowed to truncate visually");
+  await tag.focus();
+  await tag.press("Enter");
   await expect(page.locator("#intercomConversationDialog")).toBeVisible();
+  await expect(page.locator("#intercomConversationParticipants")).toContainText("Browser Peer (peer-browser)");
   await expect(page.locator("#intercomConversationCloseButton")).toBeVisible();
+});
+
+test("live generic Intercom transport never reaches the main transcript or event log", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 760 });
+  await page.goto(baseURL);
+  await page.evaluate(() => {
+    const chat = document.querySelector("#chat");
+    const eventLog = document.querySelector("#eventLog");
+    window.__intercomLiveLeaks = [];
+    const inspect = () => {
+      const chatText = chat?.textContent || "";
+      const eventText = eventLog?.textContent || "";
+      if (/LIVEINTERCOM(?:ARGUMENT|RESULT)SECRET/.test(chatText)) window.__intercomLiveLeaks.push("secret text reached main transcript");
+      if (/LIVEINTERCOM(?:ARGUMENT|RESULT)SECRET/.test(eventText)) window.__intercomLiveLeaks.push("secret text reached event log");
+      if (chat?.querySelector('[data-tool-call-id="live-intercom-call"]')) window.__intercomLiveLeaks.push("Intercom tool card reached main transcript");
+      if (eventLog?.querySelector('[data-chat-tool-call-id="live-intercom-call"]') || /tool intercom (?:started|finished)/i.test(eventText)) {
+        window.__intercomLiveLeaks.push("Intercom execution line reached event log");
+      }
+    };
+    const observer = new MutationObserver(inspect);
+    if (chat) observer.observe(chat, { childList: true, subtree: true, characterData: true });
+    if (eventLog) observer.observe(eventLog, { childList: true, subtree: true, characterData: true });
+    window.__intercomLiveObserver = observer;
+    inspect();
+  });
+
+  const tabsResponse = await page.request.get(`${baseURL}/api/tabs`);
+  assert.equal(tabsResponse.ok(), true, await tabsResponse.text());
+  const tabId = (await tabsResponse.json()).data?.tabs?.[0]?.id;
+  assert.ok(tabId, "the live Intercom fixture requires an active tab");
+  const promptResponse = await page.request.post(`${baseURL}/api/prompt?tab=${encodeURIComponent(tabId)}`, {
+    data: { message: "fixture modal transport live", requestId: `intercom-live-${Date.now()}` },
+  });
+  assert.equal(promptResponse.ok(), true, await promptResponse.text());
+
+  await expect(page.locator("#chat")).toContainText("LIVE NORMAL OUTPUT VISIBLE", { timeout: 8_000 });
+  await expect.poll(async () => {
+    const response = await page.request.get(`${baseURL}/api/state?tab=${encodeURIComponent(tabId)}`);
+    return (await response.json()).data?.isStreaming;
+  }, { timeout: 8_000 }).toBe(false);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  await expect(page.locator("#chat")).not.toContainText("LIVEINTERCOMARGUMENTSECRET");
+  await expect(page.locator("#chat")).not.toContainText("LIVEINTERCOMRESULTSECRET");
+  await expect(page.locator('#chat [data-tool-call-id="live-intercom-call"]')).toHaveCount(0);
+  await expect(page.locator("#eventLog")).not.toContainText(/tool intercom (?:started|finished)/i);
+  const leaks = await page.evaluate(() => {
+    window.__intercomLiveObserver?.disconnect();
+    return [...(window.__intercomLiveLeaks || [])];
+  });
+  assert.deepEqual(leaks, [], `live Intercom transport leaked before reconciliation: ${leaks.join(", ")}`);
 });

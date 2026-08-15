@@ -1168,9 +1168,29 @@ assert.match(
 );
 assert.match(app, /function renderCodexUsage\(\)/, "frontend should render Codex usage buckets in the side panel");
 assert.match(app, /function renderSubagents\(\)[\s\S]*subagentTabsWithRunningAgents\(\)[\s\S]*totalGates[\s\S]*renderSubagentTabGroup\(tab\)/, "frontend should group running subagents and retained retry gates by terminal and session");
-assert.match(app, /function renderSubagents\(\)[\s\S]*latestSubagents\?\.runningAgents[\s\S]*subagentCountBadge\.textContent = String\(totalAgents\)/, "the subagent count badge should count running agents once while retry-gated attempts render only inside their gate");
+assert.match(app, /function renderSubagents\(\)[\s\S]*activeTabs\.reduce\(\(count, tab\) => count \+ Number\(tab\.runningAgents \|\| 0\), 0\)[\s\S]*subagentCountBadge\.textContent = String\(totalAgents\)/, "the subagent count badge should derive visible agent totals without counting workflow containers or retry-gated attempts twice");
+const workflowControllerSource = appFunctionSource("subagentIsWorkflowController", "subagentCapabilities");
+const workflowRenderSource = appFunctionSource("renderSubagentWorkflow", "renderSubagentAgent");
 const compactSubagentAgentSource = appFunctionSource("renderSubagentAgent", "renderSubagentRun");
 const compactSubagentRunSource = appFunctionSource("renderSubagentRun", "subagentGateStatusLabel");
+assert.match(workflowControllerSource, /name \|\| ""[\s\S]*launcher === "pi-subagents"[\s\S]*function subagentRunAgents[\s\S]*function subagentRunAgentCounts/, "pi-subagents workflow controllers should be recognized separately from model-powered agents and excluded from agent counts");
+const workflowCountContext = {
+  subagentAgentStatus(run, agent) { return String(agent?.status || run?.status || "running").toLowerCase(); },
+};
+vm.runInNewContext(`${workflowControllerSource}\nthis.isWorkflowController = subagentIsWorkflowController; this.workflowAgents = subagentRunAgents; this.workflowCounts = subagentRunAgentCounts;`, workflowCountContext);
+const syntheticWorkflowRun = {
+  launcher: "pi-subagents",
+  status: "running",
+  agents: [
+    { id: "run:workflow", name: "workflow", status: "running" },
+    { id: "run:worker", name: "worker", status: "running", model: "openai-codex/gpt-5.6-sol", thinking: "high" },
+  ],
+};
+assert.equal(workflowCountContext.isWorkflowController(syntheticWorkflowRun, syntheticWorkflowRun.agents[0]), true, "the model-less pi-subagents workflow row should be treated as the workflow controller");
+assert.deepEqual(JSON.parse(JSON.stringify(workflowCountContext.workflowAgents(syntheticWorkflowRun).map((agent) => agent.name))), ["worker"], "only actual child agents should remain in the workflow agent list");
+assert.deepEqual(JSON.parse(JSON.stringify(workflowCountContext.workflowCounts([syntheticWorkflowRun]))), { total: 1, running: 1, stale: 0 }, "workflow controllers should be count-neutral while their children retain lifecycle counts");
+assert.equal(workflowCountContext.isWorkflowController(syntheticWorkflowRun, { name: "workflow", launcher: "pi-subagents", model: "provider/real-model", thinking: "high" }), false, "a real model-powered agent named workflow must remain an agent row");
+assert.match(workflowRenderSource, /const status = subagentWorkflowPresentationStatus\(run, agents\);[\s\S]*make\("details", `subagent-workflow[\s\S]*details\.open = !collapsedSubagentWorkflowRunKeys\.has\(key\)[\s\S]*make\("summary", "subagent-workflow-header"\)[\s\S]*renderSubagentAgent\(tab, entry\.run, entry\.agent\)/, "workflow controllers should render as stateful native disclosure headers using the aggregate lifecycle while preserving each child run");
 assert.match(compactSubagentAgentSource, /const \[model, thinking\] = subagentExecutionValues\(agent\)[\s\S]*identity\.append\([\s\S]*"subagent-agent-name", name[\s\S]*"subagent-agent-inline-meta", `· \$\{model\} · \$\{thinking\}`[\s\S]*row\.append\(dot, identity, open\)/, "side-panel agent rows should show type, provider\/model, and thinking effort on one compact line");
 assert.doesNotMatch(compactSubagentAgentSource, /subagent-agent-meta|subagentExecutionFacts|subagentSourceLabel|subagentRunElapsed|currentTool/, "side-panel agent rows should leave all other execution metadata to the selected subagent view");
 assert.doesNotMatch(compactSubagentRunSource, /subagent-run-(?:header|title|meta|state)|`Run \$\{/, "side-panel run groups should not repeat IDs, metadata headers, or state badges");
@@ -1202,7 +1222,8 @@ const closeSubagentTerminalGroupSource = app.slice(closeSubagentTerminalGroupSta
 assert.match(closeSubagentTerminalGroupSource, /subagentTerminalViews\.delete\(view\.id\)[\s\S]*renderTabs\(\)/, "closing a workspace subagent group should remove its view tabs as one UI operation");
 assert.doesNotMatch(closeSubagentTerminalGroupSource, /cancel|\/api\/subagents/, "closing a workspace subagent group must not stop its child runs");
 assert.match(css, /\.subagent-tab-title \{[\s\S]*container-type: inline-size;[\s\S]*flex: 1 1 0;[\s\S]*min-width: 0;[\s\S]*\.subagent-tab-title strong \{[\s\S]*font-size: clamp\(0\.64rem, calc\(0\.5rem \+ 0\.65cqi\), 0\.78rem\);[\s\S]*\.subagent-tab-count \{[\s\S]*flex: 0 0 auto;[\s\S]*white-space: nowrap;/, "subagent titles should scale with their available inline width while summary badges stay fixed and text can still truncate");
-assert.match(css, /\.subagent-agent-list \{[\s\S]*gap: 0\.16rem;[\s\S]*\.subagent-agent-row \{[\s\S]*min-height: 1\.75rem;[\s\S]*background: transparent;[\s\S]*\.subagent-agent-identity \{[\s\S]*display: flex;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-agent-inline-meta \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-run \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*border: 0;/, "the inline subagent monitor should keep type, model, and effort in compact flat rows without overflow");
+assert.match(css, /\.subagent-agent-list \{[\s\S]*gap: 0\.16rem;[\s\S]*\.subagent-agent-row \{[\s\S]*min-height: 1\.75rem;[\s\S]*background: transparent;[\s\S]*\.subagent-agent-identity \{[\s\S]*display: flex;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-agent-inline-meta \{[\s\S]*text-overflow: ellipsis;[\s\S]*white-space: nowrap;[\s\S]*\.subagent-run \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*border: 0;/, "the inline subagent monitor should keep type, model, and effort in compact rows without overflow");
+assert.match(css, /\.subagent-workflow \{[\s\S]*\.subagent-workflow-header \{[\s\S]*list-style: none;[\s\S]*\.subagent-workflow:not\(\[open\]\)[\s\S]*\.subagent-workflow-agents \{[\s\S]*border-left:/, "workflow disclosures should have a distinct collapsible header and visually nested child-agent section");
 assert.match(app, /function renderSubagentOverlayWidget\(\)[\s\S]*openSubagentCancelDialog\(tab, selection\.run, agent\)[\s\S]*subagent-overlay-cancel-action/, "running overlays should route cancel through the shared dialog");
 assert.match(app, /subagentTerminalCancelButton[\s\S]*openSubagentCancelDialog\(view\.tab \|\| \{ tabId: view\.parentTabId, tabTitle: view\.parentTitle \}, view\.run, view\.data\?\.agent \|\| view\.agent\)/, "running terminal headers should route cancel through the shared dialog");
 assert.match(app, /function openSubagentCancelDialog\(tab, run, agent = null\)[\s\S]*agentCount[\s\S]*The entire run will be stopped[\s\S]*subagentCancelDialog\.showModal\(\)[\s\S]*async function submitSubagentCancel\(\)[\s\S]*api\("\/api\/subagents\/cancel", \{[\s\S]*method: "POST",[\s\S]*scoped: false,[\s\S]*tab: selection\.tabId,[\s\S]*runId: selection\.runId/, "the shared cancel dialog should honestly describe and submit whole-run cancellation with optional reason/note data");

@@ -85,3 +85,32 @@ test("renders canonical v2 agents and opens output through the unified selection
   await expect(page.locator(".subagent-overlay-refresh-action")).toBeVisible();
   await expect(page.locator(".subagent-overlay-cancel-action")).toBeVisible();
 });
+
+test("renders the workflow controller as a collapsible header with nested agents", async ({ page }) => {
+  await page.goto(baseURL);
+  await expect(page.locator("#tabBar [data-tab-id]").first()).toBeVisible();
+  const tabs = await api(page, "/api/tabs");
+  const tabId = tabs.data.tabs[0].id;
+  await api(page, `/api/prompt?tab=${encodeURIComponent(tabId)}`, { method: "POST", data: { message: "fixture subagents workflow", requestId: `workflow-${Date.now()}` } });
+
+  const sectionToggle = page.locator('[data-side-panel-section-toggle="subagents"]');
+  if (await sectionToggle.getAttribute("aria-expanded") !== "true") await sectionToggle.click();
+  const workflow = page.locator(".subagent-workflow");
+  await expect(workflow).toHaveCount(1);
+  await expect(workflow).toHaveAttribute("open", "");
+  await expect(workflow.locator(".subagent-workflow-header")).toContainText("Workflow");
+  await expect(workflow.locator(".subagent-workflow-header")).toContainText("running");
+  await expect(workflow.locator(".subagent-workflow-header")).toContainText("1 agent");
+  await expect(workflow.locator(".subagent-agent-row")).toHaveCount(1);
+  await expect(workflow.locator(".subagent-agent-name")).toHaveText("worker");
+  await expect(page.locator(".subagent-agent-list > .subagent-run")).toHaveCount(1);
+  await expect(page.locator("#subagentCountBadge")).toHaveText("1");
+  await expect(page.locator("#subagentsStatus")).toContainText("1 total");
+  await expect(page.locator("#subagentsStatus")).toContainText("1 running");
+
+  await workflow.locator(".subagent-workflow-header").click();
+  await expect(workflow).not.toHaveAttribute("open", "");
+  await expect(workflow.locator(".subagent-agent-row")).toBeHidden();
+  await page.waitForTimeout(650);
+  await expect(workflow).not.toHaveAttribute("open", "");
+});

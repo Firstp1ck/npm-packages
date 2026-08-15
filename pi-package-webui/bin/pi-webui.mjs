@@ -26,6 +26,7 @@ import { AgentRunIndex, canonicalAgentRunId, normalizeAgentInstance } from "../l
 import { AgentRunRegistry } from "../lib/agent-run-registry.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
 import { projectIntercomConversations } from "../lib/intercom-conversations.mjs";
+import { filterIntercomTranscriptMessages } from "../lib/intercom-transcript-filter.mjs";
 import {
   readSessionSummaryPreferences,
   supportedSessionSummaryThinkingLevels,
@@ -12589,7 +12590,7 @@ async function safeRpcResponse(tab, command, timeoutMs = REQUEST_TIMEOUT_MS) {
     if (command?.type === "get_messages" && Array.isArray(response?.data?.messages)) {
       response.data = {
         ...response.data,
-        messages: filterSessionSummaryTranscriptMessages(tab.thinkingStreamRecovery.applyToMessages(response.data.messages)),
+        messages: filterSessionSummaryTranscriptMessages(filterIntercomTranscriptMessages(tab.thinkingStreamRecovery.applyToMessages(response.data.messages))),
       };
     }
     return response;
@@ -14373,6 +14374,7 @@ function sessionTreeEntryLabel(entry) {
 function sessionTreeEntryText(entry) {
   if (!entry || typeof entry !== "object") return "";
   if (entry.type === "message") return extractSessionTextContent(entry.message?.content);
+  if (entry.type === "custom_message" && entry.customType === "intercom_message") return "Intercom message";
   if (entry.type === "custom_message") return extractSessionTextContent(entry.content);
   if (entry.type === "branch_summary") return entry.summary || "branch summary";
   if (entry.type === "compaction") return entry.summary || "compaction summary";

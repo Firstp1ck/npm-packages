@@ -17,7 +17,7 @@ for (const state of ["queued", "running", "stale", "lost", "done", "failed", "ca
   assert.ok(app.includes(`"${state}"`), `lifecycle ${state} should be normalized`);
   assert.match(css, new RegExp(`\\.subagent-state-dot\\.${state}`), `lifecycle ${state} should have a distinct CSS state`);
 }
-assert.match(app, /counts\?\.totalAgents[\s\S]*counts\?\.runningAgents[\s\S]*counts\?\.staleAgents/, "canonical retained-inclusive total and running/stale breakdown should drive status");
+assert.match(app, /function subagentRunAgentCounts[\s\S]*function renderSubagents\(\)[\s\S]*activeTabs\.reduce\(\(count, tab\) => count \+ Number\(tab\.agentCount \|\| 0\), 0\)[\s\S]*activeTabs\.reduce\(\(count, tab\) => count \+ Number\(tab\.runningAgents \|\| 0\), 0\)[\s\S]*activeTabs\.reduce\(\(count, tab\) => count \+ Number\(tab\.staleAgents \|\| 0\), 0\)/, "visible retained-inclusive agent totals should exclude count-neutral workflow controllers while preserving running and stale breakdowns");
 assert.match(app, /URLSearchParams\(\{ group: selection\.groupId, run: selection\.runId, agent: selection\.agentId \}\)/, "overlay should use the unified group/run/agent output query");
 assert.match(app, /URLSearchParams\(\{ group: view\.groupId, run: view\.runId, agent: view\.agentId \}\)/, "view-only tab should use the unified group/run/agent output query");
 assert.match(app, /subagentRunCanRefresh[\s\S]*subagentRunCanCancel[\s\S]*subagentRunCanDismiss/, "controls should be capability-aware");
@@ -26,7 +26,7 @@ assert.match(app, /function finishedSubagentRunSelections[\s\S]*subagentRunIsTer
 assert.match(app, /agent\.unavailableReason[\s\S]*Output is unavailable for this registered agent/, "output views should show truthful unavailable evidence");
 assert.match(css, /\.subagent-source-badge[\s\S]*text-overflow: ellipsis[\s\S]*@media \(max-width: 720px\)/, "source badges should remain compact and responsive");
 assert.match(html, /Managed and registered Pi agent runs[\s\S]*External agents/, "help should explain managed, registered, and external groups");
-assert.match(html, /styles\.css\?v=120[\s\S]*app\.js\?v=139/, "browser assets should use the WS-D revisions");
-assert.match(worker, /pi-webui-pwa-v101/, "PWA cache identity should advance with WS-D browser assets");
+assert.match(html, /styles\.css\?v=121[\s\S]*app\.js\?v=141/, "browser assets should use the WS-D revisions");
+assert.match(worker, /pi-webui-pwa-v103/, "PWA cache identity should advance with WS-D browser assets");
 
 console.log("subagent-observability-static.test.mjs passed");

@@ -17,6 +17,10 @@
 //   isStreaming=true while a scripted flow runs.
 // - FAKE_PI_STATS_PROMPT_CONTEXT=1: advertise /stats-webui and publish deterministic
 //   structured or malformed-subsection Prompt/context dashboard payloads.
+// - FAKE_PI_TRANSCRIPT_JSON=<JSON array>: replace only the three baseline get_messages
+//   records with an isolated transcript fixture; dynamic/scripted messages still append.
+// - FAKE_PI_INTERCOM_LIVE=1: accept the isolated "fixture modal transport live"
+//   prompt and emit a generic Intercom tool stream with visible unrelated output.
 import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
@@ -88,6 +92,17 @@ const continuityModeEnabled = process.env.FAKE_PI_CONTINUITY_MODE === "1";
 const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
 const sseFloodEnabled = process.env.FAKE_PI_SSE_FLOOD === "1";
 const statsPromptContextEnabled = process.env.FAKE_PI_STATS_PROMPT_CONTEXT === "1";
+const intercomLiveEnabled = process.env.FAKE_PI_INTERCOM_LIVE === "1";
+const fakeTranscriptMessages = (() => {
+  const source = process.env.FAKE_PI_TRANSCRIPT_JSON;
+  if (!source) return null;
+  try {
+    const parsed = JSON.parse(source);
+    return Array.isArray(parsed) && parsed.every((message) => message && typeof message === "object" && !Array.isArray(message)) ? parsed : null;
+  } catch {
+    return null;
+  }
+})();
 const streamIsolationEnabled = process.env.FAKE_PI_STREAM_ISOLATION === "1";
 const commandLogFile = process.env.FAKE_PI_LOG_FILE || "";
 const largeRpcText = "large-rpc-payload:" + "λ".repeat(70_000);
@@ -311,6 +326,56 @@ function runVoiceScriptFlow({ text, chunks, chunkSpacingMs = 60, toolPhase = fal
     },
   });
   runScriptedSteps(steps);
+}
+
+function runIntercomLiveScript() {
+  scriptedStreaming = true;
+  const toolCallId = "live-intercom-call";
+  const normalText = "LIVE NORMAL OUTPUT VISIBLE";
+  const toolCall = {
+    type: "toolCall",
+    id: toolCallId,
+    name: "intercom",
+    arguments: { action: "send", to: "peer-live", message: "LIVEINTERCOMARGUMENTSECRET" },
+  };
+  const assistantMessage = { role: "assistant", content: [{ type: "text", text: normalText }, toolCall], timestamp: Date.now() };
+  const toolResult = {
+    role: "toolResult",
+    toolCallId,
+    toolName: "intercom",
+    content: [{ type: "text", text: "LIVEINTERCOMRESULTSECRET" }],
+    isError: false,
+    timestamp: Date.now() + 1,
+  };
+  runScriptedSteps([
+    { afterMs: 30, run: () => emitScriptedEvent({ type: "agent_start" }) },
+    { afterMs: 30, run: () => emitScriptedEvent({ type: "message_start", message: { role: "assistant" } }) },
+    { afterMs: 40, run: () => emitScriptedEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: normalText } }) },
+    { afterMs: 40, run: () => emitScriptedEvent({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, name: "intercom", toolCall } }) },
+    { afterMs: 30, run: () => emitScriptedEvent({ type: "message_update", assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, name: "intercom", toolCall, delta: "" } }) },
+    { afterMs: 30, run: () => emitScriptedEvent({ type: "message_update", assistantMessageEvent: { type: "toolcall_end", contentIndex: 1, name: "intercom", toolCall } }) },
+    { afterMs: 30, run: () => emitScriptedEvent({ type: "tool_execution_start", toolCallId, toolName: "intercom", args: toolCall.arguments }) },
+    { afterMs: 40, run: () => emitScriptedEvent({ type: "tool_execution_update", toolCallId, toolName: "intercom", partialResult: { content: toolResult.content } }) },
+    { afterMs: 40, run: () => emitScriptedEvent({ type: "tool_execution_end", toolCallId, toolName: "intercom", isError: false, result: { content: toolResult.content } }) },
+    { afterMs: 40, run: () => {
+      appendDynamicMessage(assistantMessage);
+      appendDynamicMessage(toolResult);
+      emitScriptedEvent({ type: "message_end", message: assistantMessage });
+    } },
+    { afterMs: 40, run: () => emitScriptedEvent({ type: "agent_end" }) },
+    { afterMs: 10, run: () => {
+      scriptedStreaming = false;
+      emitScriptedEvent({ type: "agent_settled" });
+    } },
+  ]);
+}
+
+function handleIntercomLivePrompt(command, base) {
+  if (!intercomLiveEnabled || String(command.message || "").trim() !== "fixture modal transport live") return false;
+  appendDynamicMessage({ role: "user", content: String(command.message), timestamp: Date.now() });
+  respond({ ...base, data: { output: "fake live transport accepted", pid: process.pid } });
+  runIntercomLiveScript();
+  return true;
 }
 
 function runContinuityDelayedStream() {
@@ -1103,7 +1168,7 @@ function emitSubagentFixtureStatus({ legacyOnly = false } = {}) {
 
 function handleSubagentFixturePrompt(command, base) {
   const message = String(command.message || "").trim();
-  if (!["fixture subagents running", "fixture subagents old-helper", "fixture subagents clear", "fixture subagents retained"].includes(message)) return false;
+  if (!["fixture subagents running", "fixture subagents old-helper", "fixture subagents workflow", "fixture subagents clear", "fixture subagents retained"].includes(message)) return false;
   const now = Date.now();
   fixtureSubagentRuns.splice(0, fixtureSubagentRuns.length);
   fixtureSubagentGates.splice(0, fixtureSubagentGates.length);
@@ -1133,6 +1198,29 @@ function handleSubagentFixturePrompt(command, base) {
         { id: "fixture-gate:1:1", taskIndex: 1, attempt: 1, maxAttempts: 2, agent: "reviewer", retrySafety: "read-only", runId: "fixture-review-2", model: "openrouter/moonshotai/kimi-k3", provider: "openrouter", status: "failed", failureKind: "transient-provider", error: "provider overloaded" },
       ],
     });
+  } else if (message === "fixture subagents workflow") {
+    fixtureSubagentRuns.push(
+      {
+        id: "fixture-workflow-controller",
+        source: "recovered",
+        mode: "single",
+        status: "done",
+        startedAt: now - 2500,
+        agents: [
+          { id: "fixture-workflow-controller:workflow", name: "workflow", status: "done", index: 0, nested: false },
+        ],
+      },
+      {
+        id: "fixture-workflow-worker",
+        source: "recovered",
+        mode: "single",
+        status: "running",
+        startedAt: now - 2450,
+        agents: [
+          { id: "fixture-workflow-worker:worker", name: "worker", status: "running", index: 0, model: "openai-codex/gpt-5.6-sol", thinking: "high", nested: false },
+        ],
+      },
+    );
   } else if (message === "fixture subagents retained") {
     fixtureSubagentRuns.push(
       {
@@ -1410,9 +1498,11 @@ rl.on("line", (line) => {
         ...base,
         data: {
           messages: [
-            { role: "user", content: "fake prompt", timestamp: 1000 },
-            { role: "assistant", content: [{ type: "text", text: "fake answer" }], timestamp: 2000 },
-            { role: "user", content: "fake follow-up", timestamp: 3000 },
+            ...(fakeTranscriptMessages || [
+              { role: "user", content: "fake prompt", timestamp: 1000 },
+              { role: "assistant", content: [{ type: "text", text: "fake answer" }], timestamp: 2000 },
+              { role: "user", content: "fake follow-up", timestamp: 3000 },
+            ]),
             ...dynamicMessages,
             ...(largeTranscriptEnabled ? [{ role: "assistant", content: [{ type: "text", text: largeRpcText }], timestamp: 4000 }] : []),
           ],
@@ -1452,6 +1542,7 @@ rl.on("line", (line) => {
       return;
     }
     case "prompt":
+      if (handleIntercomLivePrompt(command, base)) return;
       if (handleFeatureDecisionFixturePrompt(command, base)) return;
       if (handleStatsPromptContextFixturePrompt(command, base)) return;
       if (handleWebuiHelperPrompt(command, base)) return;

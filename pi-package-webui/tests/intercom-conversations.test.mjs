@@ -143,11 +143,11 @@ function detail(entries, summaryOptions = {}, detailOptions = {}) {
 {
   const entries = [
     customMessage("intercom_message", {
-      from: { id: "peer-a", name: "Duplicate Name" },
+      from: { id: "peer-a", name: "Duplicate Name", startedAt: 500 },
       message: { id: "a-1", timestamp: 1000, content: { text: "from A" } },
     }, "a", "a", "1970-01-01T00:00:01.000Z"),
     customMessage("intercom_message", {
-      from: { id: "peer-b", name: "Duplicate Name" },
+      from: { id: "peer-b", name: "Duplicate Name", startedAt: 600 },
       message: { id: "b-1", timestamp: 2000, content: { text: "from B" } },
     }, "b", "b", "1970-01-01T00:00:02.000Z"),
     customEntry("intercom_sent", {
@@ -171,13 +171,62 @@ function detail(entries, summaryOptions = {}, detailOptions = {}) {
       timestamp: 1000,
     }, "name-only-entry", "1970-01-01T00:00:01.000Z"),
     customMessage("intercom_message", {
-      from: { id: "new-peer-id", name: "Reused Name" },
+      from: { id: "new-peer-id", name: "Reused Name", startedAt: 1500 },
       message: { id: "stable-new", timestamp: 2000, content: { text: "new session using the old display name" } },
     }, "new peer", "stable-new-entry", "1970-01-01T00:00:02.000Z"),
   ];
   const summary = projection(entries);
   assert.equal(summary.conversations.length, 2, "name reuse without replyTo evidence must keep the old label-only conversation separate");
   assert.deepEqual(new Set(summary.conversations.map(({ participants }) => participants.peer.id)), new Set(["new-peer-id", null]));
+}
+
+{
+  const peerId = "01a00abc-1234-5678-9abc-def012345678";
+  const entries = [
+    customEntry("intercom_sent", {
+      to: "01a00abc",
+      message: { text: "sent to the short session ID" },
+      messageId: "alias-out-1",
+      timestamp: 2000,
+    }, "alias-out-entry-1", "1970-01-01T00:00:02.000Z"),
+    customMessage("intercom_message", {
+      from: { id: peerId, name: "Alias Peer", startedAt: 1000 },
+      message: { id: "alias-in-1", timestamp: 3000, content: { text: "reply from the full session ID" } },
+    }, "alias inbound", "alias-in-entry-1", "1970-01-01T00:00:03.000Z"),
+    customEntry("intercom_sent", {
+      to: "subagent-chat-01a00abc-1234-5678",
+      message: { text: "sent through a generated session label" },
+      messageId: "alias-out-2",
+      timestamp: 4000,
+    }, "alias-out-entry-2", "1970-01-01T00:00:04.000Z"),
+    customMessage("intercom_message", {
+      from: { id: peerId, name: "Alias Peer", startedAt: 1000 },
+      message: { id: "alias-in-2", timestamp: 5000, content: { text: "second reply from the same agent" } },
+    }, "alias inbound", "alias-in-entry-2", "1970-01-01T00:00:05.000Z"),
+  ];
+  const summary = projection(entries);
+  assert.equal(summary.conversations.length, 1, "short IDs and generated labels must resolve to the same two-agent conversation as the full peer ID");
+  assert.equal(summary.conversations[0].messageCount, 4);
+  assert.deepEqual(summary.conversations[0].participants.peer, { id: peerId, name: "Alias Peer" });
+}
+
+{
+  const entries = [
+    customMessage("intercom_message", {
+      from: { id: "named-peer-id", name: "Named Peer", startedAt: 500 },
+      message: { id: "named-in", timestamp: 1000, content: { text: "identity-bearing inbound" } },
+    }, "named inbound", "named-in-entry", "1970-01-01T00:00:01.000Z"),
+    customEntry("intercom_sent", {
+      to: "Named Peer",
+      message: { text: "independent outbound by display name" },
+      messageId: "named-out",
+      timestamp: 2000,
+    }, "named-out-entry", "1970-01-01T00:00:02.000Z"),
+  ];
+  const summary = projection(entries);
+  assert.equal(summary.conversations.length, 1, "a display name should resolve when exactly one already-started peer session owns it");
+  assert.equal(summary.conversations[0].messageCount, 2);
+  assert.deepEqual(summary.conversations[0].participants.peer, { id: "named-peer-id", name: "Named Peer" });
 }
 
 {

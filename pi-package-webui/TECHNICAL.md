@@ -208,7 +208,7 @@ To restore: stop the Web UI, re-upgrade to a version that supports the two-sided
 
 ## Subagent observability
 
-The **Subagents** panel accepts managed `pi-subagents` and workflow runs plus cooperating SDK, Pi RPC, JSON, print, interactive/tmux, schedule, gate, and custom launchers. It groups exact parent-session matches with their WebUI terminal and places unmatched registered runs under **External agents**. Counts include retained instances that became terminal during the current server run; the status line separately reports running and stale instances. Gate history refers to its child and does not add another count.
+The **Subagents** panel accepts managed `pi-subagents` and workflow runs plus cooperating SDK, Pi RPC, JSON, print, interactive/tmux, schedule, gate, and custom launchers. It groups exact parent-session matches with their WebUI terminal and places unmatched registered runs under **External agents**. A model-less `pi-subagents` workflow controller renders as a collapsible run header; its model-powered children remain normal rows inside that section. The workflow controller is count-neutral, so totals report agents rather than orchestration processes. Counts include retained instances that became terminal during the current server run; the status line separately reports running and stale instances. Gate history refers to its child and does not add another count.
 
 At server start or restart, only queued or running agents reconnect from prior state. Pre-existing stale, lost, done, failed, and cancelled rows are not loaded into terminal groups or **External agents**. A run that becomes stale, lost, or terminal after the current server starts remains visible for inspection and normal clearing.
 
@@ -249,7 +249,9 @@ Troubleshooting:
 
 ## Agent conversation viewer
 
-Direct `pi-intercom` messages and native subagent-supervisor coordination appear as conversation tags beneath the composer for the active tab. Each tag represents one direct two-agent conversation. Select it to open a large, read-only chat dialog; keyboard focus remains inside the dialog until it closes and then returns to the tag when that tag is still present.
+Direct `pi-intercom` messages and native subagent-supervisor coordination appear as conversation tags beneath the composer for the active tab. Each tag represents one direct two-agent conversation. Groups of up to eight divide one row equally; above that dense threshold, tags wrap into a no-scroll grid with a 44-pixel minimum width. Long names visually truncate, while complete conversation names remain exposed through accessible labels and tooltips. Select a tag to open a large, read-only chat dialog; keyboard focus remains inside the dialog until it closes and then returns to the tag when that tag is still present.
+
+Generic `intercom` tool calls, paired results, and incoming `intercom_message` records are omitted from the normal main-output transcript. Mixed assistant records keep their unrelated text and tool activity. The viewer reads the original persisted records through its separate sanitized endpoint, so removing transport cards from the main output does not remove messages from the conversation dialog.
 
 The viewer reconstructs conversations from the active branch of the persisted Pi session, so supported history returns after a browser or WebUI restart. Compacted or bounded-away history may be marked unavailable. While the dialog is open, WebUI periodically checks for new persisted messages; tab changes and rapid selections discard stale responses.
 

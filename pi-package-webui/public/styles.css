@@ -3622,6 +3622,59 @@ body.control-deck-section-dragging .side-panel-empty-drop-target {
   margin-left: 0.55rem;
   border-left: 1px solid rgba(203, 166, 247, 0.3);
 }
+.subagent-workflow {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+}
+.subagent-workflow-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.38rem;
+  align-items: center;
+  min-width: 0;
+  min-height: 1.9rem;
+  padding: 0.24rem 0.32rem;
+  border: 1px solid rgba(137, 180, 250, 0.18);
+  border-radius: 0.46rem;
+  color: inherit;
+  background: rgba(137, 180, 250, 0.05);
+  cursor: pointer;
+  list-style: none;
+}
+.subagent-workflow-header::-webkit-details-marker { display: none; }
+.subagent-workflow-header::after {
+  content: "›";
+  color: rgba(var(--ctp-subtext-rgb), 0.58);
+  font-size: 0.92rem;
+  line-height: 1;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+.subagent-workflow:not([open]) > .subagent-workflow-header::after { transform: rotate(0deg); }
+.subagent-workflow-header:hover,
+.subagent-workflow-header:focus-visible {
+  border-color: rgba(137, 180, 250, 0.36);
+  background: rgba(137, 180, 250, 0.1);
+  outline: none;
+}
+.subagent-workflow-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ctp-blue);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.subagent-workflow-agents {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+  margin-left: 0.55rem;
+  padding-left: 0.36rem;
+  border-left: 1px solid rgba(137, 180, 250, 0.26);
+}
 .subagent-agent-identity {
   display: flex;
   align-items: center;
@@ -9380,28 +9433,33 @@ summary { cursor: pointer; color: var(--warning); }
 }
 .composer-intercom-tags {
   pointer-events: auto;
-  display: flex;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   flex: 1 1 12rem;
   align-items: center;
   gap: 0.28rem;
-  min-width: min(8rem, 100%);
+  min-width: 0;
   max-width: 100%;
   padding-block: 0.12rem;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
 }
 .composer-intercom-tags[hidden] { display: none !important; }
+.composer-intercom-tags.dense {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  align-items: stretch;
+}
 .composer-intercom-tag {
-  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 0.34rem;
-  max-width: min(24rem, 78vw);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 0;
   margin: 0;
   padding: 0.14rem 0.5rem;
+  overflow: hidden;
   border: 1px solid rgba(166, 227, 161, 0.48);
   border-radius: 999px;
   color: var(--ctp-green);
@@ -9421,13 +9479,19 @@ summary { cursor: pointer; color: var(--warning); }
   box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.42), 0 0 1.1rem rgba(166, 227, 161, 0.3);
   transform: translateY(-1px);
 }
-.composer-intercom-tag-icon { color: var(--ctp-teal); }
+.composer-intercom-tag-icon {
+  flex: 0 0 auto;
+  color: var(--ctp-teal);
+}
 .composer-intercom-tag-label {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .composer-intercom-tag-count {
+  flex: 0 0 auto;
   min-width: 1.25rem;
   padding: 0.08rem 0.3rem;
   border-radius: 999px;
@@ -9440,7 +9504,7 @@ summary { cursor: pointer; color: var(--warning); }
 }
 @media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
   .composer-intercom-tags { flex: 1 1 100%; min-width: 0; }
-  .composer-intercom-tag { min-height: 44px; max-width: min(26rem, 84vw); }
+  .composer-intercom-tag { min-height: 44px; }
 }
 .composer-feature-category-tag {
   flex: 0 1 auto;

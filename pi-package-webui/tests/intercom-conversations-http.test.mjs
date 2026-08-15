@@ -25,8 +25,22 @@ await writeFile(settingsFile, `${JSON.stringify({ version: 3 })}\n`, "utf8");
 await chmod(fakePi, 0o755);
 
 const manager = SessionManager.create(cwd, sessionDir);
+const httpPeerId = "01a00def-1234-5678-9abc-def012345678";
+const mainTranscriptFixture = [
+  { role: "user", content: "fake prompt", timestamp: 1000 },
+  { role: "custom", customType: "intercom_message", content: "rendered inbound message must not be parsed", timestamp: 1500 },
+  {
+    role: "assistant",
+    content: [
+      { type: "text", text: "ordinary assistant content must stay outside the Intercom projection" },
+      { type: "toolCall", id: "http-intercom-call", toolName: "intercom", arguments: { action: "send", to: "01a00def", message: "HTTP_INTERCOM_ARGUMENT_SECRET" } },
+    ],
+    timestamp: 2000,
+  },
+  { role: "toolResult", toolCallId: "http-intercom-call", content: [{ type: "text", text: "HTTP_INTERCOM_RESULT_SECRET" }], timestamp: 2100 },
+];
 const firstMessageId = manager.appendCustomMessageEntry("intercom_message", "rendered inbound message must not be parsed", true, {
-  from: { id: "peer-http", name: "HTTP Peer", cwd: "/private/peer/path" },
+  from: { id: httpPeerId, name: "HTTP Peer", startedAt: 1_699_999_999_000, cwd: "/private/peer/path" },
   message: {
     id: "http-in-1",
     timestamp: 1_700_000_000_000,
@@ -35,27 +49,39 @@ const firstMessageId = manager.appendCustomMessageEntry("intercom_message", "ren
   bodyText: "HTTP_BODY_TEXT_SECRET",
 });
 manager.appendCustomMessageEntry("intercom_message", "ABANDONED_BRANCH_SECRET", true, {
-  from: { id: "peer-http", name: "HTTP Peer" },
+  from: { id: httpPeerId, name: "HTTP Peer", startedAt: 1_699_999_999_000 },
   message: { id: "http-abandoned", timestamp: 1_700_000_000_500, content: { text: "ABANDONED_BRANCH_SECRET" } },
 });
 manager.branch(firstMessageId);
 manager.appendCustomEntry("intercom_sent", {
-  to: "HTTP Peer",
-  message: { text: "Persisted reply", replyTo: "http-in-1", attachments: [{ name: "out.txt", content: "HTTP_OUTBOUND_ATTACHMENT_SECRET" }] },
+  to: "01a00def",
+  message: { text: "Persisted reply", attachments: [{ name: "out.txt", content: "HTTP_OUTBOUND_ATTACHMENT_SECRET" }] },
   messageId: "http-out-1",
   timestamp: 1_700_000_001_000,
 });
 // SessionManager intentionally defers creating a new JSONL file until an assistant
-// message exists. This ignored fixture message flushes the structured custom entries.
+// message exists. This mixed fixture also verifies that the normal transcript keeps
+// unrelated assistant text while hiding Intercom transport records.
 manager.appendMessage({
   role: "assistant",
-  content: [{ type: "text", text: "ordinary assistant content must stay outside the Intercom projection" }],
+  content: [
+    { type: "text", text: "ordinary assistant content must stay outside the Intercom projection" },
+    { type: "toolCall", id: "http-intercom-call", toolName: "intercom", arguments: { action: "send", to: "01a00def", message: "HTTP_INTERCOM_ARGUMENT_SECRET" } },
+  ],
   api: "openai-responses",
   provider: "fake",
   model: "fake-model",
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-  stopReason: "stop",
+  stopReason: "toolUse",
   timestamp: 1_700_000_001_500,
+});
+manager.appendMessage({
+  role: "toolResult",
+  toolCallId: "http-intercom-call",
+  toolName: "intercom",
+  content: [{ type: "text", text: "HTTP_INTERCOM_RESULT_SECRET" }],
+  isError: false,
+  timestamp: 1_700_000_001_600,
 });
 const sessionFile = manager.getSessionFile();
 assert.ok(sessionFile, "fixture must create a persisted session file");
@@ -86,6 +112,7 @@ async function startServer(activeSessionFile) {
       PI_WEBUI_RPC_SUPERVISOR: "0",
       FAKE_PI_CONTINUITY_MODE: "1",
       FAKE_PI_CONTINUITY_SESSION_FILE: activeSessionFile,
+      FAKE_PI_TRANSCRIPT_JSON: JSON.stringify(mainTranscriptFixture),
     },
   });
   let output = "";
@@ -132,6 +159,26 @@ try {
   assert.equal(missingTab.status, 400, "the endpoint must require explicit tab scope");
   const staleTab = await request(server.port, "/api/intercom/conversations?tab=missing-tab");
   assert.equal(staleTab.status, 404, "unknown tabs must not fall back to another session");
+
+  const mainTranscript = await request(server.port, `/api/messages?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(mainTranscript.status, 200, mainTranscript.body?.error);
+  const mainMessages = mainTranscript.body?.data?.messages || [];
+  const mainSerialized = JSON.stringify(mainMessages);
+  assert.equal(mainSerialized.includes("ordinary assistant content must stay outside the Intercom projection"), true, "mixed assistant text should remain in the main transcript");
+  assert.equal(mainSerialized.includes("rendered inbound message must not be parsed"), false, "incoming Intercom custom messages should stay out of the main transcript");
+  assert.equal(mainSerialized.includes("HTTP_INTERCOM_ARGUMENT_SECRET"), false, "Intercom tool arguments should stay out of the main transcript");
+  assert.equal(mainSerialized.includes("HTTP_INTERCOM_RESULT_SECRET"), false, "paired Intercom tool results should stay out of the main transcript");
+  assert.equal(mainMessages.some((message) => message?.role === "custom" && message.customType === "intercom_message"), false);
+  assert.equal(mainMessages.some((message) => message?.role === "toolResult" && message.toolCallId === "http-intercom-call"), false);
+
+  const sessionTree = await request(server.port, `/api/session-tree?tab=${encodeURIComponent(tabId)}`);
+  assert.equal(sessionTree.status, 200, sessionTree.body?.error);
+  const treeNodes = sessionTree.body?.data?.nodes || [];
+  const intercomTreeNodes = treeNodes.filter((node) => node?.title === "intercom_message");
+  assert.ok(intercomTreeNodes.length >= 2, "the fixture should expose active and abandoned Intercom entries in the session tree");
+  assert.equal(intercomTreeNodes.every((node) => node.text === "Intercom message"), true, "session-tree Intercom entries should use only the fixed presentation label");
+  assert.equal(JSON.stringify(treeNodes).includes("rendered inbound message must not be parsed"), false, "session-tree payloads must not expose persisted Intercom prose");
+  assert.equal(JSON.stringify(treeNodes).includes("ABANDONED_BRANCH_SECRET"), false, "session-tree payloads must redact Intercom prose on inactive branches too");
 
   const summary = await request(server.port, basePath);
   assert.equal(summary.status, 200, summary.body?.error);
@@ -184,9 +231,8 @@ try {
   const restartedConversations = restartedSummary.body?.data?.conversations || [];
   const restartedStableConversation = restartedConversations.find((conversation) => conversation.id === conversationId);
   assert.ok(restartedStableConversation, "the evidence-backed conversation identity should remain stable after server restart");
-  assert.equal(restartedStableConversation.messageCount, 2, "restart should preserve the original explicitly linked conversation");
-  const restartedLabelConversation = restartedConversations.find((conversation) => conversation.participants?.peer?.id === null);
-  assert.equal(restartedLabelConversation?.messageCount, 1, "a received message without replyTo or peer ID must remain a conservative label-only conversation");
+  assert.equal(restartedConversations.length, 1, "all messages between the same two agents should remain one conversation after restart");
+  assert.equal(restartedStableConversation.messageCount, 3, "short-ID, full-ID, and unique display-name records should reconstruct one participant-pair conversation");
   await stopServer(server.child);
   server = undefined;
 

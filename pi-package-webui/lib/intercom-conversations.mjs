@@ -68,10 +68,45 @@ function opaqueId(prefix, value) {
   return `${prefix}_${createHash("sha256").update(String(value)).digest("base64url").slice(0, 24)}`;
 }
 
+function positiveTimestamp(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  if (typeof value !== "string" || !value.trim()) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function fullSessionId(value) {
+  const id = boundedString(value, 240);
+  return /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) ? id : "";
+}
+
+function sessionIdAlias(value) {
+  const id = normalizedIdentity(value);
+  const match = id.match(/^([0-9a-f]{8})(?:-|$)/i);
+  return match?.[1] || "";
+}
+
+function labelMatchesSessionId(label, id) {
+  const normalizedLabel = normalizedIdentity(label);
+  const normalizedId = normalizedIdentity(id);
+  if (!normalizedLabel || !normalizedId) return false;
+  if (normalizedLabel === normalizedId) return true;
+  const alias = sessionIdAlias(normalizedId);
+  return Boolean(alias) && normalizedLabel.split(/[^a-z0-9]+/).includes(alias);
+}
+
 function peerIdentity(value) {
   const peer = objectValue(value);
-  if (peer) return { id: boundedString(peer.id, 240), name: boundedString(peer.name, 160) };
-  return { id: "", name: boundedString(value, 160) };
+  if (peer) {
+    return {
+      id: boundedString(peer.id, 240),
+      name: boundedString(peer.name, 160),
+      startedAt: positiveTimestamp(peer.startedAt),
+    };
+  }
+  const name = boundedString(value, 160);
+  return { id: fullSessionId(name), name, startedAt: 0 };
 }
 
 function genericInbound(entry, order, maxTextBytes) {
@@ -90,6 +125,7 @@ function genericInbound(entry, order, maxTextBytes) {
     direction: "peer",
     peerId: from.id,
     peerName: from.name || from.id,
+    peerStartedAt: from.startedAt,
     replyTo: boundedString(message?.replyTo, 240),
     text: boundedText.text,
     truncatedText: boundedText.truncated,
@@ -212,17 +248,69 @@ function resolveGenericPeers(events) {
     if (event.replyTo && parent.has(event.replyTo)) union(event.messageId, event.replyTo);
   }
 
-  const peerIdsByRoot = new Map();
+  const components = new Map();
+  const stablePeers = new Map();
   for (const event of events) {
-    if (!event.peerId) continue;
     const root = find(event.messageId);
-    if (!peerIdsByRoot.has(root)) peerIdsByRoot.set(root, new Set());
-    peerIdsByRoot.get(root).add(event.peerId);
+    if (!components.has(root)) components.set(root, []);
+    components.get(root).push(event);
+    if (!event.peerId) continue;
+    if (!stablePeers.has(event.peerId)) {
+      stablePeers.set(event.peerId, { id: event.peerId, names: new Set(), startedAt: 0, canonicalName: "", canonicalOrder: -1 });
+    }
+    const peer = stablePeers.get(event.peerId);
+    const name = normalizedIdentity(event.peerName);
+    if (name) peer.names.add(name);
+    const startedAt = positiveTimestamp(event.peerStartedAt);
+    if (startedAt && (!peer.startedAt || startedAt < peer.startedAt)) peer.startedAt = startedAt;
+    if (event.peerName && event.time.order >= peer.canonicalOrder) {
+      peer.canonicalName = event.peerName;
+      peer.canonicalOrder = event.time.order;
+    }
   }
+
+  const assignPeer = (component, peerId) => {
+    const canonicalName = stablePeers.get(peerId)?.canonicalName || "";
+    for (const event of component) {
+      if (!event.peerId) event.peerId = peerId;
+      if (canonicalName) event.peerName = canonicalName;
+    }
+  };
+
+  for (const component of components.values()) {
+    const existingIds = new Set(component.map((event) => event.peerId).filter(Boolean));
+    if (existingIds.size === 1) {
+      assignPeer(component, existingIds.values().next().value);
+      continue;
+    }
+    if (existingIds.size > 1) continue;
+
+    const aliasMatches = new Set();
+    for (const event of component) {
+      for (const peer of stablePeers.values()) {
+        if (labelMatchesSessionId(event.peerName, peer.id)) aliasMatches.add(peer.id);
+      }
+    }
+    if (aliasMatches.size === 1) {
+      assignPeer(component, aliasMatches.values().next().value);
+      continue;
+    }
+    if (aliasMatches.size > 1) continue;
+
+    const nameMatches = new Set();
+    for (const event of component) {
+      const name = normalizedIdentity(event.peerName);
+      if (!name || !event.time.ms) continue;
+      for (const peer of stablePeers.values()) {
+        if (peer.startedAt && peer.startedAt <= event.time.ms && peer.names.has(name)) nameMatches.add(peer.id);
+      }
+    }
+    if (nameMatches.size === 1) assignPeer(component, nameMatches.values().next().value);
+  }
+
   for (const event of events) {
-    if (event.peerId) continue;
-    const peerIds = peerIdsByRoot.get(find(event.messageId));
-    if (peerIds?.size === 1) event.peerId = peerIds.values().next().value;
+    const canonicalName = stablePeers.get(event.peerId)?.canonicalName;
+    if (canonicalName) event.peerName = canonicalName;
   }
 }
 

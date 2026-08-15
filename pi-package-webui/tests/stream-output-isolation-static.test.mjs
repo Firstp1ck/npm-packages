@@ -70,7 +70,7 @@ assert.doesNotMatch(rawMessageHandler, /setRunIndicatorActivity|scheduleLiveTodo
 assert.match(rawMessageHandler, /compactOutputActive\(\) && handleCompactMessageUpdate\(event\)/, "normal and compact modes should share the isolated controller sink");
 assert.match(toolUpdate, /renderLiveToolRun\(run, \{ scroll: false \}\)/, "isolated tool updates should render in the controller frame rather than queue another tool frame");
 assert.doesNotMatch(toolUpdate, /scheduleLiveToolRunRender/, "isolated tool updates must not create a parallel render queue");
-assert.match(app, /applyToolExecutionUpdate: \(event\) => \{\s+if \(!compactOutputActive\(\)\) applyTranscriptToolExecutionUpdate\(event\);/, "raw tool execution updates should use only the transcript sink");
+assert.match(app, /applyToolExecutionUpdate: \(event\) => \{\s+if \(!compactOutputActive\(\) && !isIntercomTransportToolName\(event\?\.toolName\)\) applyTranscriptToolExecutionUpdate\(event\);/, "raw non-Intercom tool execution updates should use only the transcript sink");
 assert.doesNotMatch(app.slice(app.indexOf("const streamOutputController"), app.indexOf("let assistantErrorSurfacedThisRun")), /renderWidgets|renderFooter|renderTabs|renderStatus|renderFeedbackTray|setRunIndicatorActivity|scheduleLiveTodoProgressWidgetSync|addEvent|fetch\(|api\(/, "controller integration must inject transcript-only sinks");
 const connectEvents = functionBody(app, "connectEvents");
 assert.match(connectEvents, /streamOutputController\.cancel\(\);[\s\S]*?resetCompactLiveOutput\(\);/, "reconnect and tab switches should cancel retained raw frames before resetting live output");
