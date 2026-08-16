@@ -151,7 +151,7 @@ Search available models and control project or global model scope and cycling or
 
 **Optional feature needed:** None — the browser tools setup is included in Pi Web UI core.
 
-Enable tools for the current session or save the allowlist inherited by future sessions.
+Enable tools for the current session, save a global default, or configure an exact model profile. Selecting that model automatically applies its tool profile unless the session has its own tool selection.
 
 #### Skills setup
 
@@ -159,7 +159,7 @@ Enable tools for the current session or save the allowlist inherited by future s
 
 **Optional feature needed:** None — the browser skills setup is included in Pi Web UI core.
 
-Find installed skills and manage session-specific or global activation.
+Find installed skills and manage session, global, or exact-model activation. Selecting a configured model automatically applies its skill profile unless the session has its own skill selection.
 
 ### Project automation and Git
 

@@ -93,6 +93,12 @@ import {
   writeWebuiSettings,
 } from "../lib/git-workflow-preferences.mjs";
 import {
+  exactModelProfile,
+  preserveUnavailableResourceNames,
+  resolveResourceSelection,
+  setExactModelProfile,
+} from "../lib/resource-selection.mjs";
+import {
   UI_LAYOUT_REQUEST_MAX_BYTES,
   mergeUiLayout,
   uiLayoutRevision,
@@ -12670,8 +12676,18 @@ async function sendWebuiHelperCommand(tab, action, payload = {}, timeoutMs = WEB
 
 function requireResourceScope(value) {
   const scope = String(value || "session").trim().toLowerCase();
-  if (scope !== "session" && scope !== "global") throw makeHttpError(400, "Resource scope must be session or global");
+  if (scope !== "session" && scope !== "global" && scope !== "model") throw makeHttpError(400, "Resource scope must be session, global, or model");
   return scope;
+}
+
+function requireResourceModelIdentity(source, models) {
+  const provider = String(source?.provider || "").trim();
+  const modelId = String(source?.modelId || "").trim();
+  if (!provider || !modelId) throw makeHttpError(400, "Model resource scope requires an exact provider and modelId");
+  if (!(models || []).some((model) => model?.provider === provider && model?.id === modelId)) {
+    throw makeHttpError(400, `Unknown authenticated model for resource profile: ${provider}/${modelId}`);
+  }
+  return { provider, modelId };
 }
 
 function selectedResourceNames(body, enabledKey, disabledKey, resources, label) {
@@ -12686,12 +12702,6 @@ function selectedResourceNames(body, enabledKey, disabledKey, resources, label) 
   throw makeHttpError(400, `${label} update requires ${enabledKey} or ${disabledKey}`);
 }
 
-function preserveUnavailableGlobalNames(selectedNames, resources, previousNames) {
-  if (!Array.isArray(previousNames)) return selectedNames;
-  const available = new Set((resources || []).map((resource) => resource.name));
-  return [...new Set([...selectedNames, ...previousNames.filter((name) => !available.has(name))])];
-}
-
 function globalResourcePayload(key, resources, configuredNames) {
   const configured = Array.isArray(configuredNames);
   const enabled = new Set(configured ? configuredNames : resources.filter((resource) => resource.enabled !== false).map((resource) => resource.name));
@@ -12702,10 +12712,73 @@ function globalResourcePayload(key, resources, configuredNames) {
   };
 }
 
-async function getToolConfigData(tab, requestedScope = "session") {
+async function modelResourcePayload(tab, key, resources, identity, models) {
+  const selectionKey = key === "tools" ? "enabledTools" : "enabledSkills";
+  const defaults = (await readWebuiSettings()).resourceDefaults;
+  const profile = exactModelProfile(defaults, identity.provider, identity.modelId);
+  const configuredNames = profile?.[key]?.[selectionKey];
+  const configured = Array.isArray(configuredNames);
+  const resolved = resolveResourceSelection(defaults, key, identity.provider, identity.modelId, null);
+  const enabledNames = configured
+    ? configuredNames
+    : resolved.names !== null
+      ? resolved.names
+      : resources.filter((resource) => resource.enabled !== false).map((resource) => resource.name);
+  const enabled = new Set(enabledNames);
+  return {
+    scope: "model",
+    provider: identity.provider,
+    modelId: identity.modelId,
+    configured,
+    source: configured ? "model" : resolved.source,
+    models: (models || []).map((model) => ({ provider: model.provider, id: model.id, name: model.name || model.id })),
+    [key]: resources.map((resource) => ({ ...resource, enabled: enabled.has(resource.name) })),
+  };
+}
+
+async function recomputeResourceRuntime(tab) {
+  return sendWebuiHelperCommand(tab, "resources-recompute");
+}
+
+async function setModelResourceProfile(tab, key, resources, body) {
+  const selectionKey = key === "tools" ? "enabledTools" : "enabledSkills";
+  const label = key === "tools" ? "Tool" : "Skill";
+  const enabledKey = `enabled${label}s`;
+  const disabledKey = `disabled${label}s`;
+  const models = await availableGitWorkflowModels(tab);
+  const identity = requireResourceModelIdentity(body, models);
+  if (body?.inherit === true) {
+    await updateWebuiSettings((current) => ({
+      resourceDefaults: {
+        modelProfiles: setExactModelProfile(current.resourceDefaults, identity.provider, identity.modelId, key, null),
+      },
+    }));
+    const refreshed = await recomputeResourceRuntime(tab);
+    return modelResourcePayload(tab, key, refreshed?.[key]?.[key] || resources, identity, models);
+  }
+  const selectedNames = selectedResourceNames(body, enabledKey, disabledKey, resources, label);
+  await updateWebuiSettings((current) => {
+    const previousNames = exactModelProfile(current.resourceDefaults, identity.provider, identity.modelId)?.[key]?.[selectionKey];
+    const enabledNames = preserveUnavailableResourceNames(previousNames, resources.map((resource) => resource.name), selectedNames);
+    return {
+      resourceDefaults: {
+        modelProfiles: setExactModelProfile(current.resourceDefaults, identity.provider, identity.modelId, key, enabledNames),
+      },
+    };
+  });
+  const refreshed = await recomputeResourceRuntime(tab);
+  return modelResourcePayload(tab, key, refreshed?.[key]?.[key] || resources, identity, models);
+}
+
+async function getToolConfigData(tab, requestedScope = "session", searchParams) {
   const scope = requireResourceScope(requestedScope);
   const runtime = await sendWebuiHelperCommand(tab, "tools-state");
   if (scope === "session") return { ...runtime, scope };
+  if (scope === "model") {
+    const models = await availableGitWorkflowModels(tab);
+    const identity = requireResourceModelIdentity({ provider: searchParams?.get("provider"), modelId: searchParams?.get("modelId") }, models);
+    return modelResourcePayload(tab, "tools", runtime.tools || [], identity, models);
+  }
   const defaults = (await readWebuiSettings()).resourceDefaults.tools.enabledTools;
   return globalResourcePayload("tools", runtime.tools || [], defaults);
 }
@@ -12904,26 +12977,44 @@ async function setToolConfigData(tab, body) {
   const scope = requireResourceScope(body?.scope);
   if (scope === "session") {
     return {
-      ...(await sendWebuiHelperCommand(tab, "tools-set", {
-        enabledTools: Array.isArray(body.enabledTools) ? body.enabledTools : undefined,
-        disabledTools: Array.isArray(body.disabledTools) ? body.disabledTools : undefined,
-      })),
+      ...(await sendWebuiHelperCommand(tab, "tools-set", body?.inherit === true
+        ? { mode: "inherit" }
+        : {
+            enabledTools: Array.isArray(body.enabledTools) ? body.enabledTools : undefined,
+            disabledTools: Array.isArray(body.disabledTools) ? body.disabledTools : undefined,
+          })),
       scope,
     };
   }
 
   const runtime = await sendWebuiHelperCommand(tab, "tools-state");
-  const currentSettings = await readWebuiSettings();
+  if (scope === "model") return setModelResourceProfile(tab, "tools", runtime.tools || [], body);
+  if (body?.inherit === true) {
+    await updateWebuiSettings(() => ({ resourceDefaults: { tools: { enabledTools: null } } }));
+    const refreshed = await recomputeResourceRuntime(tab);
+    return globalResourcePayload("tools", refreshed?.tools?.tools || runtime.tools || [], null);
+  }
   const selectedTools = selectedResourceNames(body, "enabledTools", "disabledTools", runtime.tools, "Tool");
-  const enabledTools = preserveUnavailableGlobalNames(selectedTools, runtime.tools, currentSettings.resourceDefaults.tools.enabledTools);
-  await writeWebuiSettings({ resourceDefaults: { tools: { enabledTools } } });
-  return globalResourcePayload("tools", runtime.tools || [], enabledTools);
+  const settings = await updateWebuiSettings((current) => ({
+    resourceDefaults: {
+      tools: {
+        enabledTools: preserveUnavailableResourceNames(current.resourceDefaults?.tools?.enabledTools, (runtime.tools || []).map((tool) => tool.name), selectedTools),
+      },
+    },
+  }));
+  const refreshed = await recomputeResourceRuntime(tab);
+  return globalResourcePayload("tools", refreshed?.tools?.tools || runtime.tools || [], settings.resourceDefaults.tools.enabledTools);
 }
 
-async function getSkillConfigData(tab, requestedScope = "session") {
+async function getSkillConfigData(tab, requestedScope = "session", searchParams) {
   const scope = requireResourceScope(requestedScope);
   const runtime = await getSkillConfigDataFromRuntime(tab);
   if (scope === "session") return { ...runtime, scope };
+  if (scope === "model") {
+    const models = await availableGitWorkflowModels(tab);
+    const identity = requireResourceModelIdentity({ provider: searchParams?.get("provider"), modelId: searchParams?.get("modelId") }, models);
+    return modelResourcePayload(tab, "skills", runtime.skills || [], identity, models);
+  }
   const defaults = (await readWebuiSettings()).resourceDefaults.skills.enabledSkills;
   return globalResourcePayload("skills", runtime.skills || [], defaults);
 }
@@ -12936,20 +13027,33 @@ async function setSkillConfigData(tab, body) {
   const scope = requireResourceScope(body?.scope);
   if (scope === "session") {
     return {
-      ...(await sendWebuiHelperCommand(tab, "skills-set", {
-        enabledSkills: Array.isArray(body.enabledSkills) ? body.enabledSkills : undefined,
-        disabledSkills: Array.isArray(body.disabledSkills) ? body.disabledSkills : undefined,
-      })),
+      ...(await sendWebuiHelperCommand(tab, "skills-set", body?.inherit === true
+        ? { mode: "inherit" }
+        : {
+            enabledSkills: Array.isArray(body.enabledSkills) ? body.enabledSkills : undefined,
+            disabledSkills: Array.isArray(body.disabledSkills) ? body.disabledSkills : undefined,
+          })),
       scope,
     };
   }
 
   const runtime = await getSkillConfigDataFromRuntime(tab);
-  const currentSettings = await readWebuiSettings();
+  if (scope === "model") return setModelResourceProfile(tab, "skills", runtime.skills || [], body);
+  if (body?.inherit === true) {
+    await updateWebuiSettings(() => ({ resourceDefaults: { skills: { enabledSkills: null } } }));
+    const refreshed = await recomputeResourceRuntime(tab);
+    return globalResourcePayload("skills", refreshed?.skills?.skills || runtime.skills || [], null);
+  }
   const selectedSkills = selectedResourceNames(body, "enabledSkills", "disabledSkills", runtime.skills, "Skill");
-  const enabledSkills = preserveUnavailableGlobalNames(selectedSkills, runtime.skills, currentSettings.resourceDefaults.skills.enabledSkills);
-  await writeWebuiSettings({ resourceDefaults: { skills: { enabledSkills } } });
-  return globalResourcePayload("skills", runtime.skills || [], enabledSkills);
+  const settings = await updateWebuiSettings((current) => ({
+    resourceDefaults: {
+      skills: {
+        enabledSkills: preserveUnavailableResourceNames(current.resourceDefaults?.skills?.enabledSkills, (runtime.skills || []).map((skill) => skill.name), selectedSkills),
+      },
+    },
+  }));
+  const refreshed = await recomputeResourceRuntime(tab);
+  return globalResourcePayload("skills", refreshed?.skills?.skills || runtime.skills || [], settings.resourceDefaults.skills.enabledSkills);
 }
 
 function settingsManagerForTab(tab) {
@@ -16653,7 +16757,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/tools" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await getToolConfigData(tab, url.searchParams.get("scope")) });
+      sendJson(res, 200, { ok: true, data: await getToolConfigData(tab, url.searchParams.get("scope"), url.searchParams) });
       return;
     }
 
@@ -16667,7 +16771,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/skills" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await getSkillConfigData(tab, url.searchParams.get("scope")) });
+      sendJson(res, 200, { ok: true, data: await getSkillConfigData(tab, url.searchParams.get("scope"), url.searchParams) });
       return;
     }
 

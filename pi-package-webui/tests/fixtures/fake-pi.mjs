@@ -696,7 +696,8 @@ function handleWebuiHelperPrompt(command, base) {
       respondHelper({ requestId, ok: true, data: { tools: fakeTools.map((tool) => ({ ...tool, enabled: enabledToolNames.has(tool.name) })) } });
       return true;
     case "tools-set": {
-      if (Array.isArray(request.payload?.enabledTools)) enabledToolNames = new Set(request.payload.enabledTools.map(String));
+      if (request.payload?.mode === "inherit") enabledToolNames = new Set(fakeTools.map((tool) => tool.name));
+      else if (Array.isArray(request.payload?.enabledTools)) enabledToolNames = new Set(request.payload.enabledTools.map(String));
       else if (Array.isArray(request.payload?.disabledTools)) {
         const disabled = new Set(request.payload.disabledTools.map(String));
         enabledToolNames = new Set(fakeTools.map((tool) => tool.name).filter((name) => !disabled.has(name)));
@@ -707,8 +708,15 @@ function handleWebuiHelperPrompt(command, base) {
     case "skills-state":
       respondHelper({ requestId, ok: true, data: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) } });
       return true;
+    case "resources-recompute":
+      respondHelper({ requestId, ok: true, data: {
+        tools: { tools: fakeTools.map((tool) => ({ ...tool, enabled: enabledToolNames.has(tool.name) })) },
+        skills: { skills: fakeSkills.map((skill) => ({ ...skill, enabled: enabledSkillNames.has(skill.name) })) },
+      } });
+      return true;
     case "skills-set": {
-      if (Array.isArray(request.payload?.enabledSkills)) enabledSkillNames = new Set(request.payload.enabledSkills.map(String));
+      if (request.payload?.mode === "inherit") enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name));
+      else if (Array.isArray(request.payload?.enabledSkills)) enabledSkillNames = new Set(request.payload.enabledSkills.map(String));
       else if (Array.isArray(request.payload?.disabledSkills)) {
         const disabled = new Set(request.payload.disabledSkills.map(String));
         enabledSkillNames = new Set(fakeSkills.map((skill) => skill.name).filter((name) => !disabled.has(name)));

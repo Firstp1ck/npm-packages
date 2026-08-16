@@ -180,7 +180,11 @@ The optional `@firstpick/pi-extension-codex-fast-mode` companion adds a **Normal
 
 ## Tool and skill scopes
 
-The browser-native tool and skill selectors offer **Session only** and **Global default** scopes. Session choices apply to the current branch and take precedence when it is resumed. Global defaults are inherited by future sessions and do not rewrite branches that already have a session choice.
+The browser-native tool and skill selectors, and the TUI `/tools` and `/skills` commands, offer **Session only**, **Global default**, and **Model default** scopes. Tools and skills resolve independently: a session choice wins over an exact case-sensitive provider/model profile, which wins over the global default and then Pi's runtime default.
+
+After Pi successfully selects a model, its exact tool and skill profiles apply immediately for resource types that are not pinned by the current session; no reload or selector reopening is needed. A model with no profile falls back through the global and runtime defaults. Choosing a model inside a profile editor selects the profile to edit—it does not switch the active Pi model.
+
+Use **Use inherited defaults** to remove the selected session, global, or model override. Session choices are stored on the active branch and remain effective when that branch is resumed. Global and exact-model saves do not rewrite an explicit session choice. Empty selections intentionally enable no resources; inherited selections are distinct from empty selections. Profiles can reference only tools and skills already discovered by Pi, and unavailable saved names are retained for later sessions.
 
 Tracked skill files appear as selectable tags above the composer. The strip keeps as many tags visible as fit; **+X** opens a bounded list above the strip containing only the hidden tags. Select an item to open the same skill editor. The list closes after selection, outside interaction, `Escape`, tab/session rerendering, or when resizing makes every tag visible.
 

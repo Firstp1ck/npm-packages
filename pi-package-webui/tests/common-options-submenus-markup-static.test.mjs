@@ -21,6 +21,8 @@ const actionContract = {
   optionsExportButton: { label: "Export", command: "/export" },
   optionsSummarySetupButton: { label: "Session Summary Setup", command: "/summary-setup", hidden: true },
   optionsGitWorkflowSetupButton: { label: "Guided Git Setup", command: "/git-workflow-setup" },
+  optionsToolsSetupButton: { label: "Tools Setup", command: "/tools", hidden: true },
+  optionsSkillsSetupButton: { label: "Skills Setup", command: "/skills", hidden: true },
   optionsWorkflowSetupButton: { label: "Workflow Permission Setup", command: "/workflow-setup", hidden: true },
   optionsSafetyGuardSetupButton: { label: "Safety Guard Setup", command: "/safety-guard-setup", hidden: true },
   optionsStatsButton: { label: "Stats Dashboard", command: "/stats-webui", hidden: true },
@@ -42,7 +44,7 @@ const groups = [
     label: "Feature Setup",
     triggerId: "optionsFeatureSetupSubmenuButton",
     panelId: "optionsFeatureSetupSubmenu",
-    actions: ["optionsSummarySetupButton", "optionsGitWorkflowSetupButton"],
+    actions: ["optionsSummarySetupButton", "optionsGitWorkflowSetupButton", "optionsToolsSetupButton", "optionsSkillsSetupButton"],
   },
   {
     key: "safety-permissions",

@@ -60,7 +60,7 @@ try {
     uiLayout: completeV1Layout,
   }, null, 2)}\n`, "utf8");
   const migrated = await readWebuiSettings(settingsFile);
-  assert.equal(migrated.version, 7);
+  assert.equal(migrated.version, 8);
   assert.equal(migrated.remoteAuthEnabled, true, "legacy Remote PIN state should survive schema migration");
   assert.equal(migrated.outputModeDefault, "normal", "legacy settings should default browser output to normal");
   assert.equal(isGitWorkflowSetupComplete(migrated.gitWorkflow), false);
@@ -127,7 +127,7 @@ try {
   assert.equal(partiallyUpdated.reviewProcessEnabled, false, "partial updates should preserve the review-process choice");
 
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persisted.version, 7);
+  assert.equal(persisted.version, 8);
   assert.equal(persisted.uiLayout.version, 2, "the first unrelated locked write must persist the migrated v2 envelope");
   assert.deepEqual(persisted.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
   assert.deepEqual(persisted.uiLayout.composerActions, completeV1Layout.composerActions, "unchanged v1 composer fields must survive persistence");

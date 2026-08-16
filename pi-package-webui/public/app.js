@@ -200,6 +200,8 @@ const elements = {
   optionsWorkflowSetupButton: $("#optionsWorkflowSetupButton"),
   optionsSafetyGuardSetupButton: $("#optionsSafetyGuardSetupButton"),
   optionsGitWorkflowSetupButton: $("#optionsGitWorkflowSetupButton"),
+  optionsToolsSetupButton: $("#optionsToolsSetupButton"),
+  optionsSkillsSetupButton: $("#optionsSkillsSetupButton"),
   optionsExportButton: $("#optionsExportButton"),
   optionsForkButton: $("#optionsForkButton"),
   optionsTreeButton: $("#optionsTreeButton"),
@@ -39085,6 +39087,8 @@ function renderOptionalFeatureControls() {
   const hasNativeCommandMenu = isOptionalFeatureEnabled("tuiSkillsCommand") || isOptionalFeatureEnabled("tuiToolsCommand");
   elements.nativeSkillsButton.hidden = !isOptionalFeatureEnabled("tuiSkillsCommand");
   elements.nativeToolsButton.hidden = !isOptionalFeatureEnabled("tuiToolsCommand");
+  if (elements.optionsSkillsSetupButton) elements.optionsSkillsSetupButton.hidden = !isOptionalFeatureEnabled("tuiSkillsCommand");
+  if (elements.optionsToolsSetupButton) elements.optionsToolsSetupButton.hidden = !isOptionalFeatureEnabled("tuiToolsCommand");
   const nativeCommandMenuContainer = elements.nativeCommandMenuButton.parentElement;
   if (nativeCommandMenuContainer) nativeCommandMenuContainer.hidden = !hasNativeCommandMenu;
   elements.nativeCommandMenuButton.hidden = !hasNativeCommandMenu;
@@ -39900,6 +39904,7 @@ function renderNativeSelectorItems(items, { emptyText = "No choices.", onSelect,
     const button = make("button", `native-selector-item${item.id === activeId ? " active" : ""}`);
     button.type = "button";
     button.disabled = item.disabled === true;
+    if (typeof item.pressed === "boolean") button.setAttribute("aria-pressed", String(item.pressed));
     button.addEventListener("click", () => onSelect?.(item));
     const title = make("span", "native-selector-title");
     if (numbered) title.append(make("span", "native-selector-index", `${index + 1}.`));
@@ -41618,6 +41623,7 @@ function renderNativeResourceToggles(resources, { savingName, filter = "all", on
       meta: nativeResourceSourceLabel(resource),
       badge: resource.enabled === false ? "disabled" : "enabled",
       badgeClass: resource.enabled === false ? "disabled native-selector-badge-disabled" : "enabled native-selector-badge-enabled",
+      pressed: resource.enabled !== false,
       tags: resourceTag ? [resourceTag] : [],
       disabled: Boolean(savingName),
       resource,
@@ -41631,7 +41637,7 @@ function renderNativeResourceToggles(resources, { savingName, filter = "all", on
   elements.nativeCommandBody.prepend(make("div", "native-resource-summary muted", `${counts.total} total · ${counts.enabled} enabled · ${counts.disabled} disabled · showing ${filterLabel}`));
 }
 
-function renderNativeResourceFilterActions(filter, setFilter, render) {
+function renderNativeResourceFilterActions(filter, setFilter, render, extraActions = []) {
   elements.nativeCommandActions.replaceChildren();
   for (const option of [
     { value: "all", label: "All" },
@@ -41643,44 +41649,128 @@ function renderNativeResourceFilterActions(filter, setFilter, render) {
       render();
     }, filter === option.value ? "primary" : undefined);
   }
+  for (const action of extraActions) {
+    const button = addNativeCommandAction(action.label, action.handler);
+    button.disabled = !!action.disabled;
+  }
   addNativeCommandAction("Cancel", closeNativeCommandDialog);
 }
 
 function nativeResourceScopeControl(scope, { configured = false, saving = false, onChange } = {}) {
-  const global = scope === "global";
-  const hint = global
-    ? configured
+  const hints = {
+    session: "Applies immediately and persists only on the current session branch.",
+    global: configured
       ? "Saved as the default for future sessions. Existing session-specific choices are unchanged."
-      : "No global default is saved yet. The current session is shown as the starting point."
-    : "Applies immediately and persists only on the current session branch.";
+      : "No global default is saved yet. The current session is shown as the starting point.",
+    model: configured
+      ? "Saved for this exact model. Sessions without their own choice apply it whenever this model is selected."
+      : "No default is saved for this exact model yet. The inherited selection is shown as the starting point.",
+  };
+  const badges = {
+    session: { label: "This session", tone: "now" },
+    global: { label: "Global", tone: "startup" },
+    model: { label: "Exact model", tone: "startup" },
+  };
   const control = nativeSettingSelect("Apply changes to", scope, [
     { value: "session", label: "Session only" },
     { value: "global", label: "Global default" },
-  ], hint, global ? { label: "Global", tone: "startup" } : { label: "This session", tone: "now" });
+    { value: "model", label: "Model default" },
+  ], hints[scope] || hints.session, badges[scope] || badges.session);
   control.field.classList.add("native-resource-scope");
   control.select.disabled = !!saving;
   control.select.addEventListener("change", () => onChange?.(control.select.value));
   return control.field;
 }
 
+function nativeResourceModelControl(models, modelIndex, { saving = false, onChange } = {}) {
+  const options = models.map((model, index) => ({
+    value: String(index),
+    label: `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` — ${model.name}` : ""}`,
+  }));
+  const control = nativeSettingSelect("Model default for", String(modelIndex), options, "Chooses which exact model profile to edit. The active session model is not changed.", { label: "Exact model", tone: "startup" });
+  control.field.classList.add("native-resource-model");
+  control.select.disabled = !!saving;
+  control.select.addEventListener("change", () => onChange?.(Number(control.select.value)));
+  return control.field;
+}
+
+async function loadNativeResourceModels() {
+  const response = await nativeCommandApi("/api/models");
+  return (Array.isArray(response.data?.models) ? response.data.models : [])
+    .filter((model) => model?.provider && model?.id)
+    .sort((left, right) => `${left.provider}/${left.id}`.localeCompare(`${right.provider}/${right.id}`));
+}
+
 async function openNativeToolsSelector() {
-  openNativeCommandDialog({ title: "Tools Setup", message: "Enable or disable tool access for this session or save a default for future sessions.", searchPlaceholder: "Filter tools…" });
+  openNativeCommandDialog({ title: "Tools Setup", message: "Enable or disable tool access for this session, or save a global or exact-model default.", searchPlaceholder: "Filter tools…" });
   let tools = [];
   let savingName = "";
   let filter = "all";
   let scope = "session";
   let configured = false;
+  let models = [];
+  let modelIndex = 0;
+
+  const modelQuery = () => scope === "model" && models[modelIndex]
+    ? `&provider=${encodeURIComponent(models[modelIndex].provider)}&modelId=${encodeURIComponent(models[modelIndex].id)}`
+    : "";
 
   const load = async () => {
-    renderNativeLoading(`Loading ${scope === "global" ? "global tool defaults" : "session tools"}…`);
+    renderNativeLoading(`Loading ${scope === "global" ? "global tool defaults" : scope === "model" ? "model tool defaults" : "session tools"}…`);
     try {
-      const response = await nativeCommandApi(`/api/tools?scope=${encodeURIComponent(scope)}`);
+      const response = await nativeCommandApi(`/api/tools?scope=${encodeURIComponent(scope)}${modelQuery()}`);
       tools = Array.isArray(response.data?.tools) ? response.data.tools : [];
       configured = response.data?.configured === true;
+      if (scope === "model" && Array.isArray(response.data?.models)) models = response.data.models;
       render();
     } catch (error) {
       setNativeCommandError(error.message || String(error));
       elements.nativeCommandBody.replaceChildren();
+    }
+  };
+
+  const applyModelScope = async () => {
+    if (!models.length) {
+      try {
+        models = await loadNativeResourceModels();
+      } catch (error) {
+        setNativeCommandError(error.message || String(error));
+        return false;
+      }
+    }
+    if (!models.length) {
+      setNativeCommandError("No authenticated Pi models are available for a model default.");
+      return false;
+    }
+    modelIndex = Math.min(Math.max(modelIndex, 0), models.length - 1);
+    return true;
+  };
+
+  const inheritSelection = async () => {
+    if (savingName) return;
+    savingName = "inherit";
+    setNativeCommandError("");
+    render();
+    try {
+      const body = { scope, inherit: true };
+      if (scope === "model" && models[modelIndex]) {
+        body.provider = models[modelIndex].provider;
+        body.modelId = models[modelIndex].id;
+      }
+      const response = await nativeCommandApi("/api/tools", { method: "POST", body });
+      tools = Array.isArray(response.data?.tools) ? response.data.tools : [];
+      configured = response.data?.configured === true;
+      const content = scope === "model"
+        ? `Tool default for ${body.provider}/${body.modelId} cleared. It now inherits the global or Pi runtime default.`
+        : scope === "global"
+          ? "Global tool default cleared. Unpinned active tools now follow the Pi runtime default; pinned tools are unchanged."
+          : "Tools for this session now follow the inherited model, global, or Pi runtime defaults.";
+      addTransientMessage({ role: "native", title: "/tools", content, level: "info" });
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+    } finally {
+      savingName = "";
+      render();
     }
   };
 
@@ -41698,13 +41788,20 @@ async function openNativeToolsSelector() {
         setNativeCommandError("");
         render();
         try {
-          const response = await nativeCommandApi("/api/tools", { method: "POST", body: { enabledTools: [...enabledTools], scope } });
+          const body = { enabledTools: [...enabledTools], scope };
+          if (scope === "model" && models[modelIndex]) {
+            body.provider = models[modelIndex].provider;
+            body.modelId = models[modelIndex].id;
+          }
+          const response = await nativeCommandApi("/api/tools", { method: "POST", body });
           tools = Array.isArray(response.data?.tools) ? response.data.tools : [];
           configured = response.data?.configured === true;
           const enabled = enabledTools.has(tool.name);
-          const content = scope === "global"
-            ? `Global default for tool ${tool.name} ${enabled ? "enabled" : "disabled"}. Future sessions inherit it; this session is unchanged.`
-            : `Tool ${tool.name} ${enabled ? "enabled" : "disabled"} for this session.`;
+          const content = scope === "model"
+            ? `Model default for tool ${tool.name} ${enabled ? "enabled" : "disabled"} (${body.provider}/${body.modelId}). Unpinned active tools update immediately when this model is active; pinned tools are unchanged.`
+            : scope === "global"
+              ? `Global default for tool ${tool.name} ${enabled ? "enabled" : "disabled"}. Unpinned active tools update immediately; pinned tools are unchanged.`
+              : `Tool ${tool.name} ${enabled ? "enabled" : "disabled"} for this session.`;
           addTransientMessage({ role: "native", title: "/tools", content, level: "info" });
         } catch (error) {
           setNativeCommandError(error.message || String(error));
@@ -41714,16 +41811,32 @@ async function openNativeToolsSelector() {
         }
       },
     });
+    if (scope === "model" && models.length) {
+      elements.nativeCommandBody.prepend(nativeResourceModelControl(models, modelIndex, {
+        saving: !!savingName,
+        onChange: async (nextIndex) => {
+          if (nextIndex === modelIndex || savingName || !models[nextIndex]) return;
+          modelIndex = nextIndex;
+          await load();
+        },
+      }));
+    }
     elements.nativeCommandBody.prepend(nativeResourceScopeControl(scope, {
       configured,
       saving: !!savingName,
       onChange: async (nextScope) => {
         if (nextScope === scope || savingName) return;
+        if (nextScope === "model" && !(await applyModelScope())) {
+          render();
+          return;
+        }
         scope = nextScope;
         await load();
       },
     }));
-    renderNativeResourceFilterActions(filter, (value) => { filter = value; }, render);
+    renderNativeResourceFilterActions(filter, (value) => { filter = value; }, render, [
+      { label: "Use inherited defaults", handler: inheritSelection, disabled: !!savingName },
+    ]);
   };
 
   elements.nativeCommandSearch.oninput = render;
@@ -41731,23 +41844,76 @@ async function openNativeToolsSelector() {
 }
 
 async function openNativeSkillsSelector() {
-  openNativeCommandDialog({ title: "Skills Setup", message: "Enable or disable skill invocation for this session or save a default for future sessions.", searchPlaceholder: "Filter skills…" });
+  openNativeCommandDialog({ title: "Skills Setup", message: "Enable or disable skill invocation for this session, or save a global or exact-model default.", searchPlaceholder: "Filter skills…" });
   let skills = [];
   let savingName = "";
   let filter = "all";
   let scope = "session";
   let configured = false;
+  let models = [];
+  let modelIndex = 0;
+
+  const modelQuery = () => scope === "model" && models[modelIndex]
+    ? `&provider=${encodeURIComponent(models[modelIndex].provider)}&modelId=${encodeURIComponent(models[modelIndex].id)}`
+    : "";
 
   const load = async () => {
-    renderNativeLoading(`Loading ${scope === "global" ? "global skill defaults" : "session skills"}…`);
+    renderNativeLoading(`Loading ${scope === "global" ? "global skill defaults" : scope === "model" ? "model skill defaults" : "session skills"}…`);
     try {
-      const response = await nativeCommandApi(`/api/skills?scope=${encodeURIComponent(scope)}`);
+      const response = await nativeCommandApi(`/api/skills?scope=${encodeURIComponent(scope)}${modelQuery()}`);
       skills = Array.isArray(response.data?.skills) ? response.data.skills : [];
       configured = response.data?.configured === true;
+      if (scope === "model" && Array.isArray(response.data?.models)) models = response.data.models;
       render();
     } catch (error) {
       setNativeCommandError(error.message || String(error));
       elements.nativeCommandBody.replaceChildren();
+    }
+  };
+
+  const applyModelScope = async () => {
+    if (!models.length) {
+      try {
+        models = await loadNativeResourceModels();
+      } catch (error) {
+        setNativeCommandError(error.message || String(error));
+        return false;
+      }
+    }
+    if (!models.length) {
+      setNativeCommandError("No authenticated Pi models are available for a model default.");
+      return false;
+    }
+    modelIndex = Math.min(Math.max(modelIndex, 0), models.length - 1);
+    return true;
+  };
+
+  const inheritSelection = async () => {
+    if (savingName) return;
+    savingName = "inherit";
+    setNativeCommandError("");
+    render();
+    try {
+      const body = { scope, inherit: true };
+      if (scope === "model" && models[modelIndex]) {
+        body.provider = models[modelIndex].provider;
+        body.modelId = models[modelIndex].id;
+      }
+      const response = await nativeCommandApi("/api/skills", { method: "POST", body });
+      skills = Array.isArray(response.data?.skills) ? response.data.skills : [];
+      configured = response.data?.configured === true;
+      const content = scope === "model"
+        ? `Skill default for ${body.provider}/${body.modelId} cleared. It now inherits the global or Pi runtime default.`
+        : scope === "global"
+          ? "Global skill default cleared. Unpinned active skills now follow the Pi runtime default; pinned skills are unchanged."
+          : "Skills for this session now follow the inherited model, global, or Pi runtime defaults.";
+      addTransientMessage({ role: "native", title: "/skills", content, level: "info" });
+      if (scope === "session") refreshCommands(activeTabContext()).catch((error) => addEvent(error.message || String(error), "error"));
+    } catch (error) {
+      setNativeCommandError(error.message || String(error));
+    } finally {
+      savingName = "";
+      render();
     }
   };
 
@@ -41764,13 +41930,20 @@ async function openNativeSkillsSelector() {
         setNativeCommandError("");
         render();
         try {
-          const response = await nativeCommandApi("/api/skills", { method: "POST", body: { enabledSkills: [...enabledSkills], scope } });
+          const body = { enabledSkills: [...enabledSkills], scope };
+          if (scope === "model" && models[modelIndex]) {
+            body.provider = models[modelIndex].provider;
+            body.modelId = models[modelIndex].id;
+          }
+          const response = await nativeCommandApi("/api/skills", { method: "POST", body });
           skills = Array.isArray(response.data?.skills) ? response.data.skills : [];
           configured = response.data?.configured === true;
           const enabled = enabledSkills.has(skill.name);
-          const content = scope === "global"
-            ? `Global default for skill ${skill.name} ${enabled ? "enabled" : "disabled"}. Future sessions inherit it; this session is unchanged.`
-            : `Skill ${skill.name} ${enabled ? "enabled" : "disabled"} for this session.`;
+          const content = scope === "model"
+            ? `Model default for skill ${skill.name} ${enabled ? "enabled" : "disabled"} (${body.provider}/${body.modelId}). Unpinned active skills update immediately when this model is active; pinned skills are unchanged.`
+            : scope === "global"
+              ? `Global default for skill ${skill.name} ${enabled ? "enabled" : "disabled"}. Unpinned active skills update immediately; pinned skills are unchanged.`
+              : `Skill ${skill.name} ${enabled ? "enabled" : "disabled"} for this session.`;
           addTransientMessage({ role: "native", title: "/skills", content, level: "info" });
           if (scope === "session") refreshCommands(activeTabContext()).catch((error) => addEvent(error.message || String(error), "error"));
         } catch (error) {
@@ -41781,16 +41954,32 @@ async function openNativeSkillsSelector() {
         }
       },
     });
+    if (scope === "model" && models.length) {
+      elements.nativeCommandBody.prepend(nativeResourceModelControl(models, modelIndex, {
+        saving: !!savingName,
+        onChange: async (nextIndex) => {
+          if (nextIndex === modelIndex || savingName || !models[nextIndex]) return;
+          modelIndex = nextIndex;
+          await load();
+        },
+      }));
+    }
     elements.nativeCommandBody.prepend(nativeResourceScopeControl(scope, {
       configured,
       saving: !!savingName,
       onChange: async (nextScope) => {
         if (nextScope === scope || savingName) return;
+        if (nextScope === "model" && !(await applyModelScope())) {
+          render();
+          return;
+        }
         scope = nextScope;
         await load();
       },
     }));
-    renderNativeResourceFilterActions(filter, (value) => { filter = value; }, render);
+    renderNativeResourceFilterActions(filter, (value) => { filter = value; }, render, [
+      { label: "Use inherited defaults", handler: inheritSelection, disabled: !!savingName },
+    ]);
   };
 
   elements.nativeCommandSearch.oninput = render;
@@ -46177,6 +46366,8 @@ elements.optionsSummarySetupButton?.addEventListener("click", () => runNativeCom
 elements.optionsWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/workflow-setup"));
 elements.optionsSafetyGuardSetupButton?.addEventListener("click", () => runNativeCommandMenu("/safety-guard-setup"));
 elements.optionsGitWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/git-workflow-setup"));
+elements.optionsToolsSetupButton?.addEventListener("click", () => runNativeCommandMenu("/tools"));
+elements.optionsSkillsSetupButton?.addEventListener("click", () => runNativeCommandMenu("/skills"));
 elements.optionsExportButton.addEventListener("click", () => runNativeCommandMenu("/export"));
 elements.optionsForkButton.addEventListener("click", () => runNativeCommandMenu("/fork"));
 elements.optionsTreeButton.addEventListener("click", () => runNativeCommandMenu("/tree"));

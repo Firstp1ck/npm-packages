@@ -36,7 +36,7 @@ try {
   assert.equal(await migrateLegacyWebuiSettings(migratedFile, legacyFile), true);
   assert.equal(await migrateLegacyWebuiSettings(migratedFile, legacyFile), false, "an existing new target must always win");
   const migrated = JSON.parse(await readFile(migratedFile, "utf8"));
-  assert.equal(migrated.version, 7);
+  assert.equal(migrated.version, 8);
   assert.equal(migrated.remoteAuthEnabled, true);
   assert.deepEqual(migrated.retained, { value: 7 }, "migration must preserve unrelated top-level settings");
   assert.equal((await readFile(legacyFile, "utf8")).includes('"retained"'), true, "migration must leave the legacy file untouched");

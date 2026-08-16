@@ -9,6 +9,10 @@ import {
   normalizeProviderSnapshot,
 } from "./lib/agent-run-protocol.mjs";
 import { readWebuiSettings } from "./lib/git-workflow-preferences.mjs";
+import {
+  branchResourceDirective,
+  resolveResourceSelection,
+} from "./lib/resource-selection.mjs";
 import { mutatePiRuntimeFollowUpQueue } from "./lib/queue-mutation.mjs";
 import {
   formatSubagentLaunchSlotGuidance,
@@ -889,9 +893,16 @@ function parseSubagentStatusText(text, previousRuns = new Map()) {
 }
 
 export default function webuiRpcHelper(pi) {
+  let runtimeToolBaseline;
   let enabledTools = new Set();
   let disabledSkills = new Set();
   let inheritedEnabledSkills = null;
+  let toolsPinned = false;
+  let skillsPinned = false;
+  let toolSelectionSource = "runtime";
+  let skillSelectionSource = "runtime";
+  let resourceGeneration = 0;
+  let resourceRpcActive = false;
   let sessionSamplingParams = {};
   let subagentLaunchSlotGuidance = "";
   let subagentContext = null;
@@ -1838,6 +1849,10 @@ export default function webuiRpcHelper(pi) {
     }),
   ].filter((unsubscribe) => typeof unsubscribe === "function");
 
+  function runtimeTools() {
+    return runtimeToolBaseline ??= normalizeNameList(pi.getActiveTools());
+  }
+
   function allToolNames() {
     return pi.getAllTools().map((tool) => tool.name);
   }
@@ -1909,12 +1924,7 @@ export default function webuiRpcHelper(pi) {
   }
 
   async function readGlobalResourceDefaults() {
-    try {
-      return (await readWebuiSettings()).resourceDefaults;
-    } catch (error) {
-      console.warn(`Web UI resource defaults could not be read: ${error instanceof Error ? error.message : String(error)}`);
-      return { tools: { enabledTools: null }, skills: { enabledSkills: null } };
-    }
+    return (await readWebuiSettings()).resourceDefaults;
   }
 
   async function loadSubagentLaunchSlotGuidance(ctx) {
@@ -1929,8 +1939,10 @@ export default function webuiRpcHelper(pi) {
     }
   }
 
-  function persistToolsState() {
-    pi.appendEntry(TOOLS_CONFIG_TYPE, { enabledTools: [...enabledTools] });
+  function persistToolsState(mode = "explicit") {
+    pi.appendEntry(TOOLS_CONFIG_TYPE, mode === "inherit"
+      ? { version: 2, mode: "inherit" }
+      : { version: 2, mode: "explicit", enabledTools: [...enabledTools] });
   }
 
   function applyTools() {
@@ -1938,23 +1950,24 @@ export default function webuiRpcHelper(pi) {
     pi.setActiveTools([...enabledTools].filter((name) => existing.has(name)));
   }
 
-  function restoreToolsFromBranch(ctx, globalDefaults) {
-    const saved = lastBranchConfig(ctx, TOOLS_CONFIG_TYPE)?.enabledTools;
-    const inherited = globalDefaults?.tools?.enabledTools;
-    const selected = Array.isArray(saved) ? saved : inherited;
-    if (Array.isArray(selected)) {
-      const existing = new Set(allToolNames());
-      enabledTools = new Set(normalizeNameList(selected).filter((name) => existing.has(name)));
-      applyTools();
-      return;
-    }
-    enabledTools = new Set(pi.getActiveTools());
+  function restoreToolsFromBranch(ctx, resourceDefaults, model = ctx.model) {
+    const directive = branchResourceDirective(lastBranchConfig(ctx, TOOLS_CONFIG_TYPE), "tools");
+    toolsPinned = directive.pinned;
+    const baseline = runtimeTools();
+    const resolved = directive.pinned
+      ? { names: directive.names || [], source: "session" }
+      : resolveResourceSelection(resourceDefaults, "tools", model?.provider, model?.id, baseline);
+    enabledTools = new Set(resolved.names || baseline);
+    toolSelectionSource = resolved.source;
+    applyTools();
   }
 
   function toolState() {
     const active = new Set(pi.getActiveTools());
-    enabledTools = new Set([...active]);
     return {
+      pinned: toolsPinned,
+      source: toolSelectionSource,
+      enabledTools: [...enabledTools],
       tools: pi.getAllTools().map((tool) => ({
         name: tool.name,
         description: tool.description || "",
@@ -1964,39 +1977,75 @@ export default function webuiRpcHelper(pi) {
     };
   }
 
-  function setToolState(payload) {
+  async function setToolState(ctx, payload) {
+    if (payload?.mode === "inherit") {
+      persistToolsState("inherit");
+      await recomputeResourceState(ctx);
+      return toolState();
+    }
     const existing = new Set(allToolNames());
     if (Array.isArray(payload.enabledTools)) {
-      enabledTools = new Set(normalizeNameList(payload.enabledTools).filter((name) => existing.has(name)));
+      enabledTools = new Set(normalizeNameList(payload.enabledTools));
     } else if (Array.isArray(payload.disabledTools)) {
       const disabled = new Set(normalizeNameList(payload.disabledTools));
       enabledTools = new Set([...existing].filter((name) => !disabled.has(name)));
     } else {
-      throw new Error("Tool update requires enabledTools or disabledTools");
+      throw new Error("Tool update requires enabledTools, disabledTools, or inherit mode");
     }
+    toolsPinned = true;
+    toolSelectionSource = "session";
     applyTools();
     persistToolsState();
     return toolState();
   }
 
-  function persistSkillsState() {
-    pi.appendEntry(SKILLS_CONFIG_TYPE, { disabledSkills: [...disabledSkills] });
+  function persistSkillsState(mode = "explicit") {
+    pi.appendEntry(SKILLS_CONFIG_TYPE, mode === "inherit"
+      ? { version: 2, mode: "inherit" }
+      : { version: 2, mode: "explicit", enabledSkills: [...(inheritedEnabledSkills || [])] });
   }
 
   function isSkillEnabled(name) {
     return inheritedEnabledSkills instanceof Set ? inheritedEnabledSkills.has(name) : !disabledSkills.has(name);
   }
 
-  function restoreSkillsFromBranch(ctx, globalDefaults) {
-    const saved = lastBranchConfig(ctx, SKILLS_CONFIG_TYPE)?.disabledSkills;
-    if (Array.isArray(saved)) {
+  function restoreSkillsFromBranch(ctx, resourceDefaults, model = ctx.model) {
+    const directive = branchResourceDirective(lastBranchConfig(ctx, SKILLS_CONFIG_TYPE), "skills");
+    skillsPinned = directive.pinned;
+    disabledSkills = new Set();
+    if (directive.pinned && directive.legacyDisabledNames !== null) {
       inheritedEnabledSkills = null;
-      disabledSkills = new Set(normalizeNameList(saved));
+      disabledSkills = new Set(directive.legacyDisabledNames);
+      skillSelectionSource = "session";
       return;
     }
-    const inherited = globalDefaults?.skills?.enabledSkills;
-    inheritedEnabledSkills = Array.isArray(inherited) ? new Set(normalizeNameList(inherited)) : null;
-    disabledSkills = new Set();
+    const resolved = directive.pinned
+      ? { names: directive.names || [], source: "session" }
+      : resolveResourceSelection(resourceDefaults, "skills", model?.provider, model?.id, null);
+    inheritedEnabledSkills = resolved.names === null ? null : new Set(resolved.names);
+    skillSelectionSource = resolved.source;
+  }
+
+  function activeModelKey(model) {
+    return model?.provider && model?.id ? `${model.provider}\0${model.id}` : "";
+  }
+
+  async function recomputeResourceState(ctx, requestedModel = ctx.model) {
+    if (ctx?.mode !== "rpc") return false;
+    const generation = ++resourceGeneration;
+    const requestedKey = activeModelKey(requestedModel);
+    let resourceDefaults;
+    try {
+      resourceDefaults = await readGlobalResourceDefaults();
+    } catch (error) {
+      console.warn(`Web UI resource defaults could not be read; retaining the last safe resource state: ${error instanceof Error ? error.message : String(error)}`);
+      ctx.ui?.notify?.("Resource defaults could not be read; tools and skills remain unchanged.", "error");
+      return false;
+    }
+    if (generation !== resourceGeneration || activeModelKey(ctx.model) !== requestedKey) return false;
+    restoreToolsFromBranch(ctx, resourceDefaults, requestedModel);
+    restoreSkillsFromBranch(ctx, resourceDefaults, requestedModel);
+    return true;
   }
 
   function skillsFromContext(ctx) {
@@ -2017,20 +2066,34 @@ export default function webuiRpcHelper(pi) {
       const known = new Set(skillsFromContext(ctx).map((skill) => skill.name));
       disabledSkills = new Set([...disabledSkills].filter((name) => known.has(name)));
     }
-    return { skills: skillsFromContext(ctx) };
+    return {
+      pinned: skillsPinned,
+      source: skillSelectionSource,
+      enabledSkills: inheritedEnabledSkills instanceof Set
+        ? [...inheritedEnabledSkills]
+        : skillsFromContext(ctx).filter((skill) => !disabledSkills.has(skill.name)).map((skill) => skill.name),
+      skills: skillsFromContext(ctx),
+    };
   }
 
-  function setSkillState(ctx, payload) {
-    const allNames = new Set(skillsFromContext(ctx).map((skill) => skill.name));
-    inheritedEnabledSkills = null;
-    if (Array.isArray(payload.enabledSkills)) {
-      const enabled = new Set(normalizeNameList(payload.enabledSkills));
-      disabledSkills = new Set([...allNames].filter((name) => !enabled.has(name)));
-    } else if (Array.isArray(payload.disabledSkills)) {
-      disabledSkills = new Set(normalizeNameList(payload.disabledSkills).filter((name) => allNames.has(name)));
-    } else {
-      throw new Error("Skill update requires enabledSkills or disabledSkills");
+  async function setSkillState(ctx, payload) {
+    if (payload?.mode === "inherit") {
+      persistSkillsState("inherit");
+      await recomputeResourceState(ctx);
+      return skillState(ctx);
     }
+    const allNames = new Set(skillsFromContext(ctx).map((skill) => skill.name));
+    if (Array.isArray(payload.enabledSkills)) {
+      inheritedEnabledSkills = new Set(normalizeNameList(payload.enabledSkills));
+    } else if (Array.isArray(payload.disabledSkills)) {
+      const disabled = new Set(normalizeNameList(payload.disabledSkills));
+      inheritedEnabledSkills = new Set([...allNames].filter((name) => !disabled.has(name)));
+    } else {
+      throw new Error("Skill update requires enabledSkills, disabledSkills, or inherit mode");
+    }
+    disabledSkills = new Set();
+    skillsPinned = true;
+    skillSelectionSource = "session";
     persistSkillsState();
     return skillState(ctx);
   }
@@ -2100,13 +2163,21 @@ export default function webuiRpcHelper(pi) {
   async function executeAction(action, payload, ctx) {
     switch (action) {
       case "tools-state":
+        if (ctx.mode !== "rpc") throw new Error("Web UI resource controls require RPC mode");
         return toolState();
       case "tools-set":
-        return setToolState(payload);
+        if (ctx.mode !== "rpc") throw new Error("Web UI resource controls require RPC mode");
+        return setToolState(ctx, payload);
       case "skills-state":
+        if (ctx.mode !== "rpc") throw new Error("Web UI resource controls require RPC mode");
         return skillState(ctx);
       case "skills-set":
+        if (ctx.mode !== "rpc") throw new Error("Web UI resource controls require RPC mode");
         return setSkillState(ctx, payload);
+      case "resources-recompute":
+        if (ctx.mode !== "rpc") throw new Error("Web UI resource controls require RPC mode");
+        if (!(await recomputeResourceState(ctx))) throw new Error("Resource defaults could not be applied; current resources remain unchanged");
+        return { tools: toolState(), skills: skillState(ctx) };
       case "sampling-state":
         return samplingState(ctx);
       case "sampling-set":
@@ -2146,9 +2217,11 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    const globalDefaults = await readGlobalResourceDefaults();
-    restoreToolsFromBranch(ctx, globalDefaults);
-    restoreSkillsFromBranch(ctx, globalDefaults);
+    resourceRpcActive = ctx.mode === "rpc";
+    if (resourceRpcActive) {
+      if (runtimeToolBaseline === undefined) enabledTools = new Set(runtimeTools());
+      await recomputeResourceState(ctx);
+    }
     restoreSamplingParamsFromBranch(ctx);
     await loadSubagentLaunchSlotGuidance(ctx);
     subagentContext = ctx;
@@ -2168,9 +2241,8 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("session_tree", async (_event, ctx) => {
-    const globalDefaults = await readGlobalResourceDefaults();
-    restoreToolsFromBranch(ctx, globalDefaults);
-    restoreSkillsFromBranch(ctx, globalDefaults);
+    resourceRpcActive = ctx.mode === "rpc";
+    if (resourceRpcActive) await recomputeResourceState(ctx);
     restoreSamplingParamsFromBranch(ctx);
     subagentContext = ctx;
     subagentPollGeneration += 1;
@@ -2186,6 +2258,12 @@ export default function webuiRpcHelper(pi) {
     lastPublishedSubagentAt = 0;
     publishSubagentStatus();
     scheduleSubagentStatusPoll(subagentPollGeneration, 0);
+  });
+
+  pi.on("model_select", async (event, ctx) => {
+    if (ctx.mode !== "rpc") return;
+    resourceRpcActive = true;
+    await recomputeResourceState(ctx, event.model);
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -2289,6 +2367,8 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("session_shutdown", () => {
+    resourceRpcActive = false;
+    resourceGeneration += 1;
     subagentContext = null;
     subagentLaunchSlotGuidance = "";
     subagentPollGeneration += 1;
@@ -2312,6 +2392,7 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("input", async (event, ctx) => {
+    if (!resourceRpcActive || ctx.mode !== "rpc") return { action: "continue" };
     const match = String(event.text || "").trim().match(/^\/skill:([^\s]+)/i);
     if (!match) return { action: "continue" };
     const skillName = match[1];
@@ -2323,11 +2404,11 @@ export default function webuiRpcHelper(pi) {
   pi.on("before_agent_start", async (event) => {
     let nextPrompt = event.systemPrompt;
     let changed = false;
-    if (disabledSkills.size !== 0 || inheritedEnabledSkills !== null) {
+    if (resourceRpcActive && (disabledSkills.size !== 0 || inheritedEnabledSkills !== null)) {
       const allSkills = Array.isArray(event.systemPromptOptions?.skills) ? event.systemPromptOptions.skills : [];
       const disabledNames = allSkills.filter((skill) => !isSkillEnabled(skill.name)).map((skill) => skill.name);
-      if (disabledNames.length) {
-        const filteredSkills = allSkills.filter((skill) => isSkillEnabled(skill.name));
+      const filteredSkills = allSkills.filter((skill) => isSkillEnabled(skill.name) && skill.disableModelInvocation !== true);
+      if (disabledNames.length || filteredSkills.length !== allSkills.length) {
         nextPrompt = replaceAvailableSkillsSection(nextPrompt, filteredSkills);
         for (const name of disabledNames) nextPrompt = nextPrompt.replace(skillBlockPattern(name), "");
         changed = true;

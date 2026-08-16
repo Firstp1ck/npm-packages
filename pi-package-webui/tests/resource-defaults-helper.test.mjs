@@ -27,13 +27,18 @@ const previousSettingsFile = process.env.PI_WEBUI_SETTINGS_FILE;
 process.env.PI_WEBUI_SETTINGS_FILE = settingsFile;
 
 try {
-  await writeFile(settingsFile, `${JSON.stringify({
-    version: 3,
+  const settingsPayload = {
+    version: 8,
     resourceDefaults: {
       tools: { enabledTools: ["read", "write"] },
       skills: { enabledSkills: ["skill-a", "skill-c"] },
+      modelProfiles: [
+        { provider: "provider", modelId: "model-a", tools: { enabledTools: ["bash"] }, skills: { enabledSkills: ["skill-b"] } },
+        { provider: "provider", modelId: "model-b", tools: { enabledTools: ["write"] }, skills: { enabledSkills: [] } },
+      ],
     },
-  }, null, 2)}\n`, "utf8");
+  };
+  await writeFile(settingsFile, "{ invalid settings\n", "utf8");
 
   const extensionHandlers = new Map();
   const registeredCommands = new Map();
@@ -43,6 +48,7 @@ try {
   let activeTools = ["read", "bash", "write"];
   let branchEntries = [];
   let availableSkills = [];
+  let runtimeReady = false;
 
   const pi = {
     events: bus,
@@ -55,15 +61,22 @@ try {
     getAllTools() {
       return ["read", "bash", "write"].map((name) => ({ name, description: `${name} tool`, sourceInfo: { source: "builtin" } }));
     },
-    getActiveTools() { return [...activeTools]; },
+    getActiveTools() {
+      assert.equal(runtimeReady, true, "extension action methods must not run while the extension factory is loading");
+      return [...activeTools];
+    },
     setActiveTools(names) { activeTools = [...names]; },
-    appendEntry(customType, data) { appendedEntries.push({ customType, data }); },
+    appendEntry(customType, data) {
+      appendedEntries.push({ customType, data });
+      branchEntries.push({ type: "custom", customType, data });
+    },
   };
 
   const ctx = {
     mode: "rpc",
     hasUI: true,
     cwd: root,
+    model: { provider: "provider", id: "unconfigured" },
     sessionManager: {
       getBranch() { return branchEntries; },
     },
@@ -79,6 +92,7 @@ try {
   };
 
   webuiRpcHelper(pi);
+  runtimeReady = true;
   const helperCommand = registeredCommands.get("webui-helper");
   assert.ok(helperCommand?.handler, "resource defaults test requires the hidden helper command");
 
@@ -93,6 +107,11 @@ try {
   }
 
   for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "startup" }, ctx);
+  assert.deepEqual(activeTools, ["read", "bash", "write"], "an initial settings-read failure must leave Pi's runtime tools unchanged");
+  assert.ok(notifications.some((entry) => /tools and skills remain unchanged/i.test(entry.message)), "initial settings failure should emit a bounded warning");
+
+  await writeFile(settingsFile, `${JSON.stringify(settingsPayload, null, 2)}\n`, "utf8");
+  for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "settings-restored" }, ctx);
   availableSkills = ["skill-a", "skill-b", "skill-c"];
   assert.deepEqual(activeTools, ["read", "write"], "a new session should inherit the global tool allowlist");
   assert.deepEqual(
@@ -113,9 +132,44 @@ try {
     "session skill choices should override the global default",
   );
 
+  branchEntries = [];
+  ctx.model = { provider: "provider", id: "model-a" };
+  for (const handler of extensionHandlers.get("model_select") || []) await handler({ model: ctx.model, source: "set" }, ctx);
+  assert.deepEqual(activeTools, ["bash"], "model selection should immediately apply the exact tool profile");
+  assert.deepEqual((await runHelper("skills-state")).enabledSkills, ["skill-b"], "model selection should immediately apply the exact skill profile");
+
+  await writeFile(settingsFile, "{ invalid settings\n", "utf8");
+  ctx.model = { provider: "provider", id: "model-b" };
+  for (const handler of extensionHandlers.get("model_select") || []) await handler({ model: ctx.model, source: "set" }, ctx);
+  assert.deepEqual(activeTools, ["bash"], "a later settings-read failure must retain the last safely applied tools");
+  assert.deepEqual((await runHelper("skills-state")).enabledSkills, ["skill-b"], "a later settings-read failure must retain the last safely applied skills");
+  await writeFile(settingsFile, `${JSON.stringify(settingsPayload, null, 2)}\n`, "utf8");
+  ctx.model = { provider: "provider", id: "model-a" };
+
   await runHelper("tools-set", { enabledTools: ["read"] });
+  ctx.model = { provider: "provider", id: "model-b" };
+  for (const handler of extensionHandlers.get("model_select") || []) await handler({ model: ctx.model, source: "set" }, ctx);
+  assert.deepEqual(activeTools, ["read"], "a session-pinned tool selection should survive model changes");
+  assert.deepEqual((await runHelper("skills-state")).enabledSkills, [], "an unpinned skill selection should follow the new model independently");
+  const blockedSkill = await (extensionHandlers.get("input") || [])[0]({ text: "/skill:skill-a" }, ctx);
+  assert.deepEqual(blockedSkill, { action: "handled" }, "an explicit invocation of a model-disabled skill should be blocked");
+
+  await runHelper("tools-set", { mode: "inherit" });
+  assert.deepEqual(activeTools, ["write"], "unpinning tools should immediately restore the active model profile");
   await runHelper("skills-set", { enabledSkills: ["skill-a", "skill-c"] });
-  assert.deepEqual(appendedEntries.map((entry) => entry.customType), ["webui-tools-config", "webui-skills-config"], "session updates should remain branch-persisted");
+  const filteredPrompt = await (extensionHandlers.get("before_agent_start") || [])[0]({
+    systemPrompt: "The following skills provide guidance.\n<available_skills>\nold\n</available_skills>\n",
+    systemPromptOptions: {
+      skills: [
+        { name: "skill-a", description: "normal", filePath: "/tmp/a/SKILL.md" },
+        { name: "skill-c", description: "user only", filePath: "/tmp/c/SKILL.md", disableModelInvocation: true },
+      ],
+    },
+  }, ctx);
+  assert.doesNotMatch(filteredPrompt.systemPrompt, /skill-c/, "disableModelInvocation skills must not be exposed to automatic model invocation");
+  assert.deepEqual(appendedEntries.map((entry) => entry.customType), ["webui-tools-config", "webui-tools-config", "webui-skills-config"], "session updates and inherit resets should remain branch-persisted");
+  assert.deepEqual(appendedEntries[0].data, { version: 2, mode: "explicit", enabledTools: ["read"] });
+  assert.deepEqual(appendedEntries[1].data, { version: 2, mode: "inherit" });
 
   for (const handler of extensionHandlers.get("session_shutdown") || []) await handler({ reason: "quit" }, ctx);
   console.log("resource-defaults-helper.test.mjs passed");

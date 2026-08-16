@@ -4,6 +4,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { normalizeSubagentLaunchSlots } from "./subagent-launch-slots.mjs";
 import { normalizeUiLayout } from "./ui-layout-settings.mjs";
+import { normalizeResourceDefaults } from "./resource-selection.mjs";
 import { normalizeOutputMode, OUTPUT_MODE_NORMAL } from "./webui-output-mode.mjs";
 
 export const GIT_WORKFLOW_SETUP_VERSION = 1;
@@ -26,7 +27,7 @@ export function supportedGitWorkflowThinkingLevels(model) {
   });
 }
 
-const WEBUI_SETTINGS_VERSION = 7;
+const WEBUI_SETTINGS_VERSION = 8;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
 const WEBUI_SETTINGS_LOCK_TIMEOUT_MS = 2_000;
 const WEBUI_SETTINGS_LOCK_RETRY_MS = 25;
@@ -127,29 +128,7 @@ export function legacyWebuiSettingsFile(env = process.env) {
   return path.join(configRoot, "pi-webui", "settings.json");
 }
 
-function normalizeNameList(value) {
-  if (!Array.isArray(value)) return null;
-  const names = [];
-  const seen = new Set();
-  for (const item of value) {
-    const name = cleanBoundedString(item, 256);
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    names.push(name);
-  }
-  return names;
-}
-
-export function normalizeResourceDefaults(value) {
-  return {
-    tools: {
-      enabledTools: normalizeNameList(value?.tools?.enabledTools),
-    },
-    skills: {
-      enabledSkills: normalizeNameList(value?.skills?.enabledSkills),
-    },
-  };
-}
+export { normalizeResourceDefaults } from "./resource-selection.mjs";
 
 export function normalizeInterfacePreferences(value) {
   const rawSidePanelWidth = value?.sidePanelWidth;
@@ -172,6 +151,10 @@ function normalizedSettingsVersion(value) {
 
 export function normalizeWebuiSettings(value) {
   const source = settingsObject(value);
+  const storedVersion = Number.isInteger(source.version) ? source.version : 0;
+  const resourceDefaultsSource = storedVersion >= 8
+    ? source.resourceDefaults
+    : { ...settingsObject(source.resourceDefaults), modelProfiles: [] };
   const interfacePreferences = normalizeInterfacePreferences(source.interfacePreferences);
   const legacyLayoutSource = source.uiLayout === undefined
     && interfacePreferences.sidePanelWidth !== null
@@ -184,7 +167,7 @@ export function normalizeWebuiSettings(value) {
     remoteAuthEnabled: source.remoteAuthEnabled === true,
     outputModeDefault: normalizeOutputMode(source.outputModeDefault, OUTPUT_MODE_NORMAL),
     gitWorkflow: normalizeGitWorkflowPreferences(source.gitWorkflow),
-    resourceDefaults: normalizeResourceDefaults(source.resourceDefaults),
+    resourceDefaults: normalizeResourceDefaults(resourceDefaultsSource),
     interfacePreferences,
     uiLayout: normalizeUiLayout(legacyLayoutSource, { legacySidePanelWidth: interfacePreferences.sidePanelWidth }),
     subagentLaunchSlots: normalizeSubagentLaunchSlots(source.subagentLaunchSlots),

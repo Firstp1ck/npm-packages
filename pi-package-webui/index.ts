@@ -3,7 +3,7 @@ import path from "node:path";
 import { homedir } from "node:os";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { formatSkillsForPrompt, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { delay, takeValue, tokenizeArgs } from "@firstpick/pi-utils";
 import { detachChildProcess as releaseStartedChild, isProcessRunning, terminateChildProcess as terminateFailedChild } from "@firstpick/pi-utils/process";
 import { fetchJsonWithTimeout as fetchJsonWithTimeoutBase } from "@firstpick/pi-utils/http";
@@ -12,9 +12,19 @@ import { createRestoreFile } from "./lib/update/supervisor.mjs";
 import {
   gitWorkflowPreferencesSummary,
   readGitWorkflowPreferences,
+  readWebuiSettings,
   supportedGitWorkflowThinkingLevels,
+  updateWebuiSettings,
   writeGitWorkflowPreferences,
 } from "./lib/git-workflow-preferences.mjs";
+import {
+  branchResourceDirective,
+  exactModelProfile,
+  normalizeResourceNameList,
+  preserveUnavailableResourceNames,
+  resolveResourceSelection,
+  setExactModelProfile,
+} from "./lib/resource-selection.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = __dirname;
@@ -868,7 +878,262 @@ async function runGitWorkflowSetup(ctx: ExtensionCommandContext): Promise<void> 
   }
 }
 
+function lastResourceBranchConfig(ctx: ExtensionCommandContext, customType: string): any {
+  let found: any;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if ((entry as any)?.type === "custom" && (entry as any).customType === customType) found = (entry as any).data;
+  }
+  return found;
+}
+
+function registerTuiResourceController(pi: ExtensionAPI): void {
+  let runtimeToolBaseline: string[] | undefined;
+  let enabledTools = new Set<string>();
+  let enabledSkills: Set<string> | null = null;
+  let legacyDisabledSkills = new Set<string>();
+  let toolsPinned = false;
+  let skillsPinned = false;
+  let tuiActive = false;
+  let generation = 0;
+
+  const modelKey = (model: any): string => model?.provider && model?.id ? `${model.provider}\0${model.id}` : "";
+  const runtimeTools = (): string[] => runtimeToolBaseline ??= normalizeResourceNameList(pi.getActiveTools()) || [];
+  const toolNames = (): string[] => pi.getAllTools().map((tool: any) => tool.name);
+  const skills = (ctx: ExtensionCommandContext): any[] => {
+    const options = (ctx as any).getSystemPromptOptions?.();
+    return Array.isArray(options?.skills) ? options.skills : [];
+  };
+  const isSkillEnabled = (name: string): boolean => enabledSkills instanceof Set ? enabledSkills.has(name) : !legacyDisabledSkills.has(name);
+
+  function applyResolvedState(ctx: ExtensionCommandContext, defaults: any, model: any): void {
+    const toolDirective = branchResourceDirective(lastResourceBranchConfig(ctx, "webui-tools-config"), "tools");
+    toolsPinned = toolDirective.pinned;
+    const baseline = runtimeTools();
+    const resolvedTools = toolDirective.pinned
+      ? { names: toolDirective.names || [], source: "session" }
+      : resolveResourceSelection(defaults, "tools", model?.provider, model?.id, baseline);
+    enabledTools = new Set(resolvedTools.names || baseline);
+    const existingTools = new Set(toolNames());
+    pi.setActiveTools([...enabledTools].filter((name) => existingTools.has(name)));
+
+    const skillDirective = branchResourceDirective(lastResourceBranchConfig(ctx, "webui-skills-config"), "skills");
+    skillsPinned = skillDirective.pinned;
+    legacyDisabledSkills = new Set();
+    if (skillDirective.pinned && skillDirective.legacyDisabledNames !== null) {
+      enabledSkills = null;
+      legacyDisabledSkills = new Set(skillDirective.legacyDisabledNames);
+    } else {
+      const resolvedSkills = skillDirective.pinned
+        ? { names: skillDirective.names || [], source: "session" }
+        : resolveResourceSelection(defaults, "skills", model?.provider, model?.id, null);
+      enabledSkills = resolvedSkills.names === null ? null : new Set(resolvedSkills.names);
+    }
+  }
+
+  async function recompute(ctx: ExtensionCommandContext, requestedModel: any = ctx.model): Promise<boolean> {
+    if (ctx.mode !== "tui") return false;
+    const requestedKey = modelKey(requestedModel);
+    const currentGeneration = ++generation;
+    let defaults;
+    try {
+      defaults = (await readWebuiSettings()).resourceDefaults;
+    } catch (error) {
+      ctx.ui.notify(`Resource defaults could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return false;
+    }
+    if (currentGeneration !== generation || modelKey(ctx.model) !== requestedKey) return false;
+    applyResolvedState(ctx, defaults, requestedModel);
+    return true;
+  }
+
+  async function chooseResources(ctx: ExtensionCommandContext, title: string, visibleNames: string[], initiallyEnabled: string[]): Promise<string[] | undefined> {
+    const enabled = new Set(initiallyEnabled.filter((name) => visibleNames.includes(name)));
+    while (true) {
+      const actions = [
+        "Save selection",
+        "Enable all",
+        "Enable none",
+        ...visibleNames.map((name) => `${enabled.has(name) ? "[x]" : "[ ]"} ${name}`),
+      ];
+      const selected = await ctx.ui.select(title, actions);
+      if (!selected) return undefined;
+      if (selected === "Save selection") return visibleNames.filter((name) => enabled.has(name));
+      if (selected === "Enable all") {
+        visibleNames.forEach((name) => enabled.add(name));
+        continue;
+      }
+      if (selected === "Enable none") {
+        enabled.clear();
+        continue;
+      }
+      const name = selected.slice(4);
+      if (enabled.has(name)) enabled.delete(name);
+      else enabled.add(name);
+    }
+  }
+
+  function availableModels(ctx: ExtensionCommandContext): any[] {
+    return ctx.modelRegistry.getAvailable()
+      .filter((model: any) => model?.provider && model?.id)
+      .sort((left: any, right: any) => `${left.provider}/${left.id}`.localeCompare(`${right.provider}/${right.id}`));
+  }
+
+  async function runSelector(resourceType: "tools" | "skills", ctx: ExtensionCommandContext): Promise<void> {
+    if (ctx.mode !== "tui") {
+      ctx.ui.notify(`/${resourceType} is available in interactive TUI mode only.`, "warning");
+      return;
+    }
+    const resourceLabel = resourceType === "tools" ? "Tools" : "Skills";
+    const scope = await ctx.ui.select(`${resourceLabel} setup`, ["Session only", "Global default", "Model default"]);
+    if (!scope) return;
+    const settings = await readWebuiSettings();
+    const visibleNames = resourceType === "tools" ? toolNames() : skills(ctx).map((skill: any) => skill.name);
+    const selectionKey = resourceType === "tools" ? "enabledTools" : "enabledSkills";
+    let previousNames: string[] | null = null;
+    let provider = "";
+    let modelId = "";
+
+    if (scope === "Session only") {
+      const action = await ctx.ui.select(`${resourceLabel} for this session`, ["Edit selection", "Use inherited defaults"]);
+      if (!action) return;
+      if (action === "Use inherited defaults") {
+        pi.appendEntry(resourceType === "tools" ? "webui-tools-config" : "webui-skills-config", { version: 2, mode: "inherit" });
+        await recompute(ctx);
+        ctx.ui.notify(`${resourceLabel} now use inherited defaults.`, "info");
+        return;
+      }
+      previousNames = resourceType === "tools"
+        ? [...enabledTools]
+        : enabledSkills instanceof Set ? [...enabledSkills] : visibleNames.filter((name) => !legacyDisabledSkills.has(name));
+    } else if (scope === "Global default") {
+      const action = await ctx.ui.select(`Global ${resourceLabel.toLowerCase()} default`, ["Edit selection", "Use Pi runtime default"]);
+      if (!action) return;
+      if (action === "Use Pi runtime default") {
+        await updateWebuiSettings(() => ({ resourceDefaults: { [resourceType]: { [selectionKey]: null } } }));
+        await recompute(ctx);
+        ctx.ui.notify(`Global ${resourceLabel.toLowerCase()} default now inherits Pi runtime behavior.`, "info");
+        return;
+      }
+      previousNames = settings.resourceDefaults?.[resourceType]?.[selectionKey];
+      if (previousNames === null) previousNames = resolveResourceSelection(settings.resourceDefaults, resourceType, "", "", resourceType === "tools" ? runtimeTools() : null).names;
+    } else {
+      const models = availableModels(ctx);
+      if (!models.length) {
+        ctx.ui.notify("No authenticated Pi models are available.", "warning");
+        return;
+      }
+      const labels = models.map((model: any) => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` — ${model.name}` : ""}`);
+      const selectedLabel = await ctx.ui.select(`Exact model for ${resourceLabel.toLowerCase()}`, labels);
+      if (!selectedLabel) return;
+      const selectedIndex = labels.indexOf(selectedLabel);
+      const model = models[selectedIndex];
+      provider = model.provider;
+      modelId = model.id;
+      const action = await ctx.ui.select(`${resourceLabel} for ${provider}/${modelId}`, ["Edit selection", "Use inherited defaults"]);
+      if (!action) return;
+      const profile = exactModelProfile(settings.resourceDefaults, provider, modelId);
+      previousNames = profile?.[resourceType]?.[selectionKey] ?? null;
+      if (action === "Use inherited defaults") {
+        await updateWebuiSettings((current: any) => ({
+          resourceDefaults: {
+            modelProfiles: setExactModelProfile(current.resourceDefaults, provider, modelId, resourceType, null),
+          },
+        }));
+        await recompute(ctx);
+        ctx.ui.notify(`${resourceLabel} for ${provider}/${modelId} now use inherited defaults.`, "info");
+        return;
+      }
+      if (previousNames === null) {
+        previousNames = resolveResourceSelection(settings.resourceDefaults, resourceType, provider, modelId, resourceType === "tools" ? runtimeTools() : null).names;
+      }
+    }
+
+    const selected = await chooseResources(ctx, `${resourceLabel}: toggle resources, then save`, visibleNames, previousNames || []);
+    if (!selected) return;
+    if (scope === "Session only") {
+      const preserved = preserveUnavailableResourceNames(previousNames, visibleNames, selected);
+      pi.appendEntry(resourceType === "tools" ? "webui-tools-config" : "webui-skills-config", {
+        version: 2,
+        mode: "explicit",
+        [selectionKey]: preserved,
+      });
+    } else if (scope === "Global default") {
+      await updateWebuiSettings((current: any) => ({
+        resourceDefaults: {
+          [resourceType]: {
+            [selectionKey]: preserveUnavailableResourceNames(current.resourceDefaults?.[resourceType]?.[selectionKey], visibleNames, selected),
+          },
+        },
+      }));
+    } else {
+      await updateWebuiSettings((current: any) => {
+        const currentNames = exactModelProfile(current.resourceDefaults, provider, modelId)?.[resourceType]?.[selectionKey];
+        const preserved = preserveUnavailableResourceNames(currentNames, visibleNames, selected);
+        return {
+          resourceDefaults: {
+            modelProfiles: setExactModelProfile(current.resourceDefaults, provider, modelId, resourceType, preserved),
+          },
+        };
+      });
+    }
+    await recompute(ctx);
+    ctx.ui.notify(`${resourceLabel} ${scope.toLowerCase()} saved.`, "info");
+  }
+
+  pi.registerCommand("tools", {
+    description: "Choose session, global, or exact-model tools",
+    handler: async (_args, ctx) => runSelector("tools", ctx),
+  });
+  pi.registerCommand("skills", {
+    description: "Choose session, global, or exact-model skills",
+    handler: async (_args, ctx) => runSelector("skills", ctx),
+  });
+  pi.on("session_start", async (_event, ctx) => {
+    tuiActive = ctx.mode === "tui";
+    if (tuiActive) {
+      if (runtimeToolBaseline === undefined) enabledTools = new Set(runtimeTools());
+      await recompute(ctx);
+    }
+  });
+  pi.on("session_tree", async (_event, ctx) => {
+    tuiActive = ctx.mode === "tui";
+    if (tuiActive) await recompute(ctx);
+  });
+  pi.on("model_select", async (event, ctx) => {
+    if (ctx.mode === "tui") await recompute(ctx, event.model);
+  });
+  pi.on("session_shutdown", () => {
+    tuiActive = false;
+    generation += 1;
+  });
+  pi.on("input", async (event, ctx) => {
+    if (!tuiActive || ctx.mode !== "tui") return { action: "continue" };
+    const match = String(event.text || "").trim().match(/^\/skill:([^\s]+)/i);
+    if (!match || isSkillEnabled(match[1])) return { action: "continue" };
+    ctx.ui.notify(`Skill /skill:${match[1]} is disabled by /skills.`, "warning");
+    return { action: "handled" };
+  });
+  pi.on("before_agent_start", async (event) => {
+    if (!tuiActive || (enabledSkills === null && legacyDisabledSkills.size === 0)) return undefined;
+    const allSkills = Array.isArray(event.systemPromptOptions?.skills) ? event.systemPromptOptions.skills : [];
+    const disabledNames = allSkills.filter((skill: any) => !isSkillEnabled(skill.name)).map((skill: any) => skill.name);
+    const filtered = allSkills.filter((skill: any) => isSkillEnabled(skill.name) && skill.disableModelInvocation !== true);
+    if (filtered.length === allSkills.length) return undefined;
+    let nextPrompt = event.systemPrompt;
+    const nextSection = formatSkillsForPrompt(filtered);
+    if (nextPrompt.includes("<available_skills>")) {
+      nextPrompt = nextPrompt.replace(/\n?The following skills provide[\s\S]*?<\/available_skills>\n?/m, nextSection ? `\n${nextSection}\n` : "\n");
+    }
+    for (const name of disabledNames) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      nextPrompt = nextPrompt.replace(new RegExp(`\\n?  <skill>\\n    <name>${escaped}<\\/name>[\\s\\S]*?  <\\/skill>`, "g"), "");
+    }
+    return { systemPrompt: nextPrompt };
+  });
+}
+
 export default function (pi: ExtensionAPI) {
+  registerTuiResourceController(pi);
   const subagentGate = registerSubagentGate(pi);
   pi.on("session_shutdown", () => subagentGate.dispose());
 

@@ -866,7 +866,7 @@ try {
   assert.equal(JSON.stringify(savedLayout.body).includes(settingsFile), false, "successful layout responses must not disclose the settings path");
   const savedLayoutRevision = savedLayout.body.data.layoutRevision;
   const persistedLayoutSettings = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persistedLayoutSettings.version, 7);
+  assert.equal(persistedLayoutSettings.version, 8);
   assert.equal(persistedLayoutSettings.interfacePreferences.sidePanelWidth, 620);
   assert.equal(persistedLayoutSettings.uiLayout.sidePanel.panelWidths.right, 620, "the v2 right width and legacy mirror must persist atomically");
   assert.equal(persistedLayoutSettings.uiLayout.fileViewerWidth, 560);
@@ -1236,7 +1236,7 @@ try {
   assert.equal(savedUserLaunchSlots.body?.data?.reloadRequired, true, "a changed save must require active-tab reload before helper guidance changes");
   assert.deepEqual(savedUserLaunchSlots.body?.data?.roles?.reviewer, userLaunchDraft.reviewer, "same-role launch slots must retain independent explicit model specs");
   const persistedLaunchSlots = JSON.parse(await readFile(settingsFile, "utf8"));
-  assert.equal(persistedLaunchSlots.version, 7, "launch-slot persistence should retain the current private WebUI settings envelope");
+  assert.equal(persistedLaunchSlots.version, 8, "launch-slot persistence should retain the current private WebUI settings envelope");
   assert.deepEqual(persistedLaunchSlots.subagentLaunchSlots?.user?.roles?.reviewer, userLaunchDraft.reviewer);
 
   const inheritedProjectLaunchSlots = await request("127.0.0.1", `/api/subagents/config?tab=${encodeURIComponent(tabId)}&scope=project`);
@@ -1465,6 +1465,84 @@ try {
   assert.deepEqual(persistedResourceDefaults.resourceDefaults?.skills?.enabledSkills, ["repo-explorer", "future-skill"], "saving visible skill choices should preserve defaults for skills unavailable in the active tab");
   const invalidResourceScope = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=project`);
   assert.equal(invalidResourceScope.status, 400, "resource selectors should reject unsupported scope values");
+
+  const modelToolsBefore = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=model&provider=fake&modelId=fake-model`);
+  assert.equal(modelToolsBefore.status, 200, modelToolsBefore.body?.error);
+  assert.equal(modelToolsBefore.body?.data?.scope, "model");
+  assert.equal(modelToolsBefore.body?.data?.configured, false, "an exact model without a saved profile should inherit");
+  assert.equal(modelToolsBefore.body?.data?.source, "global", "the model scope should resolve through the saved global default");
+  assert.deepEqual(modelToolsBefore.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", true], ["bash", false]]);
+  assert.deepEqual(modelToolsBefore.body?.data?.models?.map((model) => [model.provider, model.id]), [["fake", "fake-model"]], "the model scope should expose exact authenticated models");
+
+  const missingModelIdentity = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=model`);
+  assert.equal(missingModelIdentity.status, 400, "model scope must require an exact provider and modelId");
+  const unknownModelIdentity = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=model&provider=fake&modelId=other-model`);
+  assert.equal(unknownModelIdentity.status, 400, "model scope must reject models outside the authenticated registry");
+
+  const saveModelTools = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "model", provider: "fake", modelId: "fake-model", enabledTools: ["bash"] },
+  });
+  assert.equal(saveModelTools.status, 200, saveModelTools.body?.error);
+  assert.equal(saveModelTools.body?.data?.configured, true);
+  assert.deepEqual(saveModelTools.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", false], ["bash", true]]);
+
+  const settingsWithModelProfile = JSON.parse(await readFile(settingsFile, "utf8"));
+  const modelProfile = settingsWithModelProfile.resourceDefaults?.modelProfiles?.find((profile) => profile.provider === "fake" && profile.modelId === "fake-model");
+  assert.deepEqual(modelProfile?.tools?.enabledTools, ["bash"], "the exact model profile should persist under the v8 envelope");
+  modelProfile.tools.enabledTools.push("future-tool");
+  await writeFile(settingsFile, `${JSON.stringify(settingsWithModelProfile, null, 2)}\n`, "utf8");
+
+  const saveModelToolsAgain = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "model", provider: "fake", modelId: "fake-model", enabledTools: ["read"] },
+  });
+  assert.equal(saveModelToolsAgain.status, 200, saveModelToolsAgain.body?.error);
+  const persistedModelProfile = JSON.parse(await readFile(settingsFile, "utf8")).resourceDefaults?.modelProfiles?.find((profile) => profile.provider === "fake" && profile.modelId === "fake-model");
+  assert.deepEqual(persistedModelProfile?.tools?.enabledTools, ["read", "future-tool"], "model-scope saves should preserve defaults for tools unavailable in the active tab");
+
+  const sessionToolsAfterModel = await request("127.0.0.1", `/api/tools?tab=${encodeURIComponent(tabId)}&scope=session`);
+  assert.deepEqual(sessionToolsAfterModel.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", false], ["bash", true]], "saving a model tool default must not rewrite the current session");
+
+  const saveModelSkills = await request("127.0.0.1", "/api/skills", {
+    method: "POST",
+    body: { tab: tabId, scope: "model", provider: "fake", modelId: "fake-model", enabledSkills: ["code-security"] },
+  });
+  assert.equal(saveModelSkills.status, 200, saveModelSkills.body?.error);
+  assert.deepEqual(saveModelSkills.body?.data?.skills?.map((skill) => [skill.name, skill.enabled]), [["repo-explorer", false], ["code-security", true]]);
+
+  const inheritModelTools = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "model", provider: "fake", modelId: "fake-model", inherit: true },
+  });
+  assert.equal(inheritModelTools.status, 200, inheritModelTools.body?.error);
+  assert.equal(inheritModelTools.body?.data?.configured, false, "model inherit should clear only the tool selection");
+  const profileAfterToolInherit = JSON.parse(await readFile(settingsFile, "utf8")).resourceDefaults?.modelProfiles?.find((profile) => profile.provider === "fake" && profile.modelId === "fake-model");
+  assert.equal(profileAfterToolInherit?.tools?.enabledTools, null, "model tool inherit should reset to null while retaining the skill selection");
+  assert.deepEqual(profileAfterToolInherit?.skills?.enabledSkills, ["code-security"]);
+
+  const inheritModelSkills = await request("127.0.0.1", "/api/skills", {
+    method: "POST",
+    body: { tab: tabId, scope: "model", provider: "fake", modelId: "fake-model", inherit: true },
+  });
+  assert.equal(inheritModelSkills.status, 200, inheritModelSkills.body?.error);
+  const profilesAfterFullInherit = JSON.parse(await readFile(settingsFile, "utf8")).resourceDefaults?.modelProfiles || [];
+  assert.deepEqual(profilesAfterFullInherit, [], "a profile with both resources inherited should be removed");
+
+  const inheritGlobalTools = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "global", inherit: true },
+  });
+  assert.equal(inheritGlobalTools.status, 200, inheritGlobalTools.body?.error);
+  assert.equal(inheritGlobalTools.body?.data?.configured, false, "global inherit should clear the saved default");
+  assert.equal(JSON.parse(await readFile(settingsFile, "utf8")).resourceDefaults?.tools?.enabledTools, null);
+
+  const inheritSessionTools = await request("127.0.0.1", "/api/tools", {
+    method: "POST",
+    body: { tab: tabId, scope: "session", inherit: true },
+  });
+  assert.equal(inheritSessionTools.status, 200, inheritSessionTools.body?.error);
+  assert.deepEqual(inheritSessionTools.body?.data?.tools?.map((tool) => [tool.name, tool.enabled]), [["read", true], ["bash", true]], "session inherit should recompute the inherited selection immediately");
 
   const workflowRpc = await waitForSseEvent(
     tabId,

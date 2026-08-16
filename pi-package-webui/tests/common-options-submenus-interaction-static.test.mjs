@@ -153,6 +153,8 @@ for (const [id, handler] of [
   ["optionsWorkflowSetupButton", 'runNativeCommandMenu\\("/workflow-setup"\\)'],
   ["optionsSafetyGuardSetupButton", 'runNativeCommandMenu\\("/safety-guard-setup"\\)'],
   ["optionsGitWorkflowSetupButton", 'runNativeCommandMenu\\("/git-workflow-setup"\\)'],
+  ["optionsToolsSetupButton", 'runNativeCommandMenu\\("/tools"\\)'],
+  ["optionsSkillsSetupButton", 'runNativeCommandMenu\\("/skills"\\)'],
   ["optionsExportButton", 'runNativeCommandMenu\\("/export"\\)'],
   ["optionsForkButton", 'runNativeCommandMenu\\("/fork"\\)'],
   ["optionsTreeButton", 'runNativeCommandMenu\\("/tree"\\)'],
