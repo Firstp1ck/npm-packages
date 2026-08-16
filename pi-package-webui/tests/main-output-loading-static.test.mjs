@@ -51,8 +51,8 @@ assert.match(css, /body\.terminal-tabs-left \.main-output-loading,[\s\S]*?body\.
 assert.match(css, /body\.subagent-terminal-active \.main-output-loading,/, "main-output loading feedback should stay hidden in the dedicated subagent view");
 
 assert.match(html, /styles\.css\?v=123/, "the stylesheet cache query should advance");
-assert.match(html, /app\.js\?v=145/, "the app cache query should advance");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v107"/, "the PWA cache identity should advance with browser assets");
+assert.match(html, /app\.js\?v=146/, "the app cache query should advance");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v108"/, "the PWA cache identity should advance with browser assets");
 assert.match(readme, /Loading agent output/, "user documentation should describe the visible loading feedback");
 assert.match(development, /main output loading/i, "developer documentation should preserve the request-ownership contract");
 

@@ -26,7 +26,7 @@ assert.match(app, /function finishedSubagentRunSelections[\s\S]*subagentRunIsTer
 assert.match(app, /agent\.unavailableReason[\s\S]*Output is unavailable for this registered agent/, "output views should show truthful unavailable evidence");
 assert.match(css, /\.subagent-source-badge[\s\S]*text-overflow: ellipsis[\s\S]*@media \(max-width: 720px\)/, "source badges should remain compact and responsive");
 assert.match(html, /Managed and registered Pi agent runs[\s\S]*External agents/, "help should explain managed, registered, and external groups");
-assert.match(html, /styles\.css\?v=123[\s\S]*app\.js\?v=145/, "browser assets should use the WS-D revisions");
-assert.match(worker, /pi-webui-pwa-v107/, "PWA cache identity should advance with WS-D browser assets");
+assert.match(html, /styles\.css\?v=123[\s\S]*app\.js\?v=146/, "browser assets should use the WS-D revisions");
+assert.match(worker, /pi-webui-pwa-v108/, "PWA cache identity should advance with WS-D browser assets");
 
 console.log("subagent-observability-static.test.mjs passed");

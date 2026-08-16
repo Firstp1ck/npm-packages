@@ -1149,7 +1149,8 @@ assert.match(app, /async function refreshQuestionnaireFeatureAvailability[\s\S]*
 assert.match(app, /async function setToolManagedOptionalFeatureEnabled\(feature, enabled\)[\s\S]*\/api\/tools\?scope=session[\s\S]*enabledTools[\s\S]*scope: "session"[\s\S]*\/api\/tools/, "the questionnaire row toggle should update the active session tool allowlist while preserving other tool states");
 assert.match(app, /detected && feature\.manageWith === "tools"[\s\S]*action\.textContent = enabled \? "Disable" : "Enable"[\s\S]*setToolManagedOptionalFeatureEnabled/, "loaded questionnaire access should expose a dedicated enable or disable action");
 assert.match(app, /if \(detected && feature\.setup\)[\s\S]*"optional-feature-action setup", "Setup"[\s\S]*openOptionalFeatureSetup/, "detected configurable optional features should expose a separate Setup action");
-assert.match(app, /case "tools": return openNativeToolsSelector\(\)/, "Native questionnaires Setup should open the browser-native Tools Setup dialog");
+assert.match(app, /case "skills": return openNativeSkillsSelector\(\)/, "TUI Skills command Setup should open the browser-native Skills Setup dialog");
+assert.match(app, /case "tools": return openNativeToolsSelector\(\)/, "TUI Tools command Setup should open the browser-native Tools Setup dialog");
 assert.match(app, /function setSidePanelSectionCollapsed\(record, collapsed/, "side panel sections should have explicit collapse/expand behavior");
 assert.match(
   app,
@@ -1623,10 +1624,10 @@ assert.match(app, /id: "btwCommand"[\s\S]*?@firstpick\/pi-extension-btw/, "optio
 assert.match(app, /BTW_OUTPUT_WIDGET_KEY = "btw:output"[\s\S]*function renderBtwOutputWidget/, "Web UI should render structured /btw output widgets");
 assert.match(app, /if \(key\.startsWith\("btw:"\)\) return "btwCommand"/, "extension widget routing should associate /btw widgets with the optional feature");
 assert.match(app, /id: "safetyGuard"[\s\S]*?@firstpick\/pi-extension-safety-guard/, "optional features should include the safety guard companion");
-assert.match(app, /id: "tuiSkillsCommand"[\s\S]*?@firstpick\/pi-extension-setup-skills/, "optional features should include the TUI skills command companion");
-assert.match(app, /id: "tuiToolsCommand"[\s\S]*?@firstpick\/pi-extension-tools/, "optional features should include the TUI tools command companion");
+assert.match(app, /id: "tuiSkillsCommand"[\s\S]*?@firstpick\/pi-extension-setup-skills[\s\S]*?setup: "skills"/, "optional features should expose Skills Setup from the TUI skills command companion");
+assert.match(app, /id: "tuiToolsCommand"[\s\S]*?@firstpick\/pi-extension-tools[\s\S]*?setup: "tools"/, "optional features should expose Tools Setup from the TUI tools command companion");
 assert.match(app, /id: "remoteWebui"[\s\S]*?@firstpick\/pi-package-remote-webui/, "optional features should include the Remote WebUI companion");
-assert.match(app, /id: "questionnaire"[\s\S]*?@firstpick\/pi-package-questionnaire[\s\S]*?capabilityLabel: "questionnaire tool in \/tools"[\s\S]*?manageWith: "tools"[\s\S]*?setup: "tools"/, "optional features should include the native questionnaire package with session access control and a Tools Setup entry point");
+assert.match(app, /id: "questionnaire"[\s\S]*?@firstpick\/pi-package-questionnaire[\s\S]*?capabilityLabel: "questionnaire tool in \/tools"[\s\S]*?manageWith: "tools"/, "optional features should include the native questionnaire package with direct session access control");
 assert.match(app, /id: "naturalConversation"[\s\S]*?@firstpick\/pi-package-natural-conversation[\s\S]*?capabilityLabel: "\/talk, \/voice, or \/conversation"/, "optional features should include the capability-detected Natural Conversation shell");
 assert.match(app, /NATURAL_CONVERSATION_COMMAND_NAMES = \["talk", "voice", "conversation"\]/, "frontend should detect Natural Conversation only from RPC-visible command aliases");
 assert.match(app, /const conversationModeByTab = new Map\(\)/, "frontend should track Natural Conversation state per terminal tab");

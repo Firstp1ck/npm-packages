@@ -2585,6 +2585,7 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-extension-setup-skills",
     capabilityLabel: "RPC /skills from setup-skills extension",
     description: "Terminal-native skill setup command alongside WebUI-native /skills toggles.",
+    setup: "skills",
   },
   {
     id: "todoProgressWidget",
@@ -2599,6 +2600,7 @@ const OPTIONAL_FEATURES = [
     packageName: "@firstpick/pi-extension-tools",
     capabilityLabel: "RPC /tools from tools extension",
     description: "Terminal-native active-tool manager alongside WebUI-native /tools toggles.",
+    setup: "tools",
   },
   {
     id: "remoteWebui",
@@ -2614,7 +2616,6 @@ const OPTIONAL_FEATURES = [
     capabilityLabel: "questionnaire tool in /tools",
     description: "Native TUI and WebUI single- or multi-select question series with Other answers and resumable clarification.",
     manageWith: "tools",
-    setup: "tools",
   },
   {
     id: "naturalConversation",
@@ -38704,9 +38705,9 @@ function optionalFeatureStatus(featureId) {
     label: "Disabled",
     className: "disabled",
     detail: `Tool access is disabled for the active Pi session${versionSuffix}`,
-    hint: "Enable it here for this session, or use Setup to manage session and global tool defaults.",
+    hint: "Enable it here for this session.",
   };
-  if (detected && managedWithTools) return { label: "Enabled", className: "enabled", detail: doneDetail || `Tool access is enabled for the active Pi session${versionSuffix}`, hint: "Use Setup to manage session and global tool defaults.", command: installState?.command || "" };
+  if (detected && managedWithTools) return { label: "Enabled", className: "enabled", detail: doneDetail || `Tool access is enabled for the active Pi session${versionSuffix}`, command: installState?.command || "" };
   if (detected && !disabled) return { label: "Enabled", className: "enabled", detail: doneDetail || `Detected and enabled in Web UI${versionSuffix}`, command: installState?.command || "" };
   if (detected && disabled) return { label: "Disabled", className: "disabled", detail: `Detected, but disabled in Web UI${versionSuffix}` };
   if (packageStatus?.locallyConfigured) return { label: "Available locally", className: "installed", detail: doneDetail || `Enabled as a top-level Pi resource; reload this tab if the capability is not detected yet${versionSuffix}` };
@@ -38867,6 +38868,7 @@ function optionalFeatureSetupAvailable(feature) {
     case "git-workflow": return hasAvailableCommand("git-workflow-setup");
     case "workflows": return hasLoadedRpcCommand("workflow-setup");
     case "safety-guard": return hasAvailableCommand("safety-guard-setup");
+    case "skills": return hasLoadedRpcCommand("skills");
     case "tools": return feature.manageWith !== "tools" || isOptionalFeatureDetected(feature.id);
     default: return false;
   }
@@ -38877,6 +38879,7 @@ function openOptionalFeatureSetup(feature) {
     case "git-workflow": return openNativeGitWorkflowSetupDialog();
     case "workflows": return openNativeWorkflowSetupDialog();
     case "safety-guard": return openNativeSafetyGuardSetupDialog();
+    case "skills": return openNativeSkillsSelector();
     case "tools": return openNativeToolsSelector();
     default: return undefined;
   }

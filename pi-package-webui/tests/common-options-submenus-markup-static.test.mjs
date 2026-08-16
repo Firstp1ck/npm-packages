@@ -21,8 +21,6 @@ const actionContract = {
   optionsExportButton: { label: "Export", command: "/export" },
   optionsSummarySetupButton: { label: "Session Summary Setup", command: "/summary-setup", hidden: true },
   optionsGitWorkflowSetupButton: { label: "Guided Git Setup", command: "/git-workflow-setup" },
-  optionsToolsSetupButton: { label: "Tools Setup", command: "/tools", hidden: true },
-  optionsSkillsSetupButton: { label: "Skills Setup", command: "/skills", hidden: true },
   optionsWorkflowSetupButton: { label: "Workflow Permission Setup", command: "/workflow-setup", hidden: true },
   optionsSafetyGuardSetupButton: { label: "Safety Guard Setup", command: "/safety-guard-setup", hidden: true },
   optionsStatsButton: { label: "Stats Dashboard", command: "/stats-webui", hidden: true },
@@ -44,7 +42,7 @@ const groups = [
     label: "Feature Setup",
     triggerId: "optionsFeatureSetupSubmenuButton",
     panelId: "optionsFeatureSetupSubmenu",
-    actions: ["optionsSummarySetupButton", "optionsGitWorkflowSetupButton", "optionsToolsSetupButton", "optionsSkillsSetupButton"],
+    actions: ["optionsSummarySetupButton", "optionsGitWorkflowSetupButton"],
   },
   {
     key: "safety-permissions",
@@ -84,6 +82,7 @@ const menuEnd = html.indexOf('<div id="appRunnerMenu"', menuStart);
 assert.ok(menuStart >= 0 && menuEnd > menuStart, "the Common Pi options block should remain bounded by its stable IDs");
 const menuMarkup = html.slice(menuStart, menuEnd);
 assert.match(menuMarkup, /^<div id="optionsMenu"[^>]*role="menu"[^>]*aria-label="Common Pi options">/, "the root should remain a labelled menu");
+assert.doesNotMatch(menuMarkup, /id="options(?:Tools|Skills)SetupButton"/, "Tools Setup and Skills Setup should not appear in Common Pi options");
 
 const allActionIds = Object.keys(actionContract);
 for (const [id, contract] of Object.entries(actionContract)) {

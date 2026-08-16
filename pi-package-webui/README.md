@@ -231,7 +231,7 @@ Explore token, cost, cache, model, session, and daily usage through the optional
 
 ## Optional features
 
-Open **Optional features** in the side panel to discover Web UI-aware companions. Configurable companions expose separate **Enable/Disable** and **Setup** actions, so configuration remains available without forcing a feature on.
+Open **Optional features** in the side panel to discover Web UI-aware companions. Configurable companions expose separate **Enable/Disable** and **Setup** actions, so configuration remains available without forcing a feature on. The loaded **TUI Skills command** and **TUI Tools command** rows provide **Setup** buttons for the browser-native Skills Setup and Tools Setup dialogs.
 
 Popular additions include:
 

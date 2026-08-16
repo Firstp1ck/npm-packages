@@ -119,7 +119,7 @@ Every server start performs a bounded, read-only startup audit of optional compa
 - **Copy commands** provides manual Pi install commands.
 - **Recheck** repeats the read-only package check.
 - **Install all** selects every missing or unregistered companion. A section's **Install missing** selects only missing or unregistered companions in that section. Both use one confirmation, install sequentially, and continue after individual failures.
-- Configurable loaded companions show separate **Enable/Disable** and **Setup** actions. Native questionnaires use the real active-session `questionnaire` tool state; **Setup** opens Tools Setup, where session access and global defaults can be managed.
+- Configurable loaded companions show separate **Enable/Disable** and **Setup** actions. The loaded **TUI Skills command** and **TUI Tools command** rows open the browser-native Skills Setup and Tools Setup dialogs. Native questionnaires use the real active-session `questionnaire` tool state and expose only direct **Enable/Disable** access controls.
 
 Installs run one at a time and never invent percentage progress. Busy tabs are not restarted without a visible follow-up action. For unattended migration, use `--migrate-optional-features`; use `--migration-dry-run` to print the planned audit-selected migration without changing packages.
 

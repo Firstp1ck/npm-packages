@@ -44,11 +44,9 @@ async function installResourceCommands(page) {
   });
 }
 
-async function openFeatureSetup(page) {
-  await page.locator("#optionsMenuButton").click();
-  await expect(page.locator("#optionsMenu")).toBeVisible();
-  await page.locator('[data-options-submenu="feature-setup"]').hover();
-  await expect(page.locator("#optionsFeatureSetupSubmenu")).toBeVisible();
+async function openResourceSetupMenu(page) {
+  await page.locator("#nativeCommandMenuButton").click();
+  await expect(page.locator("#nativeCommandMenu")).toBeVisible();
 }
 
 test.beforeAll(async () => {
@@ -86,15 +84,14 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true });
 });
 
-test("Feature Setup opens exact-model tools and persists then clears the profile", async ({ page }) => {
+test("the dedicated resource menu opens exact-model tools and persists then clears the profile", async ({ page }) => {
   await installResourceCommands(page);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(baseURL);
 
-  await openFeatureSetup(page);
-  await expect(page.locator("#optionsToolsSetupButton")).toBeVisible();
-  await expect(page.locator("#optionsSkillsSetupButton")).toBeVisible();
-  await page.locator("#optionsToolsSetupButton").click();
+  await expect(page.locator("#optionsToolsSetupButton, #optionsSkillsSetupButton")).toHaveCount(0);
+  await openResourceSetupMenu(page);
+  await page.locator("#nativeToolsButton").click();
 
   await expect(page.locator("#nativeCommandDialog")).toBeVisible();
   await expect(page.locator("#nativeCommandTitle")).toHaveText("Tools Setup");
@@ -130,7 +127,36 @@ test("Feature Setup opens exact-model tools and persists then clears the profile
   await page.locator("#nativeCommandActions").getByRole("button", { name: "Cancel" }).click();
 });
 
-test("mobile keyboard navigation drills into Feature Setup and opens Skills Setup", async ({ browser }) => {
+test("Optional features exposes Skills Setup and Tools Setup on the loaded TUI command rows", async ({ page }) => {
+  await installResourceCommands(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  await page.addStyleTag({ content: "#optionalFeatureMigrationSurface, #updateNotification { display: none !important; }" });
+
+  await page.locator("#sidePanelSectionToggleOptionalFeatures").click();
+
+  const questionnaireRow = page.locator(".optional-feature-row").filter({ hasText: "Native questionnaires" });
+  await expect(questionnaireRow.getByRole("button", { name: "Set up Native questionnaires" })).toHaveCount(0);
+  await expect(questionnaireRow).not.toContainText("Use Setup");
+
+  const skillsRow = page.locator(".optional-feature-row").filter({ hasText: "TUI Skills command" });
+  const skillsSetup = skillsRow.getByRole("button", { name: "Set up TUI Skills command" });
+  await expect(skillsSetup).toBeVisible();
+  await expect(skillsSetup).toHaveText("Setup");
+  await skillsSetup.click();
+  await expect(page.locator("#nativeCommandTitle")).toHaveText("Skills Setup");
+  await page.locator("#nativeCommandActions").getByRole("button", { name: "Cancel" }).click();
+
+  const toolsRow = page.locator(".optional-feature-row").filter({ hasText: "TUI Tools command" });
+  const toolsSetup = toolsRow.getByRole("button", { name: "Set up TUI Tools command" });
+  await expect(toolsSetup).toBeVisible();
+  await expect(toolsSetup).toHaveText("Setup");
+  await toolsSetup.click();
+  await expect(page.locator("#nativeCommandTitle")).toHaveText("Tools Setup");
+  await page.locator("#nativeCommandActions").getByRole("button", { name: "Cancel" }).click();
+});
+
+test("mobile keyboard navigation opens Skills Setup from the dedicated resource menu", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();
   await installResourceCommands(page);
@@ -140,16 +166,11 @@ test("mobile keyboard navigation drills into Feature Setup and opens Skills Setu
   await page.locator("#composerActionsButton").focus();
   await page.keyboard.press("Enter");
   await expect(page.locator("#composerActionsPanel")).toBeVisible();
-  await page.locator("#optionsMenuButton").focus();
+  await expect(page.locator("#optionsToolsSetupButton, #optionsSkillsSetupButton")).toHaveCount(0);
+  await page.locator("#nativeCommandMenuButton").focus();
   await page.keyboard.press("Enter");
-  await expect(page.locator("#optionsMenu")).toBeVisible();
-  await page.locator("#optionsFeatureSetupSubmenuButton").focus();
-  await page.keyboard.press("Enter");
-  await expect(page.locator("#optionsFeatureSetupSubmenu")).toBeVisible();
-  await expect(page.locator("#optionsToolsSetupButton")).toBeVisible();
-  await expect(page.locator("#optionsSkillsSetupButton")).toBeVisible();
-
-  await page.locator("#optionsSkillsSetupButton").focus();
+  await expect(page.locator("#nativeCommandMenu")).toBeVisible();
+  await page.locator("#nativeSkillsButton").focus();
   await page.keyboard.press("Enter");
   await expect(page.locator("#nativeCommandDialog")).toBeVisible();
   await expect(page.locator("#nativeCommandTitle")).toHaveText("Skills Setup");
