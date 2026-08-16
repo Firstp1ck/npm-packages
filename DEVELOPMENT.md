@@ -281,6 +281,7 @@ Reusable scaffold for local documentation/wiki extensions analogous to the ArchW
 ## Utility scripts
 
 - `dev/scripts/install-pi-add.sh` – discovers local `pi-extension-*`, `pi-skill-*`, and `pi-package-*` packages, compares installed versions against npm `latest`, repairs packages present in `node_modules` but missing from Pi user settings, and registers/installs selected or all packages via `pi install npm:<package>` (supports interactive mode, `--non-interactive`, `--all`, `--dry-run`, `--force`)
+- `dev/scripts/pi-tui-perf-diagnose.sh` – runs read-mostly Pi TUI startup, idle-render, extension-isolation, and optional CPU-profile diagnostics with reports written under `/tmp`
 - `dev/scripts/check-publish-readiness.sh` – validates package metadata, extension entries, dry-run publish, registry/version status, and local-vs-npm packed contents
 - `dev/scripts/package-publishable-changes.sh` – compares ordinary packages through a script-free fast path and compares packages with `prepare`, `prepack`, or `postpack` hooks through their actual temporary tarball, so lifecycle-generated files match the artifact npm publishes
 - `dev/scripts/publish-packages.sh` – plans/applies publish actions dynamically for all package folders or a `--targets-file` shortlist

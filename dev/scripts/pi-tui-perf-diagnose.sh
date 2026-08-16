@@ -25,7 +25,7 @@ REAL_GIT="$(command -v git 2>/dev/null || true)"
 
 usage() {
   cat <<'EOF'
-Usage: ./pi-tui-perf-diagnose.sh [options]
+Usage: ./dev/scripts/pi-tui-perf-diagnose.sh [options]
 
 Runs step-by-step Pi TUI performance diagnostics and writes logs + summary.
 
@@ -43,13 +43,13 @@ Options:
   -h, --help             Show this help
 
 Recommended first run:
-  ./pi-tui-perf-diagnose.sh
+  ./dev/scripts/pi-tui-perf-diagnose.sh
 
 Deeper extension isolation:
-  ./pi-tui-perf-diagnose.sh --deep
+  ./dev/scripts/pi-tui-perf-diagnose.sh --deep
 
 Very slow but thorough render-loop isolation:
-  ./pi-tui-perf-diagnose.sh --extension-idle --idle-seconds 8
+  ./dev/scripts/pi-tui-perf-diagnose.sh --extension-idle --idle-seconds 8
 EOF
 }
 

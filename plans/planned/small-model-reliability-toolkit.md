@@ -1578,7 +1578,7 @@ Live model evaluation is a separate explicit command and must report unavailable
 
 ### Research synthesis
 
-- `LOCAL-LLM-UNDER-27B-FINDINGS.md` — local research artifact covering retrieval, coding, tool use, long context, hallucination, quantization, and deployment failure modes.
+- `docs/reliability/research/local-llm-under-27b-findings.md` — local research artifact covering retrieval, coding, tool use, long context, hallucination, quantization, and deployment failure modes.
 
 ### Exploration records
 

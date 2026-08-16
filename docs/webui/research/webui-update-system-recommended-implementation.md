@@ -4,7 +4,7 @@
 
 **Sources synthesized:**
 
-- `UPDATE-SYSTEM-FINDINGS.md` (incremental engineering plan, weaknesses W1–W14)
+- `docs/webui/research/webui-update-system-findings-2026-08-07.md` (incremental engineering plan, weaknesses W1–W14)
 - `docs/webui/research/webui-update-system-git-history-and-reliability-review.md` (architectural audit, findings F1–F12)
 
 ## 1. How the two analyses compare
