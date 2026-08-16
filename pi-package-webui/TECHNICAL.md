@@ -89,6 +89,8 @@ A short interruption is possible during restart; zero downtime is not promised.
 
 ## Session continuity
 
+When tabs span multiple working directories, a directory with one tab stays a normal, non-dropdown tab. Hover over it—or focus controls within it—to reveal **+ Tab** directly below, matching the placement used by grouped terminal menus without repeating the current tab. Directories with multiple tabs continue to use the grouped terminal menu.
+
 Restarting only the Web UI normally keeps managed Pi tabs, working folders, saved sessions, and active work connected to the replacement server.
 
 Continuity requires the same Pi configuration location and Web UI port. It does not preserve browser drafts, app-runner processes, or an active model request across a machine restart, power loss, explicit shutdown, or supervisor failure. Saved transcript history can still be reopened afterward.

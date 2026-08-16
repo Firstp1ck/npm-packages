@@ -4741,7 +4741,9 @@ button.subagent-gate-attempt:focus-visible {
 }
 .terminal-tabs.terminal-tabs-dense:has(.terminal-tab-group:hover),
 .terminal-tabs.terminal-tabs-dense:has(.terminal-tab-group:focus-within),
-.terminal-tabs.terminal-tabs-dense:has(.terminal-tab-group.menu-open) {
+.terminal-tabs.terminal-tabs-dense:has(.terminal-tab-group.menu-open),
+.terminal-tabs.terminal-tabs-dense:has(.terminal-tab-cwd-add-host:hover),
+.terminal-tabs.terminal-tabs-dense:has(.terminal-tab-cwd-add-host:focus-within) {
   overflow: visible;
 }
 .terminal-tabs.terminal-tabs-dense .terminal-tab {
@@ -4755,6 +4757,8 @@ button.subagent-gate-attempt:focus-visible {
 .terminal-tabs-shell:has(.terminal-tab-group:hover),
 .terminal-tabs-shell:has(.terminal-tab-group:focus-within),
 .terminal-tabs-shell:has(.terminal-tab-group.menu-open),
+.terminal-tabs-shell:has(.terminal-tab-cwd-add-host:hover),
+.terminal-tabs-shell:has(.terminal-tab-cwd-add-host:focus-within),
 .terminal-tabs-shell:has(.terminal-new-tab-menu:hover),
 .terminal-tabs-shell:has(.terminal-new-tab-menu:focus-within),
 .terminal-tabs-shell:has(.terminal-new-tab-menu.open) {
@@ -4763,6 +4767,8 @@ button.subagent-gate-attempt:focus-visible {
 .terminal-tabs:has(.terminal-tab-group:hover),
 .terminal-tabs:has(.terminal-tab-group:focus-within),
 .terminal-tabs:has(.terminal-tab-group.menu-open),
+.terminal-tabs:has(.terminal-tab-cwd-add-host:hover),
+.terminal-tabs:has(.terminal-tab-cwd-add-host:focus-within),
 .terminal-tabs:has(.terminal-new-tab-menu:hover),
 .terminal-tabs:has(.terminal-new-tab-menu:focus-within),
 .terminal-tabs:has(.terminal-new-tab-menu.open) {
@@ -4897,6 +4903,31 @@ button.subagent-gate-attempt:focus-visible {
 }
 .terminal-tab-group-item.activity-done {
   border-color: rgba(166, 227, 161, 0.52);
+}
+.terminal-tab-cwd-add-host {
+  position: relative;
+  z-index: 1;
+  overflow: visible;
+  isolation: isolate;
+}
+.terminal-tab-cwd-add-host:hover,
+.terminal-tab-cwd-add-host:focus-within {
+  z-index: 100;
+}
+.terminal-tab-cwd-add-menu {
+  position: absolute;
+  z-index: 100;
+  inset: 100% 0 auto 0;
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  padding-top: 0.38rem;
+}
+.terminal-tab-cwd-add-host:hover .terminal-tab-cwd-add-menu,
+.terminal-tab-cwd-add-host:focus-within .terminal-tab-cwd-add-menu {
+  display: flex;
 }
 .terminal-tab-group-add {
   flex: 0 0 auto;

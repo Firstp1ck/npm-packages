@@ -5762,7 +5762,7 @@ function bindTerminalTabDragAndDrop(element, { sourceTabId = "", target = null }
     element.draggable = true;
     element.dataset.dragTabId = sourceTabId;
     element.addEventListener("dragstart", (event) => {
-      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-actions, .terminal-tab-group-add")) {
+      if (event.target?.closest?.(".terminal-tab-close, .terminal-tab-actions, .terminal-tab-cwd-add, .terminal-tab-group-add")) {
         event.preventDefault();
         return;
       }
@@ -16137,7 +16137,25 @@ function appendTerminalTabContent(button, { title, indicator, meta, count = null
   button.append(titleRow, make("span", "terminal-tab-meta", meta));
 }
 
-function renderTerminalTab(tab) {
+function createTerminalTabCwdAddMenu(tab) {
+  const cwdTitle = tabGroupTitle(tab?.cwd, "working directory");
+  const menu = make("div", "terminal-tab-cwd-add-menu");
+  menu.setAttribute("role", "group");
+  menu.setAttribute("aria-label", `Actions for ${cwdTitle}`);
+  const add = make("button", "terminal-tab-group-add terminal-tab-cwd-add", "+ Tab");
+  add.type = "button";
+  add.draggable = false;
+  const addTooltip = `Add tab in ${cwdTitle}`;
+  applyStyledTooltip(add, addTooltip, { ariaLabel: addTooltip, targetKey: `terminal-tab:${tab.id}:add` });
+  add.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void createTerminalTab(tab.cwd || currentDirectoryForNewTab(), { triggerButton: add });
+  });
+  menu.append(add);
+  return menu;
+}
+
+function renderTerminalTab(tab, { showCwdAdd = false } = {}) {
   const isActive = tab.id === activeTabId && !activeSubagentTerminalId;
   const indicator = tabIndicator(tab);
   const appRunnerRun = tabAppRunnerRunningRun(tab);
@@ -16146,7 +16164,7 @@ function renderTerminalTab(tab) {
   const conversationLabel = conversationModeActive ? `, natural conversation ${tabConversationMode(tab).uiState || "listening"}` : "";
   const workflowModeActive = tabWorkflowModeActive(tab);
   const workflowCount = workflowRunningCountForTab(tab.id);
-  const wrapper = make("div", `terminal-tab activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}${workflowModeActive ? " workflow-mode-running" : ""}${workflowCount ? " workflow-run-running" : ""}`);
+  const wrapper = make("div", `terminal-tab${showCwdAdd ? " terminal-tab-cwd-add-host" : ""} activity-${indicator.state}${isActive ? " active" : ""}${tab.running ? "" : " stopped"}${appRunnerRun ? " app-runner-running" : ""}${conversationModeActive ? " conversation-mode-running" : ""}${workflowModeActive ? " workflow-mode-running" : ""}${workflowCount ? " workflow-run-running" : ""}`);
   wrapper.dataset.tabId = tab.id;
   bindTerminalTabDragAndDrop(wrapper, { sourceTabId: tab.id, target: { type: "tab", tabId: tab.id } });
   const button = make("button", "terminal-tab-button");
@@ -16159,6 +16177,7 @@ function renderTerminalTab(tab) {
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button, createTerminalTabActions(tab));
+  if (showCwdAdd) wrapper.append(createTerminalTabCwdAddMenu(tab));
 
   if (tabs.length > 1) {
     const close = make("button", "terminal-tab-close", "×");
@@ -16418,6 +16437,7 @@ function terminalTabControlKey(node) {
     if (node.classList.contains("terminal-tab-close")) return `terminal-tab:${tabId}:close`;
     if (node.classList.contains("terminal-tab-split-button")) return `terminal-tab:${tabId}:split`;
     if (node.classList.contains("terminal-tab-summary-button")) return `terminal-tab:${tabId}:summary`;
+    if (node.classList.contains("terminal-tab-cwd-add")) return `terminal-tab:${tabId}:add`;
     if (node.classList.contains("terminal-tab-button")) return `terminal-tab:${tabId}:switch`;
   }
   const groupKey = node?.closest?.("[data-group-key]")?.dataset?.groupKey;
@@ -16456,7 +16476,8 @@ function renderTabs() {
     if (shouldRenderTerminalTabGroup(group, groups.length)) {
       elements.tabBar.append(renderTerminalTabGroup(group, groups.length));
     } else {
-      for (const tab of group.tabs) elements.tabBar.append(renderTerminalTab(tab));
+      const showCwdAdd = groups.length > 1 && group.tabs.length === 1 && Boolean(group.cwd);
+      for (const tab of group.tabs) elements.tabBar.append(renderTerminalTab(tab, { showCwdAdd }));
     }
   }
   for (const group of subagentGroups) {

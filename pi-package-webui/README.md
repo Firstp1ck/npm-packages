@@ -17,7 +17,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 
 | Area | Highlights |
 | --- | --- |
-| **Sessions and workspaces** | Run several isolated Pi sessions, resume prior work, switch projects, preserve per-tab drafts, and create branch worktrees. |
+| **Sessions and workspaces** | Run several isolated Pi sessions, resume prior work, switch projects, preserve per-tab drafts, add another tab directly from the tab strip, and create branch worktrees. |
 | **Live agent work** | Follow streaming Markdown with syntax highlighting for code blocks, thinking, tool output, queues, todo progress, managed agent runs, and direct agent-to-agent conversations without leaving the browser. |
 | **Models and controls** | Change models and thinking effort, manage scoped models, configure tools and skills, and use the command palette. |
 | **Files and prompts** | Upload or paste files and images, edit text attachments, use slash-command suggestions, browse project files, and reference project paths with `@`. |
