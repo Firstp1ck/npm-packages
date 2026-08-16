@@ -6,7 +6,7 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 ## Diagnostic surfaces
 
-`/git-footer-pi-debug` exposes bounded prompt-estimator diagnostics, and `Ctrl+Shift+G` exposes Git signing-mismatch diagnostics. Keep these outputs free of credentials and private provider payloads.
+`/git-footer-pi-debug` exposes bounded prompt-estimator diagnostics, and `Ctrl+Alt+G` exposes Git signing-mismatch diagnostics. Keep these outputs free of credentials and private provider payloads.
 
 ## Git inspection safety
 

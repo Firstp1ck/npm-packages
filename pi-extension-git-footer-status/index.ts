@@ -2618,7 +2618,7 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerShortcut("ctrl+shift+g", {
+  pi.registerShortcut("ctrl+alt+g", {
     description: "Show git signing mismatch diagnostics",
     handler: async (ctx) => {
       rememberFooterContext(ctx);
