@@ -121,6 +121,21 @@ await writeFile(asyncStatusFile, JSON.stringify({
     { agent: "reviewer", status: "running", model: "openai-codex/gpt-5.6-sol", thinking: "high" },
   ],
 }));
+const gateAsyncRunDir = await mkdtemp(path.join(asyncRunDir, "gate-"));
+const gateSessionFile = path.join(gateAsyncRunDir, "scout-session.jsonl");
+await writeFile(gateSessionFile, `${JSON.stringify({
+  type: "message",
+  timestamp: "2026-07-19T12:00:10.000Z",
+  message: { role: "assistant", content: [{ type: "text", text: "Gate child output is live." }] },
+})}\n`);
+await writeFile(path.join(gateAsyncRunDir, "status.json"), JSON.stringify({
+  runId: "recovered-gate-run",
+  mode: "single",
+  state: "running",
+  startedAt: Date.now() - 500,
+  lastUpdate: Date.now(),
+  steps: [{ agent: "scout", status: "running", sessionFile: gateSessionFile, currentTool: "read", model: "openai-codex/gpt-5.6-terra:xhigh", thinking: "xhigh" }],
+}));
 
 const statusText = `Active async runs: 2
 
@@ -139,7 +154,9 @@ const unsubscribeRpc = bus.on("subagents:rpc:v1:request", (request) => {
   subagentStatusRequestCount += 1;
   const text = request.params?.id === "run-a"
     ? `Run: run-a\nState: running\nMode: parallel\nDir: ${asyncRunDir}`
-    : statusText;
+    : request.params?.id === "recovered-gate-run"
+      ? `Run: recovered-gate-run\nState: running\nMode: single\nDir: ${gateAsyncRunDir}`
+      : statusText;
   if (subagentRpcReplyHook?.(request) === true) return;
   bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
     version: 1,
@@ -411,7 +428,7 @@ for (const handler of extensionHandlers.get("tool_execution_update") || []) {
         mode: "single",
         progress: [{
           index: 0,
-          agent: "Recovery scout",
+          agent: "scout",
           status: "running",
           currentTool: "read",
           recentOutput: ["Recovered child output is live again"],
@@ -430,8 +447,8 @@ assert.deepEqual(recoveredForegroundRun && {
 }, {
   source: "foreground",
   controllable: undefined,
-  agents: [["Recovery scout", "openai-codex/gpt-5.6-terra:xhigh", "xhigh"]],
-}, "a live update without a preceding start event should promote recovered metadata into a normal foreground run");
+  agents: [["scout", "openai-codex/gpt-5.6-terra:xhigh", "xhigh"]],
+}, "a live update without a preceding start event should promote recovered metadata into a normal foreground run even when the fleet display role differs from the agent identity");
 const recoveredForegroundCanonical = latestCanonicalPayload().instances.find((instance) => instance.runId === "recovered-foreground-run");
 await helperCommand.handler(JSON.stringify({
   requestId: "recovered-foreground-live-output-test",
@@ -452,6 +469,78 @@ await helperCommand.handler(JSON.stringify({
   payload: { runId: "recovered-foreground-run" },
 }), ctx);
 assert.equal(helperResponse("dismiss-recovered-foreground-run").ok, true, "a promoted recovered run should follow the normal foreground completion lifecycle");
+
+const gateRecoveredStartedAt = Date.now() - 500;
+subagentRpcReplyHook = (request) => {
+  if (request.method !== "status" || Object.keys(request.params || {}).length) return false;
+  subagentRpcReplyHook = null;
+  bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+    version: 1,
+    requestId: request.requestId,
+    method: request.method,
+    success: true,
+    data: {
+      text: statusText,
+      details: { mode: "single", results: [] },
+      fleet: {
+        version: 1,
+        entries: [{
+          key: "fleet-gate-recovered",
+          agent: "scout",
+          role: "Gate recovery scout",
+          model: "openai-codex/gpt-5.6-terra:xhigh",
+          effort: "xhigh",
+          startedAt: gateRecoveredStartedAt,
+          tokens: { input: 0, output: 0, total: 0 },
+        }],
+        totalActive: 1,
+        omitted: 0,
+      },
+    },
+  });
+  return true;
+};
+bus.emit("subagents:rpc:v1:ready", { version: 1 });
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.ok(latestPayload().runs.some((run) => run.id === "fleet:fleet-gate-recovered"), "an unmatched gate child should begin as an aggregate fleet placeholder");
+bus.emit("webui:subagent-gate:v1:update", {
+  version: 1,
+  id: "gate-live-output",
+  status: "running",
+  requiredSuccesses: 1,
+  qualifyingSuccesses: 0,
+  requireDistinctProviders: false,
+  startedAt: gateRecoveredStartedAt,
+  updatedAt: Date.now(),
+  attempts: [{
+    id: "gate-live-output:0:1",
+    taskIndex: 0,
+    attempt: 1,
+    maxAttempts: 1,
+    agent: "scout",
+    label: "Gate recovery scout",
+    retrySafety: "read-only",
+    runId: "recovered-gate-run",
+    model: "openai-codex/gpt-5.6-terra:xhigh",
+    provider: "openai-codex",
+    status: "running",
+    startedAt: gateRecoveredStartedAt,
+  }],
+});
+assert.equal(latestPayload().runs.some((run) => run.id === "fleet:fleet-gate-recovered"), false, "a running gate attempt with a real run id should replace its aggregate fleet placeholder");
+const gateTrackedRun = latestPayload().runs.find((run) => run.id === "recovered-gate-run");
+assert.equal(gateTrackedRun?.source, "async", "gate-owned children should become normal output-capable async runs");
+const gateTrackedCanonical = latestCanonicalPayload().instances.find((instance) => instance.runId === "recovered-gate-run");
+await helperCommand.handler(JSON.stringify({
+  requestId: "recovered-gate-live-output-test",
+  action: "subagent-output",
+  payload: { outputId: gateTrackedCanonical.outputRef.id },
+}), ctx);
+const recoveredGateOutput = helperResponse("recovered-gate-live-output-test");
+assert.equal(recoveredGateOutput.ok, true);
+assert.equal(recoveredGateOutput.data.source, "async");
+assert.equal(recoveredGateOutput.data.agent.unavailable, undefined, "a gate child with a run locator must not retain the aggregate-fleet warning");
+assert.deepEqual(recoveredGateOutput.data.agent.recentOutput, ["Gate child output is live."], "a recovered gate child should resolve its session transcript through the real run locator");
 
 const requestsBeforeWorkflowOutput = subagentStatusRequestCount;
 await helperCommand.handler(JSON.stringify({
@@ -1208,6 +1297,49 @@ assert.equal(retainedCanonical.status, "done", "a terminal run keeps an explicit
 assert.ok(Number.isSafeInteger(retainedCanonical.endedAt), "terminal instances carry endedAt");
 assert.equal(retainedCanonical.capabilities.cancel, false, "a finished run stops advertising cancel");
 assert.equal(retainedCanonical.capabilities.open, true, "retained rows stay openable");
+
+bus.emit("firstpick:webui-agent-runs:v1", {
+  version: 1,
+  producerId: "custom-duplicate",
+  complete: true,
+  instances: [providerInstance({
+    instanceId: canonicalAgent.instanceId,
+    runId: canonicalAgent.runId,
+    launcher: "custom",
+    provider: "custom-duplicate",
+    status: "done",
+    updatedAt: retainedCanonical.endedAt,
+    endedAt: retainedCanonical.endedAt,
+    capabilities: { open: true, refresh: true, cancel: false, steer: false },
+  })],
+});
+await helperCommand.handler(JSON.stringify({
+  requestId: "dismiss-terminal-duplicate-projection",
+  action: "subagent-dismiss",
+  payload: { runId: "canon-run" },
+}), ctx);
+assert.equal(helperResponse("dismiss-terminal-duplicate-projection").ok, true, "the terminal owning run should accept dismissal");
+canonical = latestCanonicalPayload();
+assert.equal(canonical.instances.some((instance) => instance.instanceId === canonicalAgent.instanceId), false, "dismissal should suppress a terminal run still present in a duplicate provider snapshot");
+
+bus.emit("firstpick:webui-agent-runs:v1", {
+  version: 1,
+  producerId: "custom-duplicate",
+  complete: true,
+  instances: [providerInstance({
+    instanceId: canonicalAgent.instanceId,
+    runId: canonicalAgent.runId,
+    launcher: "custom",
+    provider: "custom-duplicate",
+    status: "running",
+    startedAt: retainedCanonical.endedAt + 1,
+    updatedAt: retainedCanonical.endedAt + 1,
+    endedAt: null,
+  })],
+});
+canonical = latestCanonicalPayload();
+assert.equal(canonical.instances.find((instance) => instance.instanceId === canonicalAgent.instanceId)?.status, "running", "a newer provider lifecycle should release the local dismissal tombstone");
+bus.emit("firstpick:webui-agent-runs:v1", { version: 1, producerId: "custom-duplicate", complete: true, instances: [] });
 
 for (const handler of extensionHandlers.get("session_shutdown") || []) await handler({ reason: "quit" }, ctx);
 unsubscribeRpc();

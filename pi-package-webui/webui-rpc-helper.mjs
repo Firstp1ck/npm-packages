@@ -921,6 +921,8 @@ export default function webuiRpcHelper(pi) {
   const agentRunProviderSnapshots = new Map();
   const agentRunProviderDiagnostics = [];
   const helperAgentRunOutputSelections = new Map();
+  // Canonical projection key -> dismissed lifecycle end. Keeps duplicate providers from recreating cleared rows.
+  const dismissedHelperAgentRunProjections = new Map();
   const subagentStatusRequestsInFlight = new Set();
   const asyncSubagentRuns = new Map();
   const foregroundSubagentRuns = new Map();
@@ -933,6 +935,34 @@ export default function webuiRpcHelper(pi) {
       ...[...foregroundSubagentRuns.entries()].map(([key, run]) => ({ runs: foregroundSubagentRuns, key, run })),
       ...[...asyncSubagentRuns.entries()].map(([key, run]) => ({ runs: asyncSubagentRuns, key, run })),
     ];
+  }
+
+  function helperAgentRunProjectionKey(instance) {
+    return `${instance?.parentSessionId || "external"}\0${instance?.instanceId || ""}`;
+  }
+
+  function rememberDismissedHelperAgentRunProjections(instances) {
+    for (const instance of instances) {
+      const key = helperAgentRunProjectionKey(instance);
+      if (!instance?.instanceId || dismissedHelperAgentRunProjections.has(key)) continue;
+      dismissedHelperAgentRunProjections.set(key, Number.isFinite(instance.endedAt) ? instance.endedAt : Number.isFinite(instance.startedAt) ? instance.startedAt : 0);
+    }
+    while (dismissedHelperAgentRunProjections.size > AGENT_RUN_INSTANCE_LIMIT) {
+      const oldest = dismissedHelperAgentRunProjections.keys().next().value;
+      if (oldest === undefined) break;
+      dismissedHelperAgentRunProjections.delete(oldest);
+    }
+  }
+
+  function helperAgentRunProjectionIsDismissed(instance) {
+    const key = helperAgentRunProjectionKey(instance);
+    if (!dismissedHelperAgentRunProjections.has(key)) return false;
+    const dismissedLifecycleEnd = dismissedHelperAgentRunProjections.get(key);
+    if (instance?.status === "running" && Number.isFinite(instance.startedAt) && instance.startedAt > dismissedLifecycleEnd) {
+      dismissedHelperAgentRunProjections.delete(key);
+      return false;
+    }
+    return true;
   }
 
   function trimFinishedSubagentRuns() {
@@ -1270,6 +1300,7 @@ export default function webuiRpcHelper(pi) {
     for (const run of runs) {
       for (const candidate of canonicalInstancesFromPublicRun(run, gateRunIds)) {
         const { _selection: selection, ...instance } = candidate;
+        if (instance.status === "running") dismissedHelperAgentRunProjections.delete(helperAgentRunProjectionKey(instance));
         try {
           // The helper owns lifecycle and capabilities for the rows it observes directly.
           index.upsert(instance, { producerId: instance.provider, lifecycleOwner: true, capabilityOwner: true });
@@ -1286,6 +1317,7 @@ export default function webuiRpcHelper(pi) {
 
     for (const [producerId, rows] of agentRunProviderSnapshots) {
       for (const instance of rows.values()) {
+        if (helperAgentRunProjectionIsDismissed(instance)) continue;
         try {
           // Foreign producers may enrich an existing instance but never seize ownership.
           index.upsert(instance, { producerId, lifecycleOwner: false, capabilityOwner: false });
@@ -1425,11 +1457,12 @@ export default function webuiRpcHelper(pi) {
       .sort((left, right) => Number(left[1]?.startedAt || 0) - Number(right[1]?.startedAt || 0));
     return agents.map((agent) => {
       const name = subagentAgentName(agent?.name);
-      const exactModelIndex = available.findIndex(([, run]) => run?.agent?.name === name
+      const matchesName = (run) => run?.agent?.identity === name || run?.agent?.name === name;
+      const exactModelIndex = available.findIndex(([, run]) => matchesName(run)
         && agent?.model && run.agent.model && agent.model === run.agent.model);
       const matchIndex = exactModelIndex >= 0
         ? exactModelIndex
-        : available.findIndex(([, run]) => run?.agent?.name === name);
+        : available.findIndex(([, run]) => matchesName(run));
       if (matchIndex < 0) return undefined;
       const [[key, run]] = available.splice(matchIndex, 1);
       recoveredSubagentRuns.delete(key);
@@ -1514,6 +1547,55 @@ export default function webuiRpcHelper(pi) {
     const statusByDir = new Map();
     for (const agent of Array.isArray(run?.agents) ? run.agents : []) {
       await enrichAsyncSubagentAgent(run, agent, statusByDir);
+    }
+  }
+
+  function trackSubagentGateAttempts(gate) {
+    for (const attempt of Array.isArray(gate?.attempts) ? gate.attempts : []) {
+      const runId = subagentText(attempt?.runId, 160);
+      const agentName = subagentAgentName(attempt?.agent);
+      if (!runId || !agentName || attempt?.status !== "running") continue;
+
+      const [recovered] = claimRecoveredSubagentMatches([{ name: agentName, model: subagentModel(attempt?.model) || undefined }]);
+      const existing = ordinarySubagentRunEntries().find((entry) => entry.run?.id === runId)?.run;
+      if (existing) {
+        if (recovered && Array.isArray(existing.agents) && existing.agents.length === 1) {
+          const [agent] = existing.agents;
+          Object.assign(agent, {
+            model: agent.model || recovered.agent?.model,
+            thinking: agent.thinking || recovered.agent?.thinking,
+          });
+        }
+        continue;
+      }
+
+      const startedAt = Number.isFinite(attempt?.startedAt)
+        ? attempt.startedAt
+        : Number.isFinite(recovered?.startedAt)
+          ? recovered.startedAt
+          : Date.now();
+      const run = {
+        id: runId,
+        source: "async",
+        mode: "single",
+        status: "running",
+        startedAt,
+        eventSeenAt: Date.now(),
+        agents: [{
+          ...recovered?.agent,
+          id: `${runId}:0:${agentName}`,
+          name: agentName,
+          status: "running",
+          index: 0,
+          model: subagentModel(attempt?.model) || recovered?.agent?.model,
+          thinking: subagentThinkingFromModel(attempt?.model) || recovered?.agent?.thinking,
+          nested: false,
+        }],
+      };
+      asyncSubagentRuns.set(runId, run);
+      void enrichAsyncSubagentRun(run).finally(() => {
+        if (asyncSubagentRuns.get(runId) === run) publishSubagentStatus();
+      });
     }
   }
 
@@ -1695,6 +1777,7 @@ export default function webuiRpcHelper(pi) {
         agent: {
           id: `fleet:${entry.key}:agent`,
           name: entry.name,
+          identity: entry.agent,
           model: entry.model,
           thinking: entry.thinking,
         },
@@ -1843,7 +1926,9 @@ export default function webuiRpcHelper(pi) {
     pi.events.on(SUBAGENT_GATE_UPDATE_EVENT, (value) => {
       const id = subagentText(value?.id, 160);
       if (!id) return;
-      subagentGates.set(id, { ...value, id });
+      const gate = { ...value, id };
+      subagentGates.set(id, gate);
+      trackSubagentGateAttempts(gate);
       while (subagentGates.size > 32) subagentGates.delete(subagentGates.keys().next().value);
       publishSubagentStatus();
     }),
@@ -2121,6 +2206,7 @@ export default function webuiRpcHelper(pi) {
     if (!runId) throw new Error("Subagent dismiss requires runId");
     const entry = findTrackedSubagentRun(runId);
     if (entry.run.status === "running") throw new Error(`Cannot dismiss running subagent run: ${runId}`);
+    rememberDismissedHelperAgentRunProjections(canonicalInstancesFromPublicRun(entry.run, new Set()));
     entry.runs.delete(entry.key);
     persistRetainedSubagentRuns();
     publishSubagentStatus();
