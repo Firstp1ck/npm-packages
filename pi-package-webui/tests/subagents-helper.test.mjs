@@ -406,6 +406,115 @@ assert.ok(payload.runs.some((run) => run.id === workflowRunId), "pi-subagents po
 
 const helperCommand = registeredCommands.get("webui-helper");
 assert.ok(helperCommand?.handler, "Web UI helper command should be registered");
+
+const warmingWorkflowRunId = "workflow-warming-up";
+const warmingWorkflowDir = await mkdtemp(path.join(asyncRunDir, "workflow-warmup-"));
+const warmingWorkflowSessionFile = path.join(warmingWorkflowDir, "worker-session.jsonl");
+const warmingWorkflowStartedAt = Date.now() - 500;
+await writeFile(path.join(warmingWorkflowDir, "status.json"), JSON.stringify({
+  runId: warmingWorkflowRunId,
+  mode: "workflow",
+  state: "running",
+  startedAt: warmingWorkflowStartedAt,
+  lastUpdate: Date.now(),
+  steps: [],
+}));
+bus.emit("subagent:async-started", {
+  id: warmingWorkflowRunId,
+  mode: "workflow",
+  asyncDir: warmingWorkflowDir,
+  workflowGraph: { nodes: [] },
+});
+const warmingWorkflowFleet = {
+  version: 1,
+  entries: [
+    { key: "fleet-reviewer-1", agent: "reviewer", startedAt: fleetStartedAt, tokens: { input: 0, output: 0, total: 0 } },
+    { key: "fleet-reviewer-2", agent: "reviewer", startedAt: fleetStartedAt + 1, tokens: { input: 0, output: 0, total: 0 } },
+    { key: "fleet-worker", agent: "worker", startedAt: fleetStartedAt + 2, tokens: { input: 0, output: 0, total: 0 } },
+    { key: "fleet-nested", agent: "nested-oracle", startedAt: fleetStartedAt + 3, tokens: { input: 0, output: 0, total: 0 } },
+    { key: "fleet-recovered", agent: "scout", role: "Recovery scout", model: "openai-codex/gpt-5.6-terra:xhigh", effort: "xhigh", startedAt: fleetStartedAt + 4, tokens: { input: 0, output: 0, total: 0 } },
+    { key: "fleet-warming-workflow", agent: "workflow", startedAt: warmingWorkflowStartedAt, tokens: { input: 0, output: 0, total: 0 } },
+    { key: "fleet-warming-worker", agent: "worker", model: "openai-codex/gpt-5.6-sol", effort: "high", startedAt: warmingWorkflowStartedAt + 1, tokens: { input: 0, output: 0, total: 0 } },
+  ],
+  totalActive: 7,
+  omitted: 0,
+};
+const pollWarmingWorkflow = async (text, asyncSnapshot) => {
+  subagentRpcReplyHook = (request) => {
+    if (request.method !== "status" || Object.keys(request.params || {}).length) return false;
+    subagentRpcReplyHook = null;
+    bus.emit(`subagents:rpc:v1:reply:${request.requestId}`, {
+      version: 1,
+      requestId: request.requestId,
+      method: request.method,
+      success: true,
+      data: { text, details: { mode: "single", results: [] }, fleet: warmingWorkflowFleet, ...(asyncSnapshot ? { asyncSnapshot } : {}) },
+    });
+    return true;
+  };
+  bus.emit("subagents:rpc:v1:ready", { version: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
+const warmingHeaderOnlyStatus = `Active async runs: 1
+
+- ${warmingWorkflowRunId} | running | active | workflow | steps 0 | ~/repo`;
+await pollWarmingWorkflow(warmingHeaderOnlyStatus);
+await pollWarmingWorkflow(warmingHeaderOnlyStatus);
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "fleet:fleet-warming-workflow"), false, "a known workflow controller must not become an empty recovered Workflow row while its first child locator is pending");
+await writeFile(warmingWorkflowSessionFile, `${JSON.stringify({
+  type: "message",
+  timestamp: "2026-07-26T12:00:10.000Z",
+  message: { role: "assistant", content: [{ type: "text", text: "Workflow worker output is live." }] },
+})}\n`);
+await writeFile(path.join(warmingWorkflowDir, "status.json"), JSON.stringify({
+  runId: warmingWorkflowRunId,
+  mode: "workflow",
+  state: "running",
+  startedAt: warmingWorkflowStartedAt,
+  lastUpdate: Date.now(),
+  steps: [{ agent: "worker", status: "running", sessionFile: warmingWorkflowSessionFile, model: "openai-codex/gpt-5.6-sol", thinking: "high" }],
+}));
+await pollWarmingWorkflow("No active async runs.", {
+  kind: "pi-subagents.async-status-snapshot",
+  version: 1,
+  generatedAt: Date.now(),
+  runs: [{
+    id: warmingWorkflowRunId,
+    kind: "workflow",
+    label: "workflow",
+    state: "running",
+    startedAt: warmingWorkflowStartedAt,
+    updatedAt: Date.now(),
+    children: [{ id: "ws1-input-backend", kind: "step", label: "ws1-input-backend", state: "running" }],
+  }],
+});
+payload = latestPayload();
+const warmingWorkflowRun = payload.runs.find((run) => run.id === warmingWorkflowRunId);
+assert.deepEqual(warmingWorkflowRun && {
+  source: warmingWorkflowRun.source,
+  status: warmingWorkflowRun.status,
+  agents: warmingWorkflowRun.agents.map((agent) => [agent.name, agent.model, agent.thinking]),
+}, {
+  source: "async",
+  status: "running",
+  agents: [["worker", "openai-codex/gpt-5.6-sol", "high"]],
+}, "an active workflow header must keep the run alive until its first worker locator appears");
+assert.equal(payload.runs.some((run) => run.id === "fleet:fleet-warming-worker"), false, "the real workflow worker must replace its temporary fleet placeholder");
+const warmingWorkflowCanonical = latestCanonicalPayload().instances.find((instance) => instance.runId === warmingWorkflowRunId && instance.name === "worker");
+assert.ok(warmingWorkflowCanonical, "the resolved workflow worker should publish a canonical output handle");
+await helperCommand.handler(JSON.stringify({
+  requestId: "warming-workflow-live-output-test",
+  action: "subagent-output",
+  payload: { outputId: warmingWorkflowCanonical.outputRef.id },
+}), ctx);
+const warmingWorkflowOutput = helperResponse("warming-workflow-live-output-test");
+assert.equal(warmingWorkflowOutput.ok, true);
+assert.equal(warmingWorkflowOutput.data.source, "async");
+assert.equal(warmingWorkflowOutput.data.agent.unavailable, undefined);
+assert.deepEqual(warmingWorkflowOutput.data.agent.recentOutput, ["Workflow worker output is live."], "a newly resolved workflow worker should expose its live transcript instead of the recovered placeholder");
+bus.emit("subagent:async-complete", { id: warmingWorkflowRunId });
+
 await helperCommand.handler(JSON.stringify({
   requestId: "recovered-subagent-output-test",
   action: "subagent-output",

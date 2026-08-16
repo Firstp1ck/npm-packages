@@ -55,6 +55,9 @@ const SUBAGENT_RPC_VERSION = 1;
 const SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
 const SUBAGENT_RPC_READY_EVENT = "subagents:rpc:v1:ready";
 const SUBAGENT_RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
+const SUBAGENT_ASYNC_STATUS_SNAPSHOT_KIND = "pi-subagents.async-status-snapshot";
+const SUBAGENT_ASYNC_STATUS_SNAPSHOT_VERSION = 1;
+const SUBAGENT_ASYNC_STATUS_SNAPSHOT_RUN_LIMIT = 32;
 const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
 const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 const WORKFLOW_SUBAGENTS_EVENT = "firstpick:workflow-subagents:v1";
@@ -841,12 +844,13 @@ function parseSubagentStatusText(text, previousRuns = new Map()) {
     if (runMatch) {
       const id = subagentText(runMatch[1], 160);
       const segments = rawLine.split(" | ").map((part) => part.trim());
-      const mode = segments.map((part) => part.match(/^(single|parallel|chain)\b/)?.[1]).find(Boolean);
+      const mode = segments.map((part) => part.match(/^(single|parallel|chain|workflow)\b/)?.[1]).find(Boolean);
       const previous = previousRuns.get(id);
       current = {
         id,
         source: "async",
         mode: subagentMode(mode, previous?.mode),
+        workflow: mode === "workflow" || previous?.workflow === true,
         status: runMatch[2].toLowerCase(),
         startedAt: previous?.startedAt || Date.now(),
         agents: [],
@@ -889,7 +893,40 @@ function parseSubagentStatusText(text, previousRuns = new Map()) {
       nested: /^\s{4,}\d+\./.test(rawLine),
     });
   }
-  return runs.filter((run) => run.status === "running" && run.agents.length > 0);
+  // Keep active headers even before their first child step is persisted. Dynamic
+  // workflow runs can report a running header for several polls while their
+  // worker locator is still being written. Dropping that header makes absence
+  // reconciliation falsely finish the run, after which later worker details are
+  // deliberately ignored as stale and the UI is left with a fleet placeholder.
+  return runs.filter((run) => run.status === "running");
+}
+
+function parseAsyncSubagentSnapshot(value, previousRuns = new Map()) {
+  if (!value || typeof value !== "object"
+    || value.kind !== SUBAGENT_ASYNC_STATUS_SNAPSHOT_KIND
+    || value.version !== SUBAGENT_ASYNC_STATUS_SNAPSHOT_VERSION
+    || !Array.isArray(value.runs)) return [];
+  const runs = [];
+  const seen = new Set();
+  for (const candidate of value.runs.slice(0, SUBAGENT_ASYNC_STATUS_SNAPSHOT_RUN_LIMIT)) {
+    const id = subagentText(candidate?.id, 160);
+    if (!id || seen.has(id) || candidate?.state !== "running") continue;
+    seen.add(id);
+    const previous = previousRuns.get(id);
+    const workflow = candidate?.kind === "workflow" || previous?.workflow === true;
+    runs.push({
+      id,
+      source: "async",
+      mode: subagentMode(undefined, previous?.mode),
+      workflow,
+      status: "running",
+      startedAt: Number.isSafeInteger(candidate?.startedAt) && candidate.startedAt >= 0
+        ? candidate.startedAt
+        : Number.isFinite(previous?.startedAt) ? previous.startedAt : Date.now(),
+      agents: [],
+    });
+  }
+  return runs;
 }
 
 export default function webuiRpcHelper(pi) {
@@ -1543,9 +1580,79 @@ export default function webuiRpcHelper(pi) {
     if (sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl") agent.sessionFile = path.normalize(sessionFile);
   }
 
+  function subagentRunningAgentsFromStatus(run, status) {
+    return (Array.isArray(status?.steps) ? status.steps : [])
+      .slice(0, 128)
+      .map((step, offset) => {
+        if (step?.status !== "running") return undefined;
+        const name = subagentAgentName(step.agent);
+        if (!name) return undefined;
+        const index = Number.isInteger(step.index) && step.index >= 0 ? step.index : offset;
+        const sessionFile = subagentText(step.sessionFile, 4096);
+        return {
+          id: `${run.id}:step:${index}:${name}`,
+          name,
+          status: "running",
+          index,
+          currentTool: subagentText(step.currentTool, 120) || undefined,
+          activityState: subagentText(step.activityState, 80) || undefined,
+          currentPath: subagentText(step.currentPath, 1000) || undefined,
+          turnCount: Number.isFinite(step.turnCount) ? step.turnCount : undefined,
+          toolCount: Number.isFinite(step.toolCount) ? step.toolCount : undefined,
+          tokens: Number.isFinite(step.tokens?.total) ? step.tokens.total : Number.isFinite(step.tokens) ? step.tokens : undefined,
+          model: subagentModel(step.model) || undefined,
+          thinking: subagentThinking(step.thinking) || subagentThinkingFromModel(step.model) || undefined,
+          recentTools: subagentRecentTools(step.recentTools),
+          recentOutput: subagentOutputLines(step.recentOutput),
+          sessionFile: sessionFile && path.isAbsolute(sessionFile) && path.extname(sessionFile) === ".jsonl" ? path.normalize(sessionFile) : undefined,
+          nested: false,
+        };
+      })
+      .filter(Boolean);
+  }
+
   async function enrichAsyncSubagentRun(run) {
     const statusByDir = new Map();
+    const agents = Array.isArray(run?.agents) ? run.agents : [];
+    if (!agents.some((agent) => agent?.status === "running")) {
+      const targetRunId = subagentText(run?.id, 160);
+      let asyncDir = subagentText(run?.asyncDir, 4096);
+      if (!asyncDir && targetRunId) {
+        try {
+          const data = await requestSubagentStatus({ id: targetRunId });
+          asyncDir = subagentAsyncDirFromStatusText(data?.text);
+        } catch {
+          // The aggregate snapshot still keeps the run alive until a locator resolves.
+        }
+      }
+      if (asyncDir) {
+        run.asyncDir = asyncDir;
+        let status = null;
+        try {
+          status = JSON.parse(readFileSync(path.join(asyncDir, "status.json"), "utf8"));
+        } catch {
+          // A status write can be briefly between atomic replacements.
+        }
+        if (status && (!status.runId || status.runId === targetRunId)) {
+          statusByDir.set(asyncDir, status);
+          run.workflow = status.mode === "workflow" || run.workflow === true;
+          run.mode = subagentMode(status.mode, run.mode);
+          if (!Number.isFinite(run.startedAt) && Number.isFinite(status.startedAt)) run.startedAt = status.startedAt;
+          const discovered = subagentRunningAgentsFromStatus(run, status);
+          if (discovered.length) {
+            run.agents = [
+              ...agents.filter((agent) => !discovered.some((candidate) => candidate.index === agent.index && candidate.name === agent.name)),
+              ...discovered.map((agent) => ({
+                ...agents.find((candidate) => candidate.index === agent.index && candidate.name === agent.name),
+                ...agent,
+              })),
+            ];
+          }
+        }
+      }
+    }
     for (const agent of Array.isArray(run?.agents) ? run.agents : []) {
+      if (agent?.status !== "running") continue;
       await enrichAsyncSubagentAgent(run, agent, statusByDir);
     }
   }
@@ -1742,9 +1849,16 @@ export default function webuiRpcHelper(pi) {
     const addSlots = (runs, priority) => {
       for (const run of runs) {
         if (run?.status !== "running") continue;
+        const slotPriority = parsedIds.has(run.id) ? 0 : priority;
+        // pi-subagents publishes one aggregate fleet entry named "workflow" for
+        // each orchestration run. It is a controller, not a model-powered agent.
+        // Claim it against the known workflow container so it cannot become an
+        // empty recovered Workflow row beside the real child agent.
+        if (run.workflow === true) slots.push({ run, identity: "workflow", priority: slotPriority, claimed: false });
         for (const agent of Array.isArray(run.agents) ? run.agents : []) {
-          if (agent?.status !== "running" || !subagentAgentName(agent.name)) continue;
-          slots.push({ run, agent, priority: parsedIds.has(run.id) ? 0 : priority, claimed: false });
+          const identity = subagentAgentName(agent?.name);
+          if (agent?.status !== "running" || !identity) continue;
+          slots.push({ run, agent, identity, priority: slotPriority, claimed: false });
         }
       }
     };
@@ -1755,7 +1869,7 @@ export default function webuiRpcHelper(pi) {
     const matchedRunIds = new Set();
     const unmatched = [];
     for (const entry of fleet.entries) {
-      const slot = slots.find((candidate) => !candidate.claimed && candidate.agent.name === entry.agent);
+      const slot = slots.find((candidate) => !candidate.claimed && candidate.identity === entry.agent);
       if (!slot) {
         unmatched.push(entry);
         continue;
@@ -1802,6 +1916,12 @@ export default function webuiRpcHelper(pi) {
       const data = await requestSubagentStatus();
       if (generation !== subagentPollGeneration || sequence <= subagentAppliedPollSequence) return;
       const parsedRuns = parseSubagentStatusText(data?.text, asyncSubagentRuns);
+      const parsedRunIds = new Set(parsedRuns.map((run) => run.id));
+      for (const run of parseAsyncSubagentSnapshot(data?.asyncSnapshot, asyncSubagentRuns)) {
+        if (parsedRunIds.has(run.id)) continue;
+        parsedRunIds.add(run.id);
+        parsedRuns.push(run);
+      }
       const nextRuns = [];
       for (const run of parsedRuns) {
         const previous = asyncSubagentRuns.get(run.id);
@@ -1908,6 +2028,7 @@ export default function webuiRpcHelper(pi) {
         id,
         source: "async",
         mode: subagentMode(info.mode, Array.isArray(info.chain) ? "chain" : "single"),
+        workflow: info.mode === "workflow" || undefined,
         status: "running",
         startedAt: Date.now(),
         eventSeenAt: Date.now(),

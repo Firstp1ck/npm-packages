@@ -162,12 +162,14 @@ test("the 32-conversation dense grid stays contained and opens the correct trunc
     return {
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
+      rootFontSize: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       widths: tagRects.map((rect) => rect.width),
       rowTops: [...new Set(tagRects.map((rect) => Math.round(rect.top)))],
       allContained: tagRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
     };
   });
   assert.ok(layout.allContained, "every desktop conversation tag should remain within the tag container");
+  assert.ok(layout.clientWidth <= (17 * layout.rootFontSize) + 0.5, `the desktop conversation tag group should stay within 17rem (${layout.clientWidth}px)`);
   assert.ok(layout.scrollWidth <= layout.clientWidth, `the desktop tag grid should not overflow horizontally (${layout.scrollWidth} > ${layout.clientWidth})`);
   assert.ok(Math.min(...layout.widths) >= 44, `every dense desktop target should be at least 44px wide (minimum ${Math.min(...layout.widths)})`);
   assert.ok(layout.rowTops.length > 1, "the 32-conversation desktop fixture should wrap into multiple rows");

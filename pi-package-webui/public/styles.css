@@ -9471,11 +9471,11 @@ summary { cursor: pointer; color: var(--warning); }
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(0, 1fr);
-  flex: 1 1 12rem;
+  flex: 0 1 17rem;
   align-items: center;
   gap: 0.28rem;
   min-width: 0;
-  max-width: 100%;
+  max-width: min(17rem, 100%);
   padding-block: 0.12rem;
 }
 .composer-intercom-tags[hidden] { display: none !important; }
@@ -9538,7 +9538,7 @@ summary { cursor: pointer; color: var(--warning); }
   text-align: center;
 }
 @media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
-  .composer-intercom-tags { flex: 1 1 100%; min-width: 0; }
+  .composer-intercom-tags { flex: 1 1 100%; min-width: 0; max-width: 100%; }
   .composer-intercom-tag { min-height: 44px; }
 }
 .composer-feature-category-tag {
