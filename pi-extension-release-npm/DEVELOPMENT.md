@@ -109,6 +109,8 @@ Readiness checks require or verify:
 
 `/release-npm` runs `./dev/scripts/release-workflow.sh --plan --all` first. The plan step writes publish candidates from version planning to a temporary target list, applies planned version bumps in a temporary workspace, and runs publish checks only for those candidate directories. After confirmation it publishes only the package directories detected in that plan with `./dev/scripts/release-workflow.sh --publish --target <dir>`.
 
+Publishable-content comparison keeps a script-free `npm pack --dry-run` fast path for ordinary packages. Packages declaring `prepare`, `prepack`, or `postpack` are instead packed into a temporary tarball with lifecycle scripts enabled and compared artifact-to-artifact against npm, preventing generated files from causing false release candidates.
+
 ## Commands
 
 - `/release-npm-setup` — prompts for an npm token with Pi native input, saves it using `npm config set //registry.npmjs.org/:_authToken <token>`, then verifies with `npm whoami`.
