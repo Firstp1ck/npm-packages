@@ -10087,7 +10087,7 @@ body.composer-action-grid-enabled .composer-row {
   --composer-action-cell-min-width: 3.2rem;
   position: relative;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--composer-action-cell-min-width), 1fr));
+  grid-template-columns: repeat(auto-fill, var(--composer-action-cell-min-width));
   grid-auto-flow: dense;
   align-items: stretch;
 }
@@ -10125,7 +10125,7 @@ body.composer-action-grid-enabled.composer-action-drag-active .composer-row > .c
   z-index: 0;
   inset: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--composer-action-cell-min-width), 1fr));
+  grid-template-columns: repeat(auto-fill, var(--composer-action-cell-min-width));
   grid-template-rows: repeat(var(--composer-action-grid-rows, 1), minmax(0, 1fr));
   gap: 0.5rem;
   pointer-events: none;

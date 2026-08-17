@@ -4616,13 +4616,48 @@ function persistComposerActionSlotLayout() {
   markDurableUiLayoutDirty("composerActions");
 }
 
-function remapComposerActionSlot(record, slot, sourceColumns, targetColumns) {
-  const sourceRow = Math.floor(slot / sourceColumns);
-  const sourceColumn = slot % sourceColumns;
-  const sourceMaxColumn = Math.max(0, sourceColumns - record.span);
-  const targetMaxColumn = Math.max(0, targetColumns - record.span);
-  const relativeColumn = sourceMaxColumn > 0 ? Math.min(sourceColumn, sourceMaxColumn) / sourceMaxColumn : 0;
-  return sourceRow * targetColumns + Math.round(relativeColumn * targetMaxColumn);
+function projectComposerActionSlots(entries, sourceColumns, targetColumns) {
+  const projected = new Map();
+  const chunks = [];
+  let chunk = [];
+  const flushChunk = () => {
+    if (chunk.length) chunks.push(chunk);
+    chunk = [];
+  };
+
+  for (const entry of entries) {
+    const sourceRow = Math.floor(entry.storedSlot / sourceColumns);
+    const sourceColumn = entry.storedSlot % sourceColumns;
+    const sourceEnd = sourceColumn + entry.record.span;
+    const first = chunk[0];
+    const previous = chunk.at(-1);
+    const continuesChunk = !!first
+      && first.sourceRow === sourceRow
+      && sourceColumn <= previous.sourceEnd + 1
+      && sourceEnd - first.sourceColumn <= targetColumns;
+    if (chunk.length && !continuesChunk) flushChunk();
+    chunk.push({ ...entry, sourceRow, sourceColumn, sourceEnd });
+  }
+  flushChunk();
+
+  let lastTargetRow = -1;
+  let lastTargetEnd = 0;
+  for (const entriesInChunk of chunks) {
+    const sourceRow = entriesInChunk[0].sourceRow;
+    const sourceStart = entriesInChunk[0].sourceColumn;
+    const sourceEnd = Math.max(...entriesInChunk.map((entry) => entry.sourceEnd));
+    const chunkWidth = sourceEnd - sourceStart;
+    const targetStart = Math.max(0, Math.min(sourceStart, targetColumns - chunkWidth));
+    let targetRow = Math.max(sourceRow, lastTargetRow);
+    if (targetRow === lastTargetRow && targetStart < lastTargetEnd) targetRow += 1;
+    for (const entry of entriesInChunk) {
+      const targetColumn = targetStart + (entry.sourceColumn - sourceStart);
+      projected.set(entry.id, targetRow * targetColumns + targetColumn);
+    }
+    lastTargetRow = targetRow;
+    lastTargetEnd = targetStart + chunkWidth;
+  }
+  return projected;
 }
 
 function nearestAvailableComposerActionSlot(record, preferredSlot, layout, columns) {
@@ -4653,13 +4688,15 @@ function restoreComposerActionSlotLayout() {
     return;
   }
   const records = new Map(composerActionRecords().map((record) => [record.id, record]));
-  for (const [id, storedSlot] of [...stored.positions].sort((a, b) => a[1] - b[1])) {
-    const record = records.get(id);
-    if (!record || record.root.hidden || !record.root.getClientRects().length) continue;
-    const preferredSlot = stored.columns === columns
-      ? storedSlot
-      : remapComposerActionSlot(record, storedSlot, stored.columns, columns);
-    const slot = nearestAvailableComposerActionSlot(record, preferredSlot, composerActionSlotLayout, columns);
+  const storedEntries = [...stored.positions]
+    .sort((a, b) => a[1] - b[1])
+    .map(([id, storedSlot]) => ({ id, storedSlot, record: records.get(id) }))
+    .filter(({ record }) => record && !record.root.hidden && record.root.getClientRects().length);
+  const projectedSlots = stored.columns === columns
+    ? new Map(storedEntries.map(({ id, storedSlot }) => [id, storedSlot]))
+    : projectComposerActionSlots(storedEntries, stored.columns, columns);
+  for (const { id, record } of storedEntries) {
+    const slot = nearestAvailableComposerActionSlot(record, projectedSlots.get(id), composerActionSlotLayout, columns);
     if (slot !== null) composerActionSlotLayout.set(id, slot);
   }
   applyComposerActionSlotLayout();

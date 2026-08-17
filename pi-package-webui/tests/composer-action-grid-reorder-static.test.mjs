@@ -30,14 +30,14 @@ assert.match(html, /id="composerActionOrderStatus"[^>]*role="status"[^>]*aria-li
 
 assert.match(
   css,
-  /body\.composer-action-grid-enabled \.composer-row\s*\{[\s\S]*--composer-action-cell-min-width:\s*3\.2rem[\s\S]*display:\s*grid[\s\S]*grid-template-columns:\s*repeat\(auto-fill, minmax\(var\(--composer-action-cell-min-width\), 1fr\)\)[\s\S]*grid-auto-flow:\s*dense/,
-  "the desktop composer should use wider dense responsive grid cells",
+  /body\.composer-action-grid-enabled \.composer-row\s*\{[\s\S]*--composer-action-cell-min-width:\s*3\.2rem[\s\S]*display:\s*grid[\s\S]*grid-template-columns:\s*repeat\(auto-fill, var\(--composer-action-cell-min-width\)\)[\s\S]*grid-auto-flow:\s*dense/,
+  "the desktop composer should use fixed-width dense grid cells",
 );
 assert.match(css, /grid-column:\s*var\(--composer-action-grid-column, auto\) \/ span var\(--composer-action-grid-span\)/, "actions should support explicit sparse grid columns");
 assert.match(css, /\[data-composer-action-span="2"\]\s*\{\s*--composer-action-grid-span:\s*2;/, "wide actions should span exactly two cells");
 assert.match(css, /body\.composer-action-grid-enabled \.composer-row \[data-composer-action-id\]\.composer-publish-menu:hover,[\s\S]*\.composer-publish-menu:focus-within,[\s\S]*\.composer-publish-menu\.open \{\s*z-index:\s*100;/, "open composer dropdowns should stack above prompt tags and neighboring grid controls");
 assert.match(css, /#newSessionButton\s*\{[\s\S]*display:\s*grid[\s\S]*place-items:\s*center[\s\S]*padding-inline:\s*0\.4rem[\s\S]*text-align:\s*center/, "New should center its label inside the one-cell button");
-assert.match(css, /composer-action-drag-active[\s\S]*composer-action-grid-guide:not\(\[hidden\]\)[\s\S]*position:\s*absolute[\s\S]*inset:\s*0[\s\S]*grid-template-columns:\s*repeat\(auto-fill, minmax\(var\(--composer-action-cell-min-width\), 1fr\)\)[\s\S]*gap:\s*0\.5rem/, "the drag-only guide should cover the complete composer row with the same responsive tracks");
+assert.match(css, /composer-action-drag-active[\s\S]*composer-action-grid-guide:not\(\[hidden\]\)[\s\S]*position:\s*absolute[\s\S]*inset:\s*0[\s\S]*grid-template-columns:\s*repeat\(auto-fill, var\(--composer-action-cell-min-width\)\)[\s\S]*gap:\s*0\.5rem/, "the drag-only guide should cover the complete composer row with the same responsive tracks");
 assert.match(css, /\.composer-action-grid-cell\s*\{[\s\S]*min-width:\s*0[\s\S]*border:[\s\S]*background:/, "empty guide cells should render as full grid cells");
 assert.match(css, /composer-action-dragging[\s\S]*cursor:\s*grabbing[\s\S]*composer-action-drag-before[\s\S]*composer-action-drag-after/, "dragging and occupied drop targets should have visible affordances");
 assert.match(css, /composer-action-grid-cell-target[\s\S]*border-color:\s*var\(--ctp-teal\)/, "empty-cell drop targets should have a visible affordance");
@@ -48,7 +48,8 @@ assert.match(app, /function applyComposerActionOrder\(orderIds\)[\s\S]*knownIds[
 assert.match(app, /function showComposerActionGridGuide\(\)[\s\S]*composerActionGridColumnCount\(\)[\s\S]*top - groups\.at\(-1\) > 4[\s\S]*columnCount \* rowCount[\s\S]*composer-action-drag-active[\s\S]*function hideComposerActionGridGuide/, "dragging should materialize every full-row guide cell without splitting near-equal action tops into false rows");
 assert.match(app, /function composerActionGridColumnCount\(\)[\s\S]*--composer-action-cell-min-width[\s\S]*row\.clientWidth[\s\S]*Math\.floor\(\(availableWidth \+ gap\) \/ \(minWidth \+ gap\)\)/, "column counts should derive from the visible row width instead of overflow-created implicit tracks");
 assert.match(app, /function readStoredComposerActionLayout\(\)[\s\S]*COMPOSER_ACTION_LAYOUT_STORAGE_KEY[\s\S]*function composerActionSlotCanFit[\s\S]*function persistComposerActionSlotLayout[\s\S]*positions:\s*Object\.fromEntries/, "sparse cell positions should be validated and persisted independently from order");
-assert.match(app, /function remapComposerActionSlot\(record, slot, sourceColumns, targetColumns\)[\s\S]*relativeColumn[\s\S]*function nearestAvailableComposerActionSlot[\s\S]*function restoreComposerActionSlotLayout\(\)[\s\S]*stored\.columns === columns[\s\S]*remapComposerActionSlot/, "saved sparse positions should project into changed responsive grid widths instead of being cleared");
+assert.match(app, /function projectComposerActionSlots\(entries, sourceColumns, targetColumns\)[\s\S]*continuesChunk[\s\S]*targetColumns - chunkWidth[\s\S]*lastTargetRow[\s\S]*projected\.set[\s\S]*function nearestAvailableComposerActionSlot[\s\S]*function restoreComposerActionSlotLayout\(\)[\s\S]*projectComposerActionSlots/, "saved sparse positions should project contiguous action groups without changing their visual order");
+assert.doesNotMatch(app, /relativeColumn|remapComposerActionSlot/, "composer width changes must not proportionally or independently remap saved action columns");
 assert.doesNotMatch(app, /if \(!stored \|\| stored\.columns !== columns\)/, "column-count changes should not discard saved sparse positions");
 assert.match(app, /function captureComposerActionSlotLayout\(\)[\s\S]*composerActionGridGuide[\s\S]*function moveComposerActionToGridCell\(actionId, cell\)[\s\S]*composerActionSlotCanFit[\s\S]*composer-action-grid-cell-target/, "empty grid cells should capture and retain exact action slots");
 assert.match(app, /function composerActionRootFromPoint\(clientX, clientY\)[\s\S]*elementFromPoint[\s\S]*function updateComposerActionPointerDrag\(event\)[\s\S]*Math\.hypot[\s\S]*COMPOSER_ACTION_POINTER_DRAG_THRESHOLD_PX[\s\S]*showComposerActionGridGuide\(\)[\s\S]*captureComposerActionSlotLayout\(\)[\s\S]*composerActionGridCellFromPoint[\s\S]*moveComposerActionToGridCell/, "pointer dragging should activate after the threshold and distinguish occupied from empty grid cells");
@@ -56,8 +57,8 @@ assert.match(app, /function initializeComposerActionOrdering\(\)[\s\S]*MutationO
 assert.match(app, /event\.key === COMPOSER_ACTION_ORDER_STORAGE_KEY\) restoreComposerActionOrder\(\)[\s\S]*event\.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY\) restoreComposerActionSlotLayout\(\)/, "other tabs should apply persisted composer order and sparse-layout changes");
 assert.match(app, /initializeComposerActionOrdering\(\);[\s\S]*restoreSidePanelSectionOrder\(\);/, "composer ordering should initialize during guarded app startup");
 
-assert.match(html, /styles\.css\?v=130/, "changed composer styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=151/, "changed composer behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v116"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=131/, "changed composer styles should advance the stylesheet revision");
+assert.match(html, /app\.js\?v=152/, "changed composer behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v118"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("composer-action-grid-reorder-static.test.mjs passed");

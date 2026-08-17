@@ -223,7 +223,7 @@ assert.match(
 );
 assert.match(
   app,
-  /function restoreComposerActionSlotLayout\(\)[\s\S]*stored\.columns === columns[\s\S]*remapComposerActionSlot[\s\S]*nearestAvailableComposerActionSlot/,
+  /function restoreComposerActionSlotLayout\(\)[\s\S]*stored\.columns === columns[\s\S]*projectComposerActionSlots[\s\S]*nearestAvailableComposerActionSlot/,
   "stored slots should project into mismatched column counts without rewriting the saved source geometry",
 );
 
@@ -271,8 +271,8 @@ assert.match(
 
 // --- Coherent browser asset revisions --------------------------------------
 
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v116"/, "changed browser assets should advance the PWA cache identity");
-assert.match(html, /styles\.css\?v=130/, "the page should request the updated layout stylesheet revision");
-assert.match(html, /data-app-src="\/app\.js\?v=151"/, "the boot loader should request the updated app module revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v118"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=131/, "the page should request the updated layout stylesheet revision");
+assert.match(html, /data-app-src="\/app\.js\?v=152"/, "the boot loader should request the updated app module revision");
 
 console.log("persistent-ui-layout-static.test.mjs passed");

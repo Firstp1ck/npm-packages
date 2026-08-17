@@ -68,7 +68,8 @@ test.beforeEach(async () => {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      layout: { version: 1, composerActions: null },
+      sidePanelWidth: 384,
+      layout: { version: 3, composerActions: null },
       expectedLayoutRevision: current.data.layoutRevision,
     }),
   });
@@ -81,6 +82,14 @@ async function storedOrder(page) {
 
 async function storedLayout(page) {
   return page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), layoutStorageKey);
+}
+
+async function resizeControlDeckBy(handle, key, count) {
+  for (let index = 0; index < count; index += 1) {
+    const previous = await handle.getAttribute("aria-valuenow");
+    await handle.press(key);
+    await expect.poll(async () => handle.getAttribute("aria-valuenow")).not.toBe(previous);
+  }
 }
 
 test("composer actions persist pointer and keyboard grid reordering", async ({ page }) => {
@@ -247,18 +256,81 @@ test("empty composer grid cells retain their space and accept later drops", asyn
   await expect.poll(async () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null")?.positions?.new, layoutStorageKey)).toBe(middleEmptyCellIndex);
 });
 
-test("sparse composer buttons keep responsive positions when the Control Deck width changes", async ({ page }) => {
+test("narrow composer projection preserves the saved order of adjacent actions", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(baseURL);
 
   const row = page.locator(".composer-row");
   const options = page.locator('[data-composer-action-id="options"]');
+  const send = page.locator('[data-composer-action-id="send"]');
   const gridGuide = page.locator("#composerActionGridGuide");
   const resizeHandle = page.locator("#sidePanelResizeHandle");
+
+  const moveToCellFromEnd = async (action, offsetFromEnd) => {
+    const actionBox = await action.boundingBox();
+    expect(actionBox).toBeTruthy();
+    await page.mouse.move(actionBox.x + actionBox.width / 2, actionBox.y + actionBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(actionBox.x + actionBox.width / 2 + 12, actionBox.y + actionBox.height / 2, { steps: 2 });
+    await expect(gridGuide).toBeVisible();
+    const cellCount = await gridGuide.locator(".composer-action-grid-cell").count();
+    const target = gridGuide.locator(".composer-action-grid-cell").nth(cellCount - offsetFromEnd);
+    const targetBox = await target.boundingBox();
+    expect(targetBox).toBeTruthy();
+    await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await expect(gridGuide).toBeHidden();
+  };
+
+  await moveToCellFromEnd(options, 3);
+  await moveToCellFromEnd(send, 2);
+  const savedWideLayout = await storedLayout(page);
+  expect(savedWideLayout?.positions?.options).toBeLessThan(savedWideLayout?.positions?.send);
   const wideRowBox = await row.boundingBox();
-  const optionsBox = await options.boundingBox();
   expect(wideRowBox).toBeTruthy();
+
+  await resizeHandle.focus();
+  await resizeControlDeckBy(resizeHandle, "Shift+ArrowLeft", 3);
+  await expect.poll(async () => (await row.boundingBox()).width).toBeLessThan(wideRowBox.width - 150);
+  await expect.poll(async () => {
+    const [optionsBox, sendBox] = await Promise.all([options.boundingBox(), send.boundingBox()]);
+    if (!optionsBox || !sendBox) return false;
+    return optionsBox.y < sendBox.y || (Math.abs(optionsBox.y - sendBox.y) < 1 && optionsBox.x < sendBox.x);
+  }).toBe(true);
+  expect(await storedLayout(page)).toEqual(savedWideLayout);
+
+  await page.reload();
+  await expect.poll(async () => {
+    const [optionsBox, sendBox] = await Promise.all([options.boundingBox(), send.boundingBox()]);
+    if (!optionsBox || !sendBox) return false;
+    return optionsBox.y < sendBox.y || (Math.abs(optionsBox.y - sendBox.y) < 1 && optionsBox.x < sendBox.x);
+  }).toBe(true);
+  expect(await storedLayout(page)).toEqual(savedWideLayout);
+});
+
+test("sparse composer buttons keep fixed widths and stable columns when the Control Deck width changes", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(baseURL);
+
+  const row = page.locator(".composer-row");
+  const options = page.locator('[data-composer-action-id="options"]');
+  const send = page.locator('[data-composer-action-id="send"]');
+  const gridGuide = page.locator("#composerActionGridGuide");
+  const resizeHandle = page.locator("#sidePanelResizeHandle");
+  const initialRowBox = await row.boundingBox();
+  expect(initialRowBox).toBeTruthy();
+
+  await resizeHandle.focus();
+  await resizeControlDeckBy(resizeHandle, "Shift+ArrowLeft", 3);
+  await expect.poll(async () => (await row.boundingBox()).width).toBeLessThan(initialRowBox.width - 50);
+
+  const narrowRowBox = await row.boundingBox();
+  const optionsBox = await options.boundingBox();
+  expect(narrowRowBox).toBeTruthy();
   expect(optionsBox).toBeTruthy();
+  const rootFontSize = await page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).fontSize));
+  const fixedCellWidth = 3.2 * rootFontSize;
+  expect(Math.abs(optionsBox.width - fixedCellWidth)).toBeLessThan(1);
 
   await page.mouse.move(optionsBox.x + optionsBox.width / 2, optionsBox.y + optionsBox.height / 2);
   await page.mouse.down();
@@ -269,35 +341,46 @@ test("sparse composer buttons keep responsive positions when the Control Deck wi
   await page.mouse.move(lastCellBox.x + lastCellBox.width / 2, lastCellBox.y + lastCellBox.height / 2, { steps: 8 });
   await page.mouse.up();
 
-  const wideColumn = await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"));
-  const savedWideLayout = await storedLayout(page);
-  expect(Number(wideColumn)).toBeGreaterThan(1);
-  expect(savedWideLayout?.columns).toBeGreaterThan(1);
+  const placedOptionsBox = await options.boundingBox();
+  const placedSendBox = await send.boundingBox();
+  const narrowColumn = await options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"));
+  const savedNarrowLayout = await storedLayout(page);
+  expect(placedOptionsBox).toBeTruthy();
+  expect(placedSendBox).toBeTruthy();
+  expect(Number(narrowColumn)).toBeGreaterThan(1);
+  expect(savedNarrowLayout?.columns).toBeGreaterThan(1);
 
-  await resizeHandle.focus();
-  await resizeHandle.press("Shift+ArrowLeft");
-  await resizeHandle.press("Shift+ArrowLeft");
-  await resizeHandle.press("Shift+ArrowLeft");
+  await resizeControlDeckBy(resizeHandle, "Shift+ArrowRight", 3);
 
-  await expect.poll(async () => (await row.boundingBox()).width).toBeLessThan(wideRowBox.width - 50);
-  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).not.toBe("");
-  await expect.poll(async () => page.evaluate(() => {
-    const composerRow = document.querySelector(".composer-row");
-    const action = document.querySelector('[data-composer-action-id="options"]');
-    const rowRect = composerRow.getBoundingClientRect();
-    const actionRect = action.getBoundingClientRect();
-    return Math.abs(rowRect.right - actionRect.right);
-  })).toBeLessThan(2);
-  expect(await storedLayout(page)).toEqual(savedWideLayout);
+  await expect.poll(async () => (await row.boundingBox()).width).toBeGreaterThan(narrowRowBox.width + 50);
+  await expect.poll(async () => {
+    const wideOptionsBox = await options.boundingBox();
+    return Math.abs(wideOptionsBox.width - placedOptionsBox.width);
+  }).toBeLessThan(1);
+  await expect.poll(async () => {
+    const wideSendBox = await send.boundingBox();
+    return Math.abs(wideSendBox.width - placedSendBox.width);
+  }).toBeLessThan(1);
+  await expect.poll(async () => {
+    const wideOptionsBox = await options.boundingBox();
+    return Math.abs(wideOptionsBox.x - placedOptionsBox.x);
+  }).toBeLessThan(1);
+  await expect.poll(async () => {
+    const wideSendBox = await send.boundingBox();
+    return Math.abs(wideSendBox.x - placedSendBox.x);
+  }).toBeLessThan(1);
+  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(narrowColumn);
+  expect(await storedLayout(page)).toEqual(savedNarrowLayout);
 
   await page.reload();
-  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).not.toBe("");
-  await expect.poll(async () => page.evaluate(() => {
-    const composerRow = document.querySelector(".composer-row");
-    const action = document.querySelector('[data-composer-action-id="options"]');
-    const rowRect = composerRow.getBoundingClientRect();
-    const actionRect = action.getBoundingClientRect();
-    return Math.abs(rowRect.right - actionRect.right);
-  })).toBeLessThan(2);
-  expect(await storedLayout(page)).toEqual(savedWideLayout);
+  await expect.poll(async () => options.evaluate((node) => node.style.getPropertyValue("--composer-action-grid-column"))).toBe(narrowColumn);
+  await expect.poll(async () => {
+    const restoredOptionsBox = await options.boundingBox();
+    return Math.abs(restoredOptionsBox.x - placedOptionsBox.x);
+  }).toBeLessThan(1);
+  await expect.poll(async () => {
+    const restoredSendBox = await send.boundingBox();
+    return Math.abs(restoredSendBox.x - placedSendBox.x);
+  }).toBeLessThan(1);
+  expect(await storedLayout(page)).toEqual(savedNarrowLayout);
 });
