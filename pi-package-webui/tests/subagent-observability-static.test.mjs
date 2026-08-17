@@ -24,9 +24,11 @@ assert.match(app, /subagentRunCanRefresh[\s\S]*subagentRunCanCancel[\s\S]*subage
 assert.match(app, /function subagentRunIsAttachedProjection[\s\S]*source === "explicit-attach"[\s\S]*function subagentRunCanDismiss[\s\S]*provider === "webui-registry"/, "terminal registry rows should clear while stale explicit attaches remain manually detachable");
 assert.match(app, /function finishedSubagentRunSelections[\s\S]*subagentRunIsTerminal\(run\) && subagentRunCanDismiss\(run\)/, "Auto-Clear should not immediately remove stale attached sessions");
 assert.match(app, /agent\.unavailableReason[\s\S]*Output is unavailable for this registered agent/, "output views should show truthful unavailable evidence");
+assert.match(app, /const SUBAGENT_ASYNC_WIDGET_KEY = "subagent-async"[\s\S]*case "setWidget":[\s\S]*widgetKey === SUBAGENT_ASYNC_WIDGET_KEY[\s\S]*widgetLines: undefined[\s\S]*return;/, "native async-status widget updates should be discarded before reaching the generic main-output renderer");
+assert.match(app, /for \(const \[key, value\] of widgets\)[\s\S]*if \(key === SUBAGENT_ASYNC_WIDGET_KEY\) continue;/, "stale cached async-status widgets should remain hidden defensively");
 assert.match(css, /\.subagent-source-badge[\s\S]*text-overflow: ellipsis[\s\S]*@media \(max-width: 720px\)/, "source badges should remain compact and responsive");
 assert.match(html, /Managed and registered Pi agent runs[\s\S]*External agents/, "help should explain managed, registered, and external groups");
-assert.match(html, /styles\.css\?v=124[\s\S]*app\.js\?v=147/, "browser assets should use the WS-D revisions");
-assert.match(worker, /pi-webui-pwa-v109/, "PWA cache identity should advance with WS-D browser assets");
+assert.match(html, /styles\.css\?v=126[\s\S]*app\.js\?v=148/, "browser assets should use the current subagent-observability revisions");
+assert.match(worker, /pi-webui-pwa-v112/, "PWA cache identity should advance with subagent widget suppression");
 
 console.log("subagent-observability-static.test.mjs passed");

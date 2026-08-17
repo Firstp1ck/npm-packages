@@ -1222,6 +1222,7 @@ const WORKFLOW_WIDGET_PAYLOAD_PREFIX = "WORKFLOW_WEBUI_PAYLOAD ";
 const WORKFLOW_SUBPROCESS_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.subprocess";
 const WORKFLOW_SUBPROCESS_PAYLOAD_VERSION = 1;
 const WORKFLOW_INSPECTOR_WIDGET_KEY = "workflow:rpc";
+const SUBAGENT_ASYNC_WIDGET_KEY = "subagent-async";
 const WORKFLOW_INSPECTOR_PAYLOAD_PREFIX = "WORKFLOW_RPC_PAYLOAD ";
 const WORKFLOW_INSPECTOR_PAYLOAD_TYPE = "firstpick.pi-extension-workflows.inspector";
 const WORKFLOW_INSPECTOR_PAYLOAD_VERSION = 1;
@@ -30426,6 +30427,11 @@ function renderWidgets() {
   if (btwWidget) elements.widgetArea.append(btwWidget);
 
   for (const [key, value] of widgets) {
+    // pi-subagents publishes this machine-readable status for native TUI
+    // consumers. The dedicated Subagents UI already consumes the equivalent
+    // structured RPC state, so exposing the raw payload here duplicates state
+    // and leaks an internal protocol record into the main conversation surface.
+    if (key === SUBAGENT_ASYNC_WIDGET_KEY) continue;
     const widgetFeatureId = optionalFeatureWidgetFeatureId(key);
     if (widgetFeatureId && !isOptionalFeatureEnabled(widgetFeatureId)) continue;
     if (widgetFeatureId === "workflows" && workflowOverlayIsMinimized()) continue;
@@ -45018,6 +45024,11 @@ function handleExtensionUiRequest(request) {
     case "setWidget": {
       const widgetKey = request.widgetKey || request.id;
       const requestTabId = request.tabId || activeTabId;
+      if (widgetKey === SUBAGENT_ASYNC_WIDGET_KEY) {
+        const changed = setWidgetForTab(requestTabId, widgetKey, { ...request, widgetLines: undefined });
+        if (changed && requestTabId === activeTabId) renderWidgets();
+        return;
+      }
       if (widgetKey === WORKFLOW_MODE_RPC_WIDGET_KEY) {
         const modeState = workflowModeStateFromRpcPayload(request.widgetLines);
         if (modeState) updateWorkflowModeForTab(requestTabId, modeState, { render: requestTabId === activeTabId });
