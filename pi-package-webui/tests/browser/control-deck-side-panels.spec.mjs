@@ -134,6 +134,48 @@ test("Mobile v2 repeatedly returns canonical project content to its Control Deck
   await context.close();
 });
 
+test("embedded split terminal fills every desktop pane width with inherited sidebar classes", async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.setViewportSize({ width: 1200, height: 900 });
+  await page.goto(baseURL);
+  const tabId = await page.locator("[data-tab-id]").first().getAttribute("data-tab-id");
+  assert.ok(tabId, "the fixture should expose a terminal tab for the embedded split");
+
+  for (const width of [721, 900, 1200]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`${baseURL}/?embed=split&tab=${encodeURIComponent(tabId)}`);
+    await page.locator("body").evaluate((body) => {
+      body.classList.add("terminal-tabs-left", "terminal-tabs-sidebar-start");
+      body.style.setProperty("--terminal-tabs-sidebar-width", "560px");
+    });
+    await expect(page.locator("body")).toHaveClass(/embedded-split/);
+    await expect(page.locator("body")).toHaveClass(/terminal-tabs-left/);
+    await expect(page.locator("#terminalTabsShell")).toBeHidden();
+    const geometry = await page.evaluate(() => {
+      const panel = document.querySelector(".chat-panel");
+      const chat = document.querySelector(".chat");
+      const composer = document.querySelector(".composer");
+      const panelRect = panel?.getBoundingClientRect();
+      const chatRect = chat?.getBoundingClientRect();
+      const composerRect = composer?.getBoundingClientRect();
+      const style = panel ? getComputedStyle(panel) : null;
+      return {
+        viewportWidth: window.innerWidth,
+        panelWidth: panelRect?.width || 0,
+        chatWidth: chatRect?.width || 0,
+        composerWidth: composerRect?.width || 0,
+        display: style?.display || "",
+        flexDirection: style?.flexDirection || "",
+      };
+    });
+    assert.equal(geometry.display, "flex", `embedded chat panel should remain flex at ${width}px`);
+    assert.equal(geometry.flexDirection, "column", `embedded chat panel should remain vertical at ${width}px`);
+    assert.ok(Math.abs(geometry.panelWidth - geometry.viewportWidth) <= 1, `embedded panel should fill ${width}px: ${JSON.stringify(geometry)}`);
+    assert.ok(Math.abs(geometry.chatWidth - geometry.panelWidth) <= 2, `embedded transcript should fill ${width}px inside the panel border: ${JSON.stringify(geometry)}`);
+    assert.ok(Math.abs(geometry.composerWidth - geometry.panelWidth) <= 2, `embedded composer should fill ${width}px inside the panel border: ${JSON.stringify(geometry)}`);
+  }
+});
+
 test("Right, Left, Both, Sidebar rail, independent state, overlay, singleton ARIA, and reload", async ({ page }) => {
   test.setTimeout(60_000);
   await page.setViewportSize({ width: 2200, height: 1000 });

@@ -1191,7 +1191,8 @@ body.terminal-tabs-resizing * {
   background: var(--ctp-teal);
 }
 body.embedded-split .layout,
-body.embedded-split.side-panel-collapsed .layout {
+body.embedded-split.side-panel-collapsed .layout,
+body.embedded-split:not(.control-deck-left):not(.control-deck-both) .layout {
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
   width: 100%;
@@ -1201,8 +1202,12 @@ body.embedded-split.side-panel-collapsed .layout {
   padding: 0;
   overflow: hidden;
 }
-body.embedded-split .chat-panel {
+body.embedded-split .chat-panel,
+body.embedded-split.terminal-tabs-left .chat-panel {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  overflow: hidden;
   border-radius: 0;
 }
 body.embedded-split .terminal-tabs-shell,

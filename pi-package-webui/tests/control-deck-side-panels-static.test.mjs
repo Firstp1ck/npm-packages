@@ -63,6 +63,8 @@ assert.match(css, /body\.terminal-tabs-left \.chat-search-bar[\s\S]*body\.termin
 assert.match(css, /body\.terminal-tabs-left\.terminal-tabs-sidebar-start \.chat-panel[\s\S]*grid-template-columns:\s*minmax\(13rem, var\(--terminal-tabs-sidebar-width\)\) minmax\(0, 1fr\)/);
 assert.match(css, /body\.terminal-tabs-left\.terminal-tabs-sidebar-start \.terminal-tabs-shell[\s\S]*grid-column:\s*1/);
 assert.match(css, /body\.terminal-tabs-left\.terminal-tabs-sidebar-start \.chat[\s\S]*grid-column:\s*2/);
+assert.match(css, /body\.embedded-split \.layout,[\s\S]*body\.embedded-split:not\(\.control-deck-left\):not\(\.control-deck-both\) \.layout \{[\s\S]*grid-template-columns:\s*minmax\(0, 1fr\);/, "embedded split terminals should override the more specific default Control Deck columns");
+assert.match(css, /body\.embedded-split \.chat-panel,\s*body\.embedded-split\.terminal-tabs-left \.chat-panel \{[\s\S]*display:\s*flex;[\s\S]*flex-direction:\s*column;[\s\S]*overflow:\s*hidden;/, "embedded split terminals should ignore the saved sidebar grid at every iframe width");
 assert.match(css, /\.workspace-column[\s\S]*body\.terminal-split-open \.workspace-column[\s\S]*body\.file-viewer-open \.workspace-column[\s\S]*body\.terminal-split-open\.file-viewer-open \.workspace-column/);
 
 console.log("control-deck-side-panels-static.test.mjs passed");
