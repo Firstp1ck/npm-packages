@@ -119,7 +119,7 @@ try {
   assert.equal(queued.interfacePreferences.sidePanelWidth, 611);
   assert.equal(queued.gitWorkflow.deliveryMode, "current");
 
-  const futureLayout = { version: 3, futureSurface: { order: ["keep-this"] } };
+  const futureLayout = { version: 4, futureSurface: { order: ["keep-this"] } };
   const futureSettings = JSON.parse(await readFile(settingsFile, "utf8"));
   futureSettings.uiLayout = futureLayout;
   await writeFile(settingsFile, `${JSON.stringify(futureSettings, null, 2)}\n`, "utf8");
@@ -131,7 +131,7 @@ try {
   await writeWebuiSettings({
     interfacePreferences: { sidePanelWidth: 612 },
     uiLayout: {
-      version: 2,
+      version: 3,
       sidePanel: {
         placement: "right",
         sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: [] },
@@ -154,7 +154,7 @@ try {
   }), atomicWidthFile);
   const atomicWidth = JSON.parse(await readFile(atomicWidthFile, "utf8"));
   assert.equal(atomicWidth.interfacePreferences.sidePanelWidth, 700);
-  assert.equal(atomicWidth.uiLayout.sidePanel.panelWidths.right, 700, "one locked settings update must atomically persist the v2 right width and legacy mirror");
+  assert.equal(atomicWidth.uiLayout.sidePanel.panelWidths.right, 700, "one locked settings update must atomically persist the v3 right width and legacy mirror");
   assert.equal(atomicWidth.uiLayout.sidePanel.panelWidths.left, 384);
 
   const liveLockTarget = path.join(root, "live-lock", "settings.json");

@@ -192,6 +192,14 @@ Tracked skill files appear as selectable tags above the composer. The strip keep
 
 When the browser page is hidden, the Web UI closes that page's live event stream so the browser cannot accumulate serialized output frames for later parsing and DOM rendering. Merely moving focus to another visible window does not pause streaming. On return, it first fetches authoritative tabs, state, and transcript snapshots, reconnects live events, and refreshes nonessential panels during browser idle time. Pending extension prompts are replayed by the server after reconnection, and completed output remains available from the authoritative transcript.
 
+## Global control visibility
+
+Right-click a supported workspace, Control Deck, composer, workflow, attachment, or input-frame tag control to hide it. Right-click empty space in a marked toolbar, Control Deck header/footer, or composer region to open the complete grouped list. Checked entries are visible; clear an entry to hide that control or tag type. The menu supports the Context Menu key and `Shift+F10`, arrow keys, `Home`, `End`, `Escape`, and normal outside-click dismissal.
+
+**Show all** records an explicit state in which every supported item may appear. **Reset defaults** removes the explicit choice and follows package defaults; all supported items are visible by default. These actions can restore controls even when every optional button in a region is hidden. **Send** is not configurable and remains available; right-clicking it keeps the native browser menu, but focusing **Send** and pressing `Shift+F10` or the Context Menu key opens the complete grouped visibility list, so keyboard users always have a recovery path even after every optional control is hidden.
+
+Visibility is user-global in the private Web UI settings file and is mirrored to browser storage for immediate and offline startup. Other open same-origin tabs adopt browser-cache changes immediately; other browser clients adopt the durable setting when they reconcile or reload. Showing an item does not install an optional package or override session state, permissions, device layout, or capability gating, so an unavailable control can remain absent even when its visibility entry is checked.
+
 ## Control Deck placement and persistence
 
 Choose **Right**, **Left**, or **Both** under **Controls → Interface → Control Deck placement**. Right is the default. Both keeps separate collapse state and width for each side; drag a section header or focus it and use `Alt+ArrowUp` / `Alt+ArrowDown` to reorder within its assigned side, and `Alt+ArrowLeft` / `Alt+ArrowRight` to move it between sides.

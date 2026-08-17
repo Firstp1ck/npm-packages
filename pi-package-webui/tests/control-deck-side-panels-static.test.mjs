@@ -23,7 +23,7 @@ assert.match(html, /<div class="workspace-column">[\s\S]*<section class="chat-pa
 assert.match(html, /<option value="left">Sidebar<\/option>/);
 assert.match(html, /id="controlDeckPlacementSelect"[\s\S]*<option value="right">Right<\/option>[\s\S]*<option value="left">Left<\/option>[\s\S]*<option value="both">Both<\/option>/);
 
-assert.match(app, /const UI_LAYOUT_SCHEMA_VERSION = 2;/);
+assert.match(app, /const UI_LAYOUT_SCHEMA_VERSION = 3;/);
 assert.match(app, /const UI_LAYOUT_SIDE_PANEL_FIELDS = \["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"\]/);
 assert.match(app, /const CONTROL_DECK_LAYOUT_STORAGE_KEY = "pi-webui-control-deck-layout-v2"/);
 assert.match(app, /function controlDeckSectionRecords\(\)[\s\S]*document\.querySelectorAll\("\[data-side-panel-section\]"\)/);

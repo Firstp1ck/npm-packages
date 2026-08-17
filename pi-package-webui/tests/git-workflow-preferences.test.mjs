@@ -69,7 +69,7 @@ try {
   assert.equal(migrated.gitWorkflow.stagingPolicy, "review");
   assert.equal(migrated.gitWorkflow.reviewProcessEnabled, true, "legacy settings should preserve the existing review-process behavior");
   assert.equal(migrated.gitWorkflow.generation.thinkingLevel, "low");
-  assert.equal(migrated.uiLayout.version, 2);
+  assert.equal(migrated.uiLayout.version, 3);
   assert.equal(migrated.uiLayout.sidePanel.placement, "right");
   assert.deepEqual(migrated.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
   assert.deepEqual(migrated.uiLayout.sidePanel.collapsedSectionIds, ["git"]);
@@ -128,7 +128,7 @@ try {
 
   const persisted = JSON.parse(await readFile(settingsFile, "utf8"));
   assert.equal(persisted.version, 8);
-  assert.equal(persisted.uiLayout.version, 2, "the first unrelated locked write must persist the migrated v2 envelope");
+  assert.equal(persisted.uiLayout.version, 3, "the first unrelated locked write must persist the migrated v3 envelope");
   assert.deepEqual(persisted.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
   assert.deepEqual(persisted.uiLayout.composerActions, completeV1Layout.composerActions, "unchanged v1 composer fields must survive persistence");
   assert.deepEqual(persisted.uiLayout.terminalTabs, { ...completeV1Layout.terminalTabs, sidebarWidth: null }, "unchanged v1 terminal fields must survive persistence while new width state defaults safely");

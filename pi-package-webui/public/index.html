@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=127" />
+    <link rel="stylesheet" href="/styles.css?v=128" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -222,13 +222,13 @@
               </div>
             </div>
           </div>
-          <div class="terminal-sidebar-actions" aria-label="Tab and workspace actions">
-            <button id="workspaceSaveButton" class="terminal-workspace-save-button" type="button" aria-label="Save workspace" data-tooltip="Save workspace:&#10;• Captures all open tabs, sessions, order, custom groups, and the active tab.&#10;• Available when at least one tab is open."><svg class="terminal-workspace-save-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 4v6h7V4M8 19v-5h8v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
-            <button id="commandPaletteButton" class="terminal-command-palette-button" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-            <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <div class="terminal-sidebar-actions" aria-label="Tab and workspace actions" data-visibility-region="workspace">
+            <button id="workspaceSaveButton" class="terminal-workspace-save-button" data-visibility-key="workspace.save" type="button" aria-label="Save workspace" data-tooltip="Save workspace:&#10;• Captures all open tabs, sessions, order, custom groups, and the active tab.&#10;• Available when at least one tab is open."><svg class="terminal-workspace-save-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 4h11l3 3v13H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M8 4v6h7V4M8 19v-5h8v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
+            <button id="commandPaletteButton" class="terminal-command-palette-button" data-visibility-key="workspace.command-palette" type="button" aria-label="Open command palette" data-tooltip="Command palette:&#10;• Search and run actions, slash commands, models, and tabs.&#10;• Shortcut: Ctrl/Cmd+K."><svg class="composer-icon command-palette-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7.5h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 12h9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M5 16.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M17 14.5 19.5 17 17 19.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button id="workspaceDashboardToggleButton" class="terminal-dashboard-button" data-visibility-key="workspace.overview" type="button" aria-controls="workspaceDashboard" aria-expanded="false" aria-label="Show workspace overview" data-tooltip="Workspace overview:&#10;• Shows current tab, cwd, model, context, session, and queue.&#10;• Opens common workspace/session actions from one place."><svg class="composer-icon workspace-overview-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 11.4 12 4l8 7.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 10.5V20h11v-9.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5h4v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </div>
           <div id="remoteAccessIndicator" class="remote-access-indicator" role="status" aria-live="polite" hidden>Remote access open</div>
-          <button id="closeAllTabsButton" class="terminal-close-all-button" type="button" aria-label="Close all terminal tabs">Close all Tabs</button>
+          <button id="closeAllTabsButton" class="terminal-close-all-button" data-visibility-key="workspace.close-all-tabs" type="button" aria-label="Close all terminal tabs">Close all Tabs</button>
           </div>
         </header>
         <button id="terminalTabsBackdrop" class="terminal-tabs-backdrop" type="button" aria-label="Close terminal navigation" tabindex="-1" hidden></button>
@@ -331,8 +331,8 @@
             <button id="mobileFailedSendDiscardButton" type="button">Discard</button>
           </section>
           <div id="commandSuggest" class="command-suggest" role="listbox" aria-label="Command and path suggestions" hidden></div>
-          <div class="composer-input-row">
-            <div id="workflowModeControls" class="composer-workflow-mode-dock" role="group" aria-label="Workflow Mode controls" hidden>
+          <div class="composer-input-row" data-visibility-region="inputframe">
+            <div id="workflowModeControls" class="composer-workflow-mode-dock" role="group" aria-label="Workflow Mode controls" data-visibility-key="input.workflow" hidden>
               <button
                 id="workflowOverlayOpenButton"
                 class="composer-icon-button composer-workflow-overlay-open-button"
@@ -357,17 +357,18 @@
               <button
                 id="busyPromptBehaviorTag"
                 class="composer-busy-mode-tag"
+                data-visibility-key="tag.prompt-behavior"
                 type="button"
                 aria-haspopup="menu"
                 aria-expanded="false"
                 aria-controls="busyPromptBehaviorMenu"
                 aria-live="polite"
               >Follow-up</button>
-              <div id="sessionSkillTags" class="composer-skill-tags" aria-live="polite" hidden></div>
-              <div id="intercomConversationTags" class="composer-intercom-tags" role="group" aria-label="Agent conversations" aria-live="polite" hidden></div>
-              <button id="featureCategoryTag" class="composer-feature-category-tag" type="button" aria-haspopup="dialog" aria-controls="featureDecisionDialog" aria-live="polite" aria-atomic="true" disabled hidden></button>
-              <button id="conversationModeChip" class="composer-conversation-mode-chip" type="button" aria-live="polite" hidden>Voice: off</button>
-              <button id="workflowModeChip" class="composer-workflow-mode-chip" type="button" aria-live="polite" aria-pressed="true" hidden>Workflow: on</button>
+              <div id="sessionSkillTags" class="composer-skill-tags" aria-live="polite" data-visibility-key="tag.skills" hidden></div>
+              <div id="intercomConversationTags" class="composer-intercom-tags" role="group" aria-label="Agent conversations" aria-live="polite" data-visibility-key="tag.agent-conversations" hidden></div>
+              <button id="featureCategoryTag" class="composer-feature-category-tag" type="button" aria-haspopup="dialog" aria-controls="featureDecisionDialog" aria-live="polite" aria-atomic="true" data-visibility-key="tag.feature-category" disabled hidden></button>
+              <button id="conversationModeChip" class="composer-conversation-mode-chip" type="button" aria-live="polite" data-visibility-key="tag.voice-mode" hidden>Voice: off</button>
+              <button id="workflowModeChip" class="composer-workflow-mode-chip" type="button" aria-live="polite" aria-pressed="true" data-visibility-key="tag.workflow-mode" hidden>Workflow: on</button>
             </div>
             <div id="busyPromptBehaviorMenu" class="composer-busy-mode-menu" role="menu" aria-labelledby="busyPromptBehaviorTag" hidden>
               <button class="composer-busy-mode-menu-item" type="button" role="menuitemradio" data-busy-prompt-behavior="followUp" aria-checked="true">
@@ -387,6 +388,7 @@
               id="attachButton"
               class="composer-icon-button composer-attach-button"
               type="button"
+              data-visibility-key="input.attach-files"
               title="Attach files"
               aria-label="Attach images, videos, documents, audio, or other files"
               data-tooltip="Attach files:&#10;• Click to choose images, videos, audio, PDFs, docs, text/code, or other files.&#10;• Paste images/docs from the clipboard.&#10;• Drag and drop files onto the composer."
@@ -402,15 +404,16 @@
             <p id="followUpQueueStatus" class="follow-up-queue-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </section>
           <div id="attachmentTray" class="attachment-tray" aria-live="polite" hidden></div>
-          <div class="composer-row">
+          <div class="composer-row" data-visibility-region="composer">
             <button id="composerActionsButton" class="composer-actions-button" type="button" aria-controls="composerActionsPanel" aria-expanded="false" title="Show more composer actions">More</button>
             <div id="composerActionsPanel" class="composer-actions-panel" aria-label="More composer actions">
               <h2 class="composer-actions-heading composer-actions-heading-session">Session &amp; workspace</h2>
-              <button id="newSessionButton" class="composer-new-button" type="button" data-composer-action-id="new" data-composer-action-span="1">New</button>
-              <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context" data-composer-action-id="compact" data-composer-action-span="2">Compact</button>
+              <button id="newSessionButton" class="composer-new-button" type="button" data-visibility-key="composer.new" data-composer-action-id="new" data-composer-action-span="1">New</button>
+              <button id="compactButton" class="composer-compact-button" type="button" title="Compact the current Pi session context" data-visibility-key="composer.compact" data-composer-action-id="compact" data-composer-action-span="2">Compact</button>
               <button
                 id="gitWorkflowButton"
                 class="composer-icon-button composer-git-button"
+                data-visibility-key="composer.guided-git"
                 data-composer-action-id="git"
                 data-composer-action-span="1"
                 type="button"
@@ -420,7 +423,7 @@
                 data-tooltip="Guided Git workflow:&#10;1. Stage all changes with git add .&#10;2. Generate and preview staged commit messages.&#10;3. Optional: create or type a PR branch worktree before committing.&#10;4. Commit with the short or long message in the worktree tab.&#10;5. Push normally, or push the PR worktree branch, generate/review /pr, and create the PR.&#10;Cancel is available at each step."
               ><svg class="composer-icon composer-icon-github" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></button>
               <h2 class="composer-actions-heading composer-actions-heading-tools">Tools &amp; commands</h2>
-              <div class="composer-publish-menu" data-composer-action-id="publish" data-composer-action-span="1" hidden>
+              <div class="composer-publish-menu" data-visibility-key="composer.publish" data-composer-action-id="publish" data-composer-action-span="1" hidden>
                 <button
                   id="publishButton"
                   class="composer-icon-button composer-publish-button"
@@ -441,7 +444,7 @@
                   </button>
                 </div>
               </div>
-              <div class="composer-publish-menu composer-native-command-menu" data-composer-action-id="native-command" data-composer-action-span="1" hidden>
+              <div class="composer-publish-menu composer-native-command-menu" data-visibility-key="composer.tools-skills" data-composer-action-id="native-command" data-composer-action-span="1" hidden>
                 <button
                   id="nativeCommandMenuButton"
                   class="composer-icon-button composer-publish-button composer-native-command-button"
@@ -462,7 +465,7 @@
                   </button>
                 </div>
               </div>
-              <div class="composer-publish-menu composer-options-menu" data-composer-action-id="options" data-composer-action-span="1">
+              <div class="composer-publish-menu composer-options-menu" data-visibility-key="composer.common-options" data-composer-action-id="options" data-composer-action-span="1">
                 <button
                   id="optionsMenuButton"
                   class="composer-icon-button composer-publish-button composer-options-button"
@@ -578,7 +581,7 @@
                   </div>
                 </div>
               </div>
-              <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" data-composer-action-id="app-runner" data-composer-action-span="2" hidden>
+              <div id="appRunnerMenu" class="composer-publish-menu composer-app-runner-menu" data-visibility-key="composer.app-runner" data-composer-action-id="app-runner" data-composer-action-span="2" hidden>
                 <button
                   id="appRunnerInfoButton"
                   class="composer-icon-button composer-app-runner-info-button"
@@ -608,6 +611,7 @@
             <button
               id="steerButton"
               type="button"
+              data-visibility-key="composer.steer"
               data-composer-action-id="steer"
               data-composer-action-span="2"
               title="Type your message first, then tap Steer to guide the active Pi run without sending a normal prompt. Use it for corrections or direction changes while Pi is working."
@@ -617,6 +621,7 @@
             <button
               id="followUpButton"
               type="button"
+              data-visibility-key="composer.follow-up"
               data-composer-action-id="follow-up"
               data-composer-action-span="2"
               title="Type your message first, then tap Follow-up to send it as a follow-up instead of a normal prompt. Use it to add extra context or the next request."
@@ -632,6 +637,7 @@
             <button
               id="btwButton"
               class="composer-icon-button composer-btw-button"
+              data-visibility-key="composer.btw"
               data-composer-action-id="btw"
               data-composer-action-span="1"
               type="button"
@@ -640,7 +646,7 @@
               data-tooltip="/btw side question:&#10;Type a question, then tap /btw to ask without adding it to the main conversation."
               hidden
             ><svg class="composer-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5.5 6.5h10.75a2.25 2.25 0 0 1 2.25 2.25v4.5a2.25 2.25 0 0 1-2.25 2.25h-4.4L8 18.25V15.5H5.5a2.25 2.25 0 0 1-2.25-2.25v-4.5A2.25 2.25 0 0 1 5.5 6.5Z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/><path d="m15.75 5.25 1.1-2.1 1.1 2.1 2.3 1.1-2.3 1.1-1.1 2.1-1.1-2.1-2.3-1.1 2.3-1.1Z" fill="currentColor"/><path d="M7.25 10.25h5.8M7.25 12.75h4.1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></button>
-            <button id="sendButton" type="submit" class="primary" title="Send prompt" data-composer-action-id="send" data-composer-action-span="2">Send</button>
+            <button id="sendButton" type="submit" class="primary" title="Send prompt — Shift+F10 opens visibility options" aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown ContextMenu Shift+F10" data-composer-action-id="send" data-composer-action-span="2">Send</button>
             <div id="composerActionGridGuide" class="composer-action-grid-guide" aria-hidden="true" hidden></div>
           </div>
           <p id="composerActionOrderStatus" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -714,11 +720,11 @@
       <div id="controlDeckMovementAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       <aside id="sidePanel" class="side-panel side-panel-right" aria-label="Right Control Deck" data-control-deck-shell="right">
         <div id="sidePanelResizeHandle" class="side-panel-resize-handle side-panel-resize-handle-right" role="separator" aria-orientation="vertical" aria-label="Resize right Control Deck width" tabindex="0" title="Drag to resize right Control Deck"></div>
-        <div class="side-panel-header">
+        <div class="side-panel-header" data-visibility-region="control-deck">
           <div class="side-panel-heading">
             <div class="side-panel-brand-row">
               <span class="side-panel-kicker">Pi Web UI</span>
-              <a class="sponsor-link" href="https://github.com/sponsors/Firstp1ck" target="_blank" rel="noopener noreferrer" aria-label="Sponsor Firstp1ck on GitHub" title="Sponsor Firstp1ck on GitHub">♡</a>
+              <a class="sponsor-link" data-visibility-key="control-deck.sponsor" href="https://github.com/sponsors/Firstp1ck" target="_blank" rel="noopener noreferrer" aria-label="Sponsor Firstp1ck on GitHub" title="Sponsor Firstp1ck on GitHub">♡</a>
             </div>
             <strong class="side-panel-title">Control Deck</strong>
             <span id="sidePanelEditHint" class="side-panel-edit-hint" role="status" aria-live="polite" hidden>Drag sections or use Alt+↑/↓</span>
@@ -1205,8 +1211,8 @@
             </div>
           </section>
         </div>
-        <footer class="side-panel-footer" data-control-deck-shared-footer>
-          <button id="openIssueButton" class="open-issue-button" type="button" aria-haspopup="dialog" aria-controls="issueWizardDialog">Open Issue</button>
+        <footer class="side-panel-footer" data-control-deck-shared-footer data-visibility-region="control-deck">
+          <button id="openIssueButton" class="open-issue-button" data-visibility-key="control-deck.open-issue" type="button" aria-haspopup="dialog" aria-controls="issueWizardDialog">Open Issue</button>
         </footer>
       </aside>
     </main>
@@ -1219,6 +1225,7 @@
     </div>
     <div id="gitPanelContextMenu" class="file-context-menu git-side-panel-context-menu" role="menu" aria-label="Git actions" hidden></div>
     <div id="sidePanelContextMenu" class="file-context-menu side-panel-context-menu" role="menu" aria-label="Choose visible side panel sections" hidden></div>
+    <div id="visibilityContextMenu" class="file-context-menu control-visibility-context-menu" role="menu" aria-label="Choose visible controls" hidden></div>
     <div id="gitFooterContextMenu" class="file-context-menu git-footer-context-menu" role="menu" aria-label="Git footer box actions" hidden>
       <button type="button" role="menuitem" data-git-footer-menu-action="disable">Disable this box</button>
       <button type="button" role="menuitem" data-git-footer-menu-action="visibility">Open Git-footer Visibility</button>
@@ -1819,7 +1826,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=148">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=149">
       (() => {
         "use strict";
 

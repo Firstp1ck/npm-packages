@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const UI_LAYOUT_VERSION = 2;
+export const UI_LAYOUT_VERSION = 3;
 export const UI_LAYOUT_REQUEST_MAX_BYTES = 32 * 1024;
 export const UI_LAYOUT_LIMITS = Object.freeze({
   idLength: 256,
@@ -18,6 +18,7 @@ export const UI_LAYOUT_LIMITS = Object.freeze({
   terminalTabsSidebarWidthMax: 4096,
 });
 
+const PREVIOUS_UI_LAYOUT_VERSION = 2;
 const LEGACY_UI_LAYOUT_VERSION = 1;
 const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const TERMINAL_TAB_LAYOUTS = new Set(["top", "left"]);
@@ -59,6 +60,10 @@ function boundedUniqueStringList(value, label) {
     seen.add(result);
     return result;
   });
+}
+
+function boundedDeterministicStringList(value, label) {
+  return boundedUniqueStringList(value, label).sort();
 }
 
 function nullable(value, validate) {
@@ -247,6 +252,16 @@ function validateFileViewerWidth(value) {
   return validateBoundedWidth(value, "layout.fileViewerWidth", UI_LAYOUT_LIMITS.fileViewerWidthMin, UI_LAYOUT_LIMITS.fileViewerWidthMax);
 }
 
+function validateControlVisibility(value) {
+  const source = objectValue(value);
+  if (!source) invalid("layout.controlVisibility must be an object or null");
+  assertOnlyKeys(source, new Set(["hiddenIds"]), "layout.controlVisibility");
+  if (!own(source, "hiddenIds")) invalid("layout.controlVisibility must include hiddenIds");
+  return {
+    hiddenIds: nullable(source.hiddenIds, (entry) => boundedDeterministicStringList(entry, "layout.controlVisibility.hiddenIds")),
+  };
+}
+
 export function defaultUiLayout() {
   return {
     version: UI_LAYOUT_VERSION,
@@ -259,6 +274,7 @@ export function defaultUiLayout() {
       panelWidths: { left: null, right: null },
     },
     composerActions: { order: null, grid: null },
+    controlVisibility: { hiddenIds: null },
     footerScopedModelOrder: null,
     terminalTabs: { layout: null, customGroups: null, sidebarWidth: null },
     fileViewerWidth: null,
@@ -273,7 +289,7 @@ function softField(validate, fallback = null) {
   }
 }
 
-function normalizeSharedLayoutFields(source, sidePanel) {
+function normalizeSharedLayoutFields(source, sidePanel, controlVisibility = defaultUiLayout().controlVisibility) {
   const composerActions = objectValue(source.composerActions);
   const terminalTabs = objectValue(source.terminalTabs);
   return {
@@ -283,6 +299,7 @@ function normalizeSharedLayoutFields(source, sidePanel) {
       order: softField(() => nullable(composerActions?.order ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.composerActions.order"))),
       grid: softField(() => nullable(composerActions?.grid ?? null, validateGrid)),
     },
+    controlVisibility,
     footerScopedModelOrder: softField(() => nullable(source.footerScopedModelOrder ?? null, (entry) => boundedUniqueStringList(entry, "uiLayout.footerScopedModelOrder"))),
     terminalTabs: {
       layout: TERMINAL_TAB_LAYOUTS.has(terminalTabs?.layout) ? terminalTabs.layout : null,
@@ -303,7 +320,14 @@ function normalizeSideValues(source, validate, fallback) {
   return Object.fromEntries(SIDES.map((side) => [side, softField(() => nullable(record?.[side] ?? null, (value) => validate(value, side)), fallback)]));
 }
 
-function normalizeVersionTwo(source) {
+function normalizedControlVisibility(source) {
+  return softField(
+    () => source.controlVisibility == null ? defaultUiLayout().controlVisibility : validateControlVisibility(source.controlVisibility),
+    defaultUiLayout().controlVisibility,
+  );
+}
+
+function normalizeCurrentVersion(source, { migrate = false } = {}) {
   const sidePanel = objectValue(source.sidePanel);
   return normalizeSharedLayoutFields(source, {
     placement: CONTROL_DECK_PLACEMENTS.has(sidePanel?.placement) ? sidePanel.placement : null,
@@ -318,7 +342,11 @@ function normalizeVersionTwo(source) {
       return value;
     }, null),
     panelWidths: normalizeSideValues(sidePanel?.panelWidths, (value, side) => validatePanelWidth(value, `uiLayout.sidePanel.panelWidths.${side}`), null),
-  });
+  }, migrate ? defaultUiLayout().controlVisibility : normalizedControlVisibility(source));
+}
+
+function migrateVersionTwo(source) {
+  return normalizeCurrentVersion(source, { migrate: true });
 }
 
 function migrateVersionOne(source, legacySidePanelWidth) {
@@ -344,7 +372,8 @@ function migrateVersionOne(source, legacySidePanelWidth) {
 export function normalizeUiLayout(value, { legacySidePanelWidth = null } = {}) {
   const source = objectValue(value);
   if (!source) return defaultUiLayout();
-  if (source.version === UI_LAYOUT_VERSION) return normalizeVersionTwo(source);
+  if (source.version === UI_LAYOUT_VERSION) return normalizeCurrentVersion(source);
+  if (source.version === PREVIOUS_UI_LAYOUT_VERSION) return migrateVersionTwo(source);
   if (source.version === LEGACY_UI_LAYOUT_VERSION) return migrateVersionOne(source, legacySidePanelWidth);
   return defaultUiLayout();
 }
@@ -352,7 +381,7 @@ export function normalizeUiLayout(value, { legacySidePanelWidth = null } = {}) {
 export function validateUiLayoutPatch(value) {
   const source = objectValue(value);
   if (!source) invalid("layout must be an object");
-  const allowed = new Set(["version", "sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"]);
+  const allowed = new Set(["version", "sidePanel", "composerActions", "controlVisibility", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"]);
   assertOnlyKeys(source, allowed, "layout");
   if (own(source, "version") && source.version !== UI_LAYOUT_VERSION) invalid(`layout.version must be ${UI_LAYOUT_VERSION}`);
   const mutableFields = [...allowed].filter((field) => field !== "version" && own(source, field));
@@ -360,6 +389,7 @@ export function validateUiLayoutPatch(value) {
   const patch = {};
   if (own(source, "sidePanel")) patch.sidePanel = nullable(source.sidePanel, (entry) => validateSidePanel(entry, { partial: true }));
   if (own(source, "composerActions")) patch.composerActions = nullable(source.composerActions, (entry) => validateComposerActions(entry, { partial: true }));
+  if (own(source, "controlVisibility")) patch.controlVisibility = nullable(source.controlVisibility, validateControlVisibility);
   if (own(source, "footerScopedModelOrder")) patch.footerScopedModelOrder = nullable(source.footerScopedModelOrder, (entry) => boundedUniqueStringList(entry, "layout.footerScopedModelOrder"));
   if (own(source, "terminalTabs")) patch.terminalTabs = nullable(source.terminalTabs, (entry) => validateTerminalTabs(entry, { partial: true }));
   if (own(source, "fileViewerWidth")) patch.fileViewerWidth = nullable(source.fileViewerWidth, validateFileViewerWidth);
@@ -383,6 +413,7 @@ export function mergeUiLayout(current, patch) {
     }
   }
   if (own(value, "composerActions")) merged.composerActions = value.composerActions === null ? defaultUiLayout().composerActions : value.composerActions;
+  if (own(value, "controlVisibility")) merged.controlVisibility = value.controlVisibility === null ? defaultUiLayout().controlVisibility : value.controlVisibility;
   if (own(value, "footerScopedModelOrder")) merged.footerScopedModelOrder = value.footerScopedModelOrder;
   if (own(value, "terminalTabs")) {
     merged.terminalTabs = value.terminalTabs === null

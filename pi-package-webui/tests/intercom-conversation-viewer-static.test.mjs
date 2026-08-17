@@ -41,7 +41,7 @@ for (const id of [
 
 assert.match(
   html,
-  /<div class="composer-context-tags">[\s\S]*<div id="intercomConversationTags" class="composer-intercom-tags" role="group" aria-label="Agent conversations" aria-live="polite" hidden><\/div>/,
+  /<div class="composer-context-tags">[\s\S]*<div id="intercomConversationTags" class="composer-intercom-tags" role="group" aria-label="Agent conversations" aria-live="polite" data-visibility-key="tag\.agent-conversations" hidden><\/div>/,
   "the dedicated conversation-tag list should live beneath the composer input in the existing context-tag surface",
 );
 assert.match(
@@ -95,9 +95,9 @@ assert.match(css, /\.composer-intercom-tag:hover,[\s\S]*\.composer-intercom-tag:
 assert.match(css, /\.extension-dialog\.intercom-conversation-dialog \{[\s\S]*width: min\(76rem,[\s\S]*height: min\(54rem,/, "the viewer should use a large in-app modal");
 assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.composer-intercom-tag \{ min-height: 44px;[\s\S]*\.extension-dialog\.intercom-conversation-dialog[\s\S]*width: calc\(100vw - 0\.7rem\)/, "tags and the dialog should remain reachable on narrow and coarse-pointer layouts");
 
-assert.match(html, /\/styles\.css\?v=127/, "the stylesheet URL should advance for the bounded conversation tags");
-assert.match(html, /data-app-src="\/app\.js\?v=148"/, "the guarded app URL should advance for current browser wiring");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v113"/, "the PWA cache identity should advance with browser assets");
+assert.match(html, /\/styles\.css\?v=128/, "the stylesheet URL should advance for the bounded conversation tags");
+assert.match(html, /data-app-src="\/app\.js\?v=149"/, "the guarded app URL should advance for current browser wiring");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v114"/, "the PWA cache identity should advance with browser assets");
 
 assert.match(readme, /one compact tag per conversation appears beneath the composer/i, "the README should explain the user-visible entry point");
 assert.match(technical, /## Agent conversation viewer[\s\S]*Attachments, tool calls and results, thinking, stdout\/stderr, filesystem paths, raw session records/i, "the advanced guide should document privacy exclusions");

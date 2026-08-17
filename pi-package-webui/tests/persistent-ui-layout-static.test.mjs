@@ -14,12 +14,12 @@ const [html, app, serviceWorker] = await Promise.all([
 
 assert.match(
   app,
-  /const UI_LAYOUT_SCHEMA_VERSION = 2;[\s\S]*const UI_LAYOUT_ENDPOINT = "\/api\/interface-preferences";/,
-  "the browser controller should target the accepted version-1 layout schema on the existing interface-preferences endpoint",
+  /const UI_LAYOUT_SCHEMA_VERSION = 3;[\s\S]*const UI_LAYOUT_ENDPOINT = "\/api\/interface-preferences";/,
+  "the browser controller should target the accepted version-3 layout schema on the existing interface-preferences endpoint",
 );
 assert.match(
   app,
-  /const UI_LAYOUT_FIELDS = \["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"\];/,
+  /const UI_LAYOUT_FIELDS = \["sidePanel", "composerActions", "controlVisibility", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"\];/,
   "every approved arrangement surface should be a durable layout field",
 );
 assert.match(
@@ -271,8 +271,8 @@ assert.match(
 
 // --- Coherent browser asset revisions --------------------------------------
 
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v113"/, "changed browser assets should advance the PWA cache identity");
-assert.match(html, /styles\.css\?v=127/, "the page should request the updated layout stylesheet revision");
-assert.match(html, /data-app-src="\/app\.js\?v=148"/, "the boot loader should request the updated app module revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v114"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=128/, "the page should request the updated layout stylesheet revision");
+assert.match(html, /data-app-src="\/app\.js\?v=149"/, "the boot loader should request the updated app module revision");
 
 console.log("persistent-ui-layout-static.test.mjs passed");

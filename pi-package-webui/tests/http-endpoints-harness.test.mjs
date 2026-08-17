@@ -810,7 +810,7 @@ try {
   const initialInterfacePreferences = await request("127.0.0.1", "/api/interface-preferences");
   assert.equal(initialInterfacePreferences.status, 200);
   assert.equal(initialInterfacePreferences.body?.data?.preferences?.sidePanelWidth, null, "a user without a saved width should receive the default preference");
-  assert.equal(initialInterfacePreferences.body?.data?.layout?.version, 2);
+  assert.equal(initialInterfacePreferences.body?.data?.layout?.version, 3);
   assert.deepEqual(initialInterfacePreferences.body?.data?.layout?.sidePanel?.sectionLayout, { order: null, leftSectionIds: null });
   assert.match(initialInterfacePreferences.body?.data?.layoutRevision || "", /^[a-f0-9]{64}$/);
   assert.equal(Object.hasOwn(initialInterfacePreferences.body?.data || {}, "path"), false, "preference responses must not disclose the user's settings-file path");
@@ -839,7 +839,7 @@ try {
       sidePanelWidth: 620,
       expectedLayoutRevision: initialLayoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "both",
           sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: ["files"] },
@@ -857,7 +857,7 @@ try {
   });
   assert.equal(savedLayout.status, 200, savedLayout.body?.error);
   assert.equal(savedLayout.body?.data?.preferences?.sidePanelWidth, 620);
-  assert.equal(savedLayout.body?.data?.layout?.sidePanel?.panelWidths?.right, 620, "one locked PUT must expose matching v2 right and legacy widths");
+  assert.equal(savedLayout.body?.data?.layout?.sidePanel?.panelWidths?.right, 620, "one locked PUT must expose matching v3 right and legacy widths");
   assert.deepEqual(savedLayout.body?.data?.layout?.sidePanel?.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: ["files"] });
   assert.deepEqual(savedLayout.body?.data?.layout?.composerActions?.order, ["new", "git", "send"]);
   assert.equal(savedLayout.body?.data?.layout?.terminalTabs?.layout, "left");
@@ -868,7 +868,7 @@ try {
   const persistedLayoutSettings = JSON.parse(await readFile(settingsFile, "utf8"));
   assert.equal(persistedLayoutSettings.version, 8);
   assert.equal(persistedLayoutSettings.interfacePreferences.sidePanelWidth, 620);
-  assert.equal(persistedLayoutSettings.uiLayout.sidePanel.panelWidths.right, 620, "the v2 right width and legacy mirror must persist atomically");
+  assert.equal(persistedLayoutSettings.uiLayout.sidePanel.panelWidths.right, 620, "the v3 right width and legacy mirror must persist atomically");
   assert.equal(persistedLayoutSettings.uiLayout.fileViewerWidth, 560);
   assert.deepEqual(persistedLayoutSettings.uiLayout.composerActions.grid.positions, { new: 0, git: 1, send: 10 });
 

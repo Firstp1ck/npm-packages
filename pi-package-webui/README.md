@@ -25,6 +25,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 | **Project utilities** | Launch detected app runners, manage working directories, search files and transcripts, and customize themes. |
 | **Companion features** | Add stats, remote access, voice, `/btw`, richer Git status, themes, release tools, and other supported Pi packages. |
 | **Desktop and mobile** | Use a full desktop workspace with resizable left and right side panels, or a compact phone layout with touch-friendly navigation and controls. |
+| **Customizable controls** | Hide optional workspace, Control Deck, composer, workflow, attachment, and input-tag controls while keeping Send available. |
 
 ## Quick start
 
@@ -67,6 +68,8 @@ Check the server at any time with:
 When session history is still loading, the main window shows **Loading agent output…** with a small inline spinner. Existing transcript content and controls remain available; no popup interrupts your work.
 
 Tracked skills appear as compact tags above the composer. Select a named tag to open its skill file; when space is limited, select the **+X** tag to expand the remaining selectable tags upward.
+
+To simplify the interface, right-click a supported button and choose **Hide**, or right-click empty space in a marked toolbar, Control Deck header/footer, or composer area to choose every visible control and input-tag type. Use **Show all** or **Reset defaults** to recover hidden items. This preference is global across Web UI workspaces and browsers; **Send** always remains available.
 
 Open **Subagents** to follow agent runs launched by managed extensions or registered SDK, RPC, JSON, print, interactive, tmux, workflow, schedule, gate, and custom integrations. Runs linked to an open WebUI terminal stay in that terminal’s group; other registered runs appear under **External agents**. Each agent row shows its launch source and lifecycle, and only offers output or controls that its owner supports. A `pi-subagents` workflow appears as a collapsible **Workflow** header with its model-powered agents nested inside, rather than as another agent row. Starting or restarting the server reconnects active runs without reopening stale, lost, or already-finished rows from an earlier server run.
 

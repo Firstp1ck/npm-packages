@@ -114,7 +114,7 @@ async function seedStaleServerLayout() {
       sidePanelWidth: 352,
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: ["git", "files", "controls"], leftSectionIds: [] },
@@ -528,7 +528,7 @@ test("returning browsers adopt authoritative Control Deck state without echo wri
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: serverSideOrder, leftSectionIds: [] },
@@ -585,7 +585,7 @@ test("failed layout writes remain pending across reload and later synchronize", 
     method: "PUT",
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
-      layout: { version: 2, composerActions: { order: ["send", "new"], grid: null } },
+      layout: { version: 3, composerActions: { order: ["send", "new"], grid: null } },
     },
   });
 
@@ -628,7 +628,7 @@ test("conflict retry updates only the changed Control Deck subfield", async ({ b
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: initialOrder, leftSectionIds: [] },
@@ -672,7 +672,7 @@ test("one tab cannot erase another tab's failed pending journal", async ({ brows
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: [] },
@@ -732,7 +732,7 @@ test("in-flight sibling acknowledgement clears only the acknowledged subfield", 
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: initialOrder, leftSectionIds: [] },
@@ -816,7 +816,7 @@ test("same-origin sibling placement adoption cannot overwrite a dirty section la
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: initialOrder, leftSectionIds: [] },
@@ -874,7 +874,7 @@ test("seeded v3 Control Deck journal recovers legacy fields without widening par
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: ["controls", "files", "git"], leftSectionIds: [] },
@@ -926,7 +926,7 @@ test("a delayed GET cannot regress the revision acknowledged by a newer PUT", as
     body: {
       expectedLayoutRevision: current.data.layoutRevision,
       layout: {
-        version: 2,
+        version: 3,
         sidePanel: {
           placement: "right",
           sectionLayout: { order: ["files", "controls", "git"], leftSectionIds: [] },

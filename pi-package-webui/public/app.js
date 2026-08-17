@@ -350,6 +350,7 @@ const elements = {
   fileSelectionSendButton: $("#fileSelectionSendButton"),
   fileContextMenu: $("#fileContextMenu"),
   sidePanelContextMenu: $("#sidePanelContextMenu"),
+  visibilityContextMenu: $("#visibilityContextMenu"),
   gitFooterContextMenu: $("#gitFooterContextMenu"),
   sidePanelResizeHandle: $("#sidePanelResizeHandle"),
   sidePanelResizeHandleLeft: $("#sidePanelLeftResizeHandle"),
@@ -4529,6 +4530,11 @@ function restoreComposerActionSlotLayout() {
     if (slot !== null) composerActionSlotLayout.set(id, slot);
   }
   applyComposerActionSlotLayout();
+  // Project visible actions into a dense grid without overwriting the user's
+  // saved layout. Restoring all hidden actions restores their original slots.
+  if (composerActionRecords().some(({ root }) => root.classList.contains("webui-user-hidden"))) {
+    repackComposerActionSlotLayout({ persist: false });
+  }
 }
 
 function scheduleComposerActionSlotLayoutRestore() {
@@ -4561,7 +4567,7 @@ function captureComposerActionSlotLayout() {
   applyComposerActionSlotLayout();
 }
 
-function repackComposerActionSlotLayout() {
+function repackComposerActionSlotLayout({ persist = true } = {}) {
   if (composerActionLayoutColumns < 1) return;
   const nextLayout = new Map();
   let slot = 0;
@@ -4573,7 +4579,7 @@ function repackComposerActionSlotLayout() {
   }
   composerActionSlotLayout = nextLayout;
   applyComposerActionSlotLayout();
-  persistComposerActionSlotLayout();
+  if (persist) persistComposerActionSlotLayout();
 }
 
 function syncComposerActionOrderFromSlots() {
@@ -4813,7 +4819,10 @@ function initializeComposerActionOrdering() {
   }
   window.addEventListener("resize", scheduleComposerActionSlotLayoutRestore);
   for (const record of composerActionRecords()) {
-    record.focusTarget.setAttribute("aria-keyshortcuts", "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown");
+    // Send also anchors the keyboard-only visibility recovery menu.
+    record.focusTarget.setAttribute("aria-keyshortcuts", record.id === "send"
+      ? "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown ContextMenu Shift+F10"
+      : "Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown");
     record.focusTarget.addEventListener("keydown", (event) => {
       if (isMobileView() || !event.altKey || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
       event.preventDefault();
@@ -12805,11 +12814,11 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
 // per-user layout lives in the WebUI settings file behind
 // GET/PUT /api/interface-preferences. Local writes always apply first; server
 // reconciliation is non-blocking, coalesced, and revision guarded.
-const UI_LAYOUT_SCHEMA_VERSION = 2;
+const UI_LAYOUT_SCHEMA_VERSION = 3;
 const UI_LAYOUT_ENDPOINT = "/api/interface-preferences";
 const UI_LAYOUT_SAVE_DEBOUNCE_MS = 250;
 const UI_LAYOUT_MAX_CONFLICT_RETRIES = 1;
-const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
+const UI_LAYOUT_FIELDS = ["sidePanel", "composerActions", "controlVisibility", "footerScopedModelOrder", "terminalTabs", "fileViewerWidth"];
 const UI_LAYOUT_SIDE_PANEL_FIELDS = ["placement", "sectionLayout", "collapsedSectionIds", "hiddenSectionIds", "collapsedPanels", "panelWidths"];
 const REMOVED_SIDE_PANEL_SECTION_HEIGHT_STORAGE_KEY = "pi-webui-side-panel-section-heights-v1";
 const UI_LAYOUT_COMPOSER_FIELDS = ["order", "grid"];
@@ -13016,6 +13025,271 @@ function collectDurableTerminalTabsLayout() {
   };
 }
 
+// --- Control visibility registry -------------------------------------------
+// Stable preference keys are independent of DOM ids. Each entry maps to a
+// static selector so user hiding composes with runtime capability gating via
+// the dedicated .webui-user-hidden class (never touches the hidden attribute).
+// Send is intentionally unregistered: it can never be hidden by preference.
+const CONTROL_VISIBILITY_HIDDEN_IDS_STORAGE_KEY = "pi-webui-control-visibility-hidden-ids-v1";
+const CONTROL_VISIBILITY_GROUP_LABELS = [
+  ["workspace", "Workspace toolbar"],
+  ["control-deck", "Control Deck"],
+  ["composer", "Composer actions"],
+  ["inputframe", "Input-frame controls"],
+  ["tags", "Input-frame tags"],
+];
+const CONTROL_VISIBILITY_CATALOG = [
+  { id: "workspace.save", group: "workspace", label: "Save workspace", selector: "#workspaceSaveButton" },
+  { id: "workspace.command-palette", group: "workspace", label: "Command palette", selector: "#commandPaletteButton" },
+  { id: "workspace.overview", group: "workspace", label: "Show workspace overview", selector: "#workspaceDashboardToggleButton" },
+  { id: "workspace.close-all-tabs", group: "workspace", label: "Close all tabs", selector: "#closeAllTabsButton" },
+  { id: "control-deck.sponsor", group: "control-deck", label: "Sponsor", selector: ".sponsor-link" },
+  { id: "control-deck.open-issue", group: "control-deck", label: "Open Issue", selector: "#openIssueButton" },
+  { id: "composer.new", group: "composer", label: "New", selector: '[data-composer-action-id="new"]' },
+  { id: "composer.compact", group: "composer", label: "Compact", selector: '[data-composer-action-id="compact"]' },
+  { id: "composer.guided-git", group: "composer", label: "Guided Git workflow", selector: '[data-composer-action-id="git"]' },
+  { id: "composer.publish", group: "composer", label: "AUR/npm release dropdown", selector: '[data-composer-action-id="publish"]' },
+  { id: "composer.tools-skills", group: "composer", label: "Tools/skills setup dropdown", selector: '[data-composer-action-id="native-command"]' },
+  { id: "composer.common-options", group: "composer", label: "Common options", selector: '[data-composer-action-id="options"]' },
+  { id: "composer.app-runner", group: "composer", label: "App runner", selector: '[data-composer-action-id="app-runner"]' },
+  { id: "composer.steer", group: "composer", label: "Steer", selector: '[data-composer-action-id="steer"]' },
+  { id: "composer.follow-up", group: "composer", label: "Follow-up", selector: '[data-composer-action-id="follow-up"]' },
+  { id: "composer.btw", group: "composer", label: "/btw side question", selector: '[data-composer-action-id="btw"]' },
+  { id: "input.workflow", group: "inputframe", label: "Workflow controls", selector: "#workflowModeControls" },
+  { id: "input.attach-files", group: "inputframe", label: "Attach files", selector: "#attachButton" },
+  { id: "tag.prompt-behavior", group: "tags", label: "Follow-up/Steer busy-prompt behavior tag", selector: "#busyPromptBehaviorTag" },
+  { id: "tag.skills", group: "tags", label: "Session skill tags", selector: "#sessionSkillTags" },
+  { id: "tag.agent-conversations", group: "tags", label: "Intercom agent-conversation tags", selector: "#intercomConversationTags" },
+  { id: "tag.feature-category", group: "tags", label: "Feature-category tag", selector: "#featureCategoryTag" },
+  { id: "tag.voice-mode", group: "tags", label: "Natural-conversation/voice tag", selector: "#conversationModeChip" },
+  { id: "tag.workflow-mode", group: "tags", label: "Workflow-mode tag", selector: "#workflowModeChip" },
+];
+const CONTROL_VISIBILITY_REGISTRY = new Map(CONTROL_VISIBILITY_CATALOG.map((entry) => [entry.id, entry]));
+
+function readStoredControlVisibilityHiddenIds() {
+  const raw = readDurableLayoutCache(CONTROL_VISIBILITY_HIDDEN_IDS_STORAGE_KEY);
+  if (raw === null) return null;
+  try {
+    return durableLayoutIdList(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function userControlHiddenIds() {
+  const dirtyHiddenIds = durableLayoutDirtyFields.get("controlVisibility")?.value?.hiddenIds;
+  if (dirtyHiddenIds === null || Array.isArray(dirtyHiddenIds)) return dirtyHiddenIds || [];
+  return readStoredControlVisibilityHiddenIds() || [];
+}
+
+// Only the preference class is managed here. A runtime `hidden` attribute
+// owned by capability/state gating always remains authoritative.
+function applyControlVisibility(hiddenIdsOverride) {
+  // An explicit override lets this tab keep showing its own pending mutation
+  // while another same-origin tab's cache value is still unacknowledged.
+  const hiddenSet = new Set(hiddenIdsOverride === undefined ? userControlHiddenIds() : hiddenIdsOverride || []);
+  let composerChanged = false;
+  for (const entry of CONTROL_VISIBILITY_CATALOG) {
+    const shouldHide = hiddenSet.has(entry.id);
+    for (const element of document.querySelectorAll(entry.selector)) {
+      const wasHidden = element.classList.contains("webui-user-hidden");
+      element.classList.toggle("webui-user-hidden", shouldHide);
+      // Reflow on a real state change in either direction: un-hiding must
+      // restore saved slots, and unchanged reapplies (storage events, snapshot
+      // adoption) must not schedule spurious repacks.
+      if (wasHidden !== shouldHide && entry.group === "composer") composerChanged = true;
+    }
+  }
+  // Hiding composer actions leaves grid holes; repack/restore the saved layout.
+  if (composerChanged) scheduleComposerActionSlotLayoutRestore();
+}
+
+function persistControlVisibilityHiddenIds(hiddenIds) {
+  writeDurableLayoutCache(CONTROL_VISIBILITY_HIDDEN_IDS_STORAGE_KEY, JSON.stringify(hiddenIds ?? null));
+  markDurableUiLayoutDirty("controlVisibility");
+  applyControlVisibility(hiddenIds);
+}
+
+function setControlVisibilityHidden(id, hidden) {
+  if (!CONTROL_VISIBILITY_REGISTRY.has(id)) return;
+  const current = userControlHiddenIds();
+  const next = hidden ? [...new Set([...current, id])] : current.filter((entry) => entry !== id);
+  persistControlVisibilityHiddenIds(next);
+}
+
+function showAllControls() {
+  persistControlVisibilityHiddenIds([]);
+}
+
+function resetControlVisibilityDefaults() {
+  persistControlVisibilityHiddenIds(null);
+}
+
+let visibilityContextMenuState = null;
+
+function closeVisibilityContextMenu({ returnFocus = true } = {}) {
+  const trigger = visibilityContextMenuState?.trigger;
+  visibilityContextMenuState = null;
+  if (elements.visibilityContextMenu) elements.visibilityContextMenu.hidden = true;
+  if (!returnFocus) return;
+  const triggerSurvives = trigger
+    && trigger.isConnected
+    && !trigger.hidden
+    && !trigger.classList?.contains("webui-user-hidden")
+    && typeof trigger.focus === "function";
+  if (triggerSurvives) trigger.focus({ preventScroll: true });
+  else elements.promptInput?.focus({ preventScroll: true });
+}
+
+function positionControlVisibilityMenu(clientX, clientY) {
+  const menu = elements.visibilityContextMenu;
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(clientX, Math.max(8, window.innerWidth - rect.width - 8));
+  const top = Math.min(clientY, Math.max(8, window.innerHeight - rect.height - 8));
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function controlVisibilityMenuLabel(text) {
+  const label = make("div", "control-visibility-menu-label", text);
+  label.setAttribute("role", "presentation");
+  label.setAttribute("aria-hidden", "true");
+  return label;
+}
+
+function controlVisibilityMenuAction(action, text) {
+  const button = make("button", "control-visibility-menu-item control-visibility-menu-action", text);
+  button.type = "button";
+  button.setAttribute("role", "menuitem");
+  button.dataset.visibilityMenuAction = action;
+  return button;
+}
+
+function prepareControlVisibilityMenu(trigger, entryId = null) {
+  if (!elements.visibilityContextMenu) return null;
+  closeFileContextMenu({ returnFocus: false });
+  closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
+  closeGitFooterContextMenu({ returnFocus: false });
+  closeVisibilityContextMenu({ returnFocus: false });
+  // Region hosts are plain non-focusable containers; storing one as the
+  // trigger would let Escape focus fall through to <body>. Fall back to the
+  // prompt unless the trigger can actually receive keyboard focus.
+  const focusableTrigger = trigger
+    && typeof trigger.focus === "function"
+    && trigger.matches("button, a, input, select, textarea, [tabindex]")
+    ? trigger
+    : elements.promptInput;
+  visibilityContextMenuState = {
+    trigger: focusableTrigger,
+    entryId,
+    openedAt: performance.now(),
+  };
+  return elements.visibilityContextMenu;
+}
+
+// Right-clicking a visible registered control offers Hide <label> plus the
+// recovery actions; empty marked regions open the grouped full catalog.
+function showControlVisibilityDirectMenu(entry, directElement, { clientX, clientY }) {
+  const menu = prepareControlVisibilityMenu(directElement, entry.id);
+  if (!menu) return;
+  const items = [
+    controlVisibilityMenuLabel("Hide or restore controls"),
+    controlVisibilityMenuAction("hide", `Hide ${entry.label}`),
+    controlVisibilityMenuAction("show-all", "Show all"),
+    controlVisibilityMenuAction("reset-defaults", "Reset defaults"),
+  ];
+  menu.replaceChildren(...items);
+  positionControlVisibilityMenu(clientX, clientY);
+  menu.querySelector('[role="menuitem"]')?.focus({ preventScroll: true });
+}
+
+function showControlVisibilityRegionMenu(trigger, { clientX, clientY }) {
+  const menu = prepareControlVisibilityMenu(trigger, null);
+  if (!menu) return;
+  const hiddenSet = new Set(userControlHiddenIds());
+  const children = [controlVisibilityMenuLabel("Choose visible controls")];
+  for (const [groupId, groupLabel] of CONTROL_VISIBILITY_GROUP_LABELS) {
+    children.push(controlVisibilityMenuLabel(groupLabel));
+    for (const entry of CONTROL_VISIBILITY_CATALOG.filter((item) => item.group === groupId)) {
+      const button = make("button", "control-visibility-menu-item side-panel-context-menu-item", entry.label);
+      button.type = "button";
+      button.setAttribute("role", "menuitemcheckbox");
+      button.setAttribute("aria-checked", hiddenSet.has(entry.id) ? "false" : "true");
+      button.dataset.visibilityMenuToggle = entry.id;
+      children.push(button);
+    }
+  }
+  children.push(controlVisibilityMenuAction("show-all", "Show all"));
+  children.push(controlVisibilityMenuAction("reset-defaults", "Reset defaults"));
+  menu.replaceChildren(...children);
+  positionControlVisibilityMenu(clientX, clientY);
+  menu.querySelector('[role="menuitemcheckbox"]')?.focus({ preventScroll: true });
+}
+
+// Registered visibility targets always win; unrelated editable/input/link
+// contexts and existing specialized menus keep their native behavior.
+function handleControlVisibilityContextMenu(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (target.closest?.(".file-context-menu, dialog, .composer-publish-menu-panel")) return;
+  const direct = target.closest?.("[data-visibility-key]");
+  const entry = direct ? CONTROL_VISIBILITY_REGISTRY.get(direct.dataset.visibilityKey) : null;
+  if (entry) {
+    event.preventDefault();
+    event.stopPropagation();
+    showControlVisibilityDirectMenu(entry, direct, { clientX: event.clientX, clientY: event.clientY });
+    return;
+  }
+  if (target.closest?.("button, input, textarea, select, [contenteditable='true'], a")) return;
+  const region = target.closest?.("[data-visibility-region]");
+  if (!region) return;
+  event.preventDefault();
+  event.stopPropagation();
+  showControlVisibilityRegionMenu(region, { clientX: event.clientX, clientY: event.clientY });
+}
+
+function handleControlVisibilityKeydown(event) {
+  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+  const target = event.target instanceof Element ? event.target : document.activeElement;
+  if (!(target instanceof Element)) return;
+  if (target.closest?.(".file-context-menu, dialog, .composer-publish-menu-panel")) return;
+  const direct = target.closest?.("[data-visibility-key]");
+  const entry = direct ? CONTROL_VISIBILITY_REGISTRY.get(direct.dataset.visibilityKey) : null;
+  // Send is permanently visible and never toggleable, so from the keyboard it
+  // doubles as the always-reachable anchor for the grouped recovery menu when
+  // every optional control is hidden. Pointer right-click on Send stays native.
+  const sendAnchor = entry ? null : target.closest?.("#sendButton");
+  const anchor = direct || sendAnchor || target.closest?.("[data-visibility-region]");
+  if (!anchor) return;
+  if (!entry && !sendAnchor && target.closest?.("button, input, textarea, select, [contenteditable='true'], a")) return;
+  const rect = anchor.getBoundingClientRect();
+  const position = { clientX: rect.left + Math.min(rect.width, 24), clientY: rect.bottom };
+  event.preventDefault();
+  event.stopPropagation();
+  if (entry) showControlVisibilityDirectMenu(entry, direct, position);
+  else showControlVisibilityRegionMenu(anchor, position);
+}
+
+function initializeControlVisibility() {
+  applyControlVisibility();
+  document.addEventListener("contextmenu", handleControlVisibilityContextMenu, { capture: true });
+  document.addEventListener("keydown", handleControlVisibilityKeydown, { capture: true });
+  document.addEventListener("pointerdown", (event) => {
+    if (!elements.visibilityContextMenu || elements.visibilityContextMenu.hidden) return;
+    if (!event.target?.closest?.(".control-visibility-context-menu")) closeVisibilityContextMenu({ returnFocus: false });
+  }, { passive: true });
+  window.addEventListener("resize", () => closeVisibilityContextMenu({ returnFocus: false }), { passive: true });
+  document.addEventListener("scroll", () => {
+    // Pointer-driven context-menu invocation can finish an automatic
+    // scroll-into-view after the menu opens. Ignore that trailing event while
+    // still dismissing the menu for subsequent user scrolling.
+    if (!visibilityContextMenuState || performance.now() - visibilityContextMenuState.openedAt < 100) return;
+    closeVisibilityContextMenu({ returnFocus: false });
+  }, { capture: true, passive: true });
+}
+
 function collectDurableFileViewerWidth() {
   const width = readStoredFileViewerWidth();
   if (!Number.isFinite(width)) return null;
@@ -13029,6 +13303,8 @@ function collectDurableUiLayoutField(field) {
       return collectDurableSidePanelLayout();
     case "composerActions":
       return collectDurableComposerActionsLayout();
+    case "controlVisibility":
+      return { hiddenIds: readStoredControlVisibilityHiddenIds() };
     case "footerScopedModelOrder":
       return durableLayoutStoredIdList(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY);
     case "terminalTabs":
@@ -13267,6 +13543,12 @@ function applyDurableComposerActionsLayout(value) {
   }
 }
 
+function applyDurableControlVisibility(value) {
+  if (!value || typeof value !== "object") return;
+  writeDurableLayoutCache(CONTROL_VISIBILITY_HIDDEN_IDS_STORAGE_KEY, JSON.stringify(value.hiddenIds ?? null));
+  applyControlVisibility();
+}
+
 function applyDurableFooterScopedModelOrder(value) {
   if (!Array.isArray(value)) return;
   writeDurableLayoutCache(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY, JSON.stringify(value));
@@ -13304,6 +13586,7 @@ function applyDurableFileViewerWidth(value) {
 function applyDurableUiLayoutField(field, value) {
   if (field === "sidePanel") applyDurableSidePanelLayout(value);
   else if (field === "composerActions") applyDurableComposerActionsLayout(value);
+  else if (field === "controlVisibility") applyDurableControlVisibility(value);
   else if (field === "footerScopedModelOrder") applyDurableFooterScopedModelOrder(value);
   else if (field === "terminalTabs") applyDurableTerminalTabsLayout(value);
   else if (field === "fileViewerWidth") applyDurableFileViewerWidth(value);
@@ -13313,6 +13596,7 @@ function durableUiLayoutInteractionActive(field = null) {
   const activeByField = {
     sidePanel: Boolean(sidePanelSectionPointerDrag?.active || sidePanelResizeState),
     composerActions: Boolean(composerActionPointerDrag?.active),
+    controlVisibility: false,
     footerScopedModelOrder: Boolean(footerScopedModelPointerDrag?.active),
     terminalTabs: Boolean(terminalTabDragId || terminalTabsResizeState),
     fileViewerWidth: Boolean(fileViewerResizeState),
@@ -13495,6 +13779,12 @@ async function flushDurableUiLayoutSave() {
         else current.value = collectDurableUiLayoutField(field);
       } else if (current.generation === entry.generation && current.mutationId === entry.mutationId) {
         durableLayoutDirtyFields.delete(field);
+        if (field === "controlVisibility") {
+          // Another tab may have overwritten the same-origin cache while this
+          // mutation was pending; the acknowledged value is authoritative now.
+          writeDurableLayoutCache(CONTROL_VISIBILITY_HIDDEN_IDS_STORAGE_KEY, JSON.stringify(entry.value?.hiddenIds ?? null));
+          applyControlVisibility();
+        }
       }
     }
     clearAcknowledgedDurableUiLayoutPendingMutations(snapshot);
@@ -47140,6 +47430,7 @@ elements.sidePanelBackdrop.addEventListener("click", () => {
   setSidePanelCollapsed(true);
 });
 bindSidePanelContextMenu();
+initializeControlVisibility();
 elements.stickyUserPromptButton?.addEventListener("click", jumpToStickyUserPrompt);
 elements.jumpToLatestButton.addEventListener("click", jumpToLatest);
 elements.chat.addEventListener("wheel", noteChatUserScrollIntent, { passive: true });
@@ -47501,6 +47792,13 @@ window.addEventListener("storage", (event) => {
   }
   if (event.key === COMPOSER_ACTION_ORDER_STORAGE_KEY) restoreComposerActionOrder();
   if (event.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY) restoreComposerActionSlotLayout();
+  if (event.key === CONTROL_VISIBILITY_HIDDEN_IDS_STORAGE_KEY) {
+    // A pending local mutation stays visually authoritative for this tab;
+    // adopting another tab's cache value here would revert the dirty change
+    // that is still waiting for its acknowledged server write.
+    const dirtyVisibility = durableLayoutDirtyFields.get("controlVisibility");
+    applyControlVisibility(dirtyVisibility ? dirtyVisibility.value?.hiddenIds : undefined);
+  }
   if (event.key === SIDE_PANEL_WIDTH_STORAGE_KEY && !ignoreLegacySidePanelEvent("panelWidths", Boolean(sidePanelResizeState))) {
     const width = readStoredSidePanelWidth();
     if (width && !isSidePanelOverlayView()) applySidePanelWidth(width);
@@ -47726,6 +48024,47 @@ elements.sidePanelContextMenu?.addEventListener("keydown", (event) => {
   } else if (event.key === "Home" || event.key === "End") {
     event.preventDefault();
     items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+function visibilityContextMenuItems() {
+  return [...elements.visibilityContextMenu.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')];
+}
+elements.visibilityContextMenu?.addEventListener("keydown", (event) => {
+  const items = visibilityContextMenuItems();
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeVisibilityContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+elements.visibilityContextMenu?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-visibility-menu-toggle], [data-visibility-menu-action]");
+  if (!button) return;
+  const toggleId = button.dataset.visibilityMenuToggle;
+  if (toggleId) {
+    const hiddenSet = new Set(userControlHiddenIds());
+    setControlVisibilityHidden(toggleId, !hiddenSet.has(toggleId));
+    button.setAttribute("aria-checked", hiddenSet.has(toggleId) ? "true" : "false");
+    return;
+  }
+  const action = button.dataset.visibilityMenuAction;
+  if (action === "hide") {
+    const entryId = visibilityContextMenuState?.entryId;
+    if (entryId) setControlVisibilityHidden(entryId, true);
+    closeVisibilityContextMenu();
+  } else if (action === "show-all") {
+    closeVisibilityContextMenu();
+    showAllControls();
+  } else if (action === "reset-defaults") {
+    closeVisibilityContextMenu();
+    resetControlVisibilityDefaults();
   }
 });
 elements.gitFooterContextMenu?.addEventListener("keydown", (event) => {

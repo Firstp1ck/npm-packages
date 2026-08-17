@@ -1165,6 +1165,26 @@ body.terminal-tabs-resizing * {
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
+.control-visibility-context-menu {
+  max-height: calc(100vh - 1rem);
+  max-height: calc(100dvh - 1rem);
+  overflow-y: auto;
+}
+.control-visibility-menu-label {
+  padding: 0.38rem 0.58rem 0.24rem;
+  color: var(--ctp-subtext);
+  font-size: var(--text-xs);
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.control-visibility-menu-action {
+  border-top: 1px solid color-mix(in srgb, var(--ctp-subtext), transparent 78%);
+}
+/* User-hidden preference state composes with capability-owned hidden attributes. */
+.webui-user-hidden {
+  display: none !important;
+}
 .side-panel-context-menu-item {
   display: grid;
   grid-template-columns: 1.1rem minmax(0, 1fr);
