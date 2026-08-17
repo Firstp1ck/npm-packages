@@ -7258,7 +7258,7 @@ function resizePromptInput() {
   const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
   const nextHeight = Number.isFinite(maxHeight) ? Math.min(input.scrollHeight, maxHeight) : input.scrollHeight;
   input.style.height = `${Math.ceil(nextHeight)}px`;
-  input.style.overflowY = Number.isFinite(maxHeight) && input.scrollHeight > maxHeight + 1 ? "auto" : "hidden";
+  input.style.overflowY = "auto";
 }
 
 function updateComposerModeButtons() {

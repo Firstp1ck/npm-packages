@@ -61,7 +61,7 @@ Check the server at any time with:
 1. Start the Web UI with `/webui-start`.
 2. Confirm the working directory in the footer or choose another project.
 3. Select a model and thinking effort.
-4. Enter a prompt, attach context if needed, and follow the live response.
+4. Enter a prompt, attach context if needed, and follow the live response. The prompt grows to a bounded height, then scrolls vertically so every line stays reachable.
 5. Open the Control Deck for sessions, Git, app runners, themes, updates, and optional features. Under **Controls → Interface**, choose **Top bar** or **Sidebar** for terminal tabs, then choose **Right**, **Left**, or **Both** for the Control Deck. In **Sidebar**, **Both** is unavailable; choosing **Right** or **Left** swaps the Control Deck and terminal/tabs rails across the chat.
 6. On desktop, drag the workspace-facing edge of any visible Control Deck—or the terminal/tabs rail in **Sidebar**—to choose a comfortable width. In **Both**, resize the left and right Control Decks independently; widths return on your next visit.
 

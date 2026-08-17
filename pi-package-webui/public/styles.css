@@ -273,7 +273,8 @@ textarea::placeholder { color: rgba(var(--ctp-subtext-rgb), 0.62); }
   min-height: calc(1.5em + 1.8rem);
   max-height: min(25vh, 10rem);
   resize: none;
-  overflow-y: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .topbar {

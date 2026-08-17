@@ -90,6 +90,34 @@ test("v2 flag is isolated on desktop and rollback remains explicit", async ({ pa
   await expect(page.locator("#mobileShellV2")).toBeHidden();
 });
 
+test("the main prompt scrolls vertically after bounded auto-growth", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+  const prompt = page.locator("#promptInput");
+  const longPrompt = Array.from({ length: 20 }, (_, index) => `line ${index + 1}: keep this prompt line reachable`).join("\n");
+
+  await prompt.fill(longPrompt);
+  const longMetrics = await prompt.evaluate((node) => {
+    const style = getComputedStyle(node);
+    node.scrollTop = node.scrollHeight;
+    return {
+      clientHeight: node.clientHeight,
+      maxHeight: Number.parseFloat(style.maxHeight),
+      overflowY: style.overflowY,
+      scrollHeight: node.scrollHeight,
+      scrollTop: node.scrollTop,
+    };
+  });
+  assert.equal(longMetrics.overflowY, "auto");
+  assert.ok(longMetrics.scrollHeight > longMetrics.clientHeight + 1, `long prompt should overflow vertically: ${JSON.stringify(longMetrics)}`);
+  assert.ok(longMetrics.scrollTop > 0, `long prompt should accept vertical scrolling: ${JSON.stringify(longMetrics)}`);
+  assert.ok(longMetrics.clientHeight <= longMetrics.maxHeight + 1, `prompt should retain its height cap: ${JSON.stringify(longMetrics)}`);
+
+  await prompt.fill("short prompt");
+  const shortMetrics = await prompt.evaluate((node) => ({ clientHeight: node.clientHeight, scrollHeight: node.scrollHeight }));
+  assert.ok(shortMetrics.clientHeight < longMetrics.clientHeight, `short prompt should shrink after long input: ${JSON.stringify(shortMetrics)}`);
+});
+
 test("legacy phone keeps terminal navigation and secondary composer actions collapsed", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const page = await context.newPage();

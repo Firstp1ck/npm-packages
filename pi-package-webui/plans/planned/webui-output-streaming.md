@@ -1,9 +1,10 @@
 # WebUI output streaming improvement plan
 
-Status: planned  
-Scope: live assistant text, thinking, tool-call output, transcript follow-scroll, and stream performance observability  
-Target package: `pi-package-webui`  
+Status: in progress — Phase 0 implemented 2026-08-17 (commit `b4339e8`); Phases 1–4 not started
+Scope: live assistant text, thinking, tool-call output, transcript follow-scroll, and stream performance observability
+Target package: `pi-package-webui`
 Created: 2026-08-17
+Last progress audit: 2026-08-17
 
 ## Goal
 
@@ -46,11 +47,31 @@ The WebUI already implements several major recommendations from the report:
 
 These are foundations, not targets for replacement. Do not migrate transports, introduce React, replace the transcript renderer, or add iframe/Shadow DOM isolation as part of this work.
 
+## Implementation progress
+
+Audited 2026-08-17 by direct inspection of the working tree and git history, with the streaming test suite rerun as evidence (`node tests/stream-output-controller.test.mjs`, `node tests/stream-output-workloads.test.mjs`, `node tests/stream-output-isolation-static.test.mjs` — all pass).
+
+| Item | Status | Evidence |
+|---|---|---|
+| Phase 0 diagnostics (S7) | **Done** — `b4339e8` | Controller emits receipt/queued/coalesced/batch/overflow/barrier/stale records with `maxAgeMs` and `drainMs`, injectable `now()`, zero clock reads when disabled. Browser ledger v2 (`?streamIsolationDebug=1`) adds receipt-to-paint opportunities, transcript/current-message node counts, derive/tokenize/markdown-commit bytes and durations, tail bytes, long-task/LoAF observers, focus-loss-near-batch, and detached-scroll tracking. Documented in `DEVELOPMENT.md`. |
+| Phase 0 fixtures and tests | **Done** — 7 of 9 workload classes | `tests/fixtures/streaming-workloads.mjs` covers small deltas, long paragraphs, open fences below and above highlight bounds, thinking streams, mixed semantic barriers, and overflow bursts. `tests/stream-output-workloads.test.mjs` asserts exact output/order, queue bounds, latency fields, and disabled-path behavior. **Gaps:** no background-tab/foreground-reconciliation workload and no long-transcript-plus-active-stream workload yet. |
+| Phase 0 exit gate | **Partially met** | Deterministic fixtures and instrumentation exist and pass. **Gap:** no browser profiling run on documented target hardware yet; cadence and tail thresholds are still unmeasured (also stated in `DEVELOPMENT.md`). |
+| S1 Markdown tail specialization | Open | `transcript-renderer.mjs reconcileMarkdownSurface()` still removes/re-renders the full mutable tail per publish; `streamingMarkdownStableBoundary()` (`public/app.js:34531`) still receives the full accumulated value on every reconcile (call sites `34571`, `34934`). |
+| S2 incremental derived output | Open | `streamDerivedText()` (`public/app.js:42884`) still rescans the full accumulated string whenever `streamRawText` changes; the cache only hits on an identical reference. |
+| S3 measured publish cadence | Open | Normal text/thinking publish through the rAF frame controller only; no latest-wins minimum-interval scheduler for expensive formatting exists (compact mode keeps its separate 100 ms flush in `public/fast-output-live.mjs`). |
+| S4 incremental queue byte accounting | Open | `eventByteSize()` in `public/stream-output-controller.mjs` still `JSON.stringify`s every incoming entry and re-serializes each growing merged event. |
+| S5 deferred pressure flush | Open | `enqueue()` still calls `flush()` synchronously inside the transport callback on entry/byte overflow; oversize events still apply directly (intentionally retained fallback). |
+| S6 sentinel-driven follow-scroll | Open | `isChatNearBottom()` still reads `scrollHeight`/`scrollTop`/`clientHeight`; `applyChatFollowScroll()` reads `scrollHeight` before writing `scrollTop`; no `IntersectionObserver` bottom sentinel exists in `public/app.js`/`public/index.html`. |
+| S8 CSS containment trial | Open — trace-gated (P3) | No `contain`/`content-visibility` applied to streaming regions; awaits Phase 0/3 trace evidence. |
+| S9 worker prototype | Open — evidence-gated (P3) | No Web Worker used for parsing/highlighting; only proceed if Phase 1–3 traces still show main-thread parse/tokenization bottlenecks. |
+
+**Next actionable work:** Phase 1 (two independently reviewable patches: incremental derived-output state, then streaming Markdown-tail specialization). Phase 0's remaining gaps (background-tab and long-transcript workloads, target-hardware browser profiling) can land in parallel and do not block Phase 1 development, but cadence/threshold numbers in Phase 2 must not be finalized before the profiling run.
+
 ## Primary findings
 
 ### S1 — Mutable Markdown tails can still grow without bound
 
-**Priority:** P1  
+**Priority:** P1
 **Confidence:** 96/100
 
 `streamingMarkdownStableBoundary()` advances only at blank lines outside fenced code blocks. A long paragraph, table, list, or open code fence can therefore remain one mutable tail for a long time. Each publish removes and recreates that tail through `renderMarkdownInto()` (verified in `transcriptRenderer.reconcileMarkdownSurface()`: tail nodes are removed and the tail re-rendered on every reconcile).
@@ -73,7 +94,7 @@ Open fenced code is the worst case, with one important existing bound: `tokenize
 
 ### S2 — Accumulated output is rescanned for derived content
 
-**Priority:** P1  
+**Priority:** P1
 **Confidence:** 94/100
 
 `streamDerivedText()` reruns todo-line filtering and thinking-format splitting whenever `streamRawText` changes. The cache cannot help across successful delta appends because each append changes the cache key. Long responses can therefore repeatedly rescan the full accumulated string.
@@ -92,7 +113,7 @@ Open fenced code is the worst case, with one important existing bound: `tokenize
 
 ### S3 — Normal thinking and Markdown publish at display refresh cadence even when formatting is expensive
 
-**Priority:** P1 after baseline  
+**Priority:** P1 after baseline
 **Confidence:** 90/100
 
 The frame controller caps publication at animation-frame cadence, but the main-thread work performed by a frame may still be too expensive. Normal thinking output uses the same Markdown-tail reconciliation and can incur the same open-tail cost. Compact mode already demonstrates a 100 ms sustained scheduler, but normal output has no adaptive lower-frequency path.
@@ -108,7 +129,7 @@ The frame controller caps publication at animation-frame cadence, but the main-t
 
 ### S4 — Stream queue accounting repeatedly serializes growing merged events
 
-**Priority:** P2  
+**Priority:** P2
 **Confidence:** 91/100
 
 `eventByteSize()` uses `JSON.stringify(event)` for every incoming entry and again after each adjacent merge. As a merged delta grows, byte accounting repeatedly serializes the entire merged event. This is avoidable work on the ingestion hot path.
@@ -123,7 +144,7 @@ The frame controller caps publication at animation-frame cadence, but the main-t
 
 ### S5 — Queue overflow drains synchronously outside the normal frame boundary
 
-**Priority:** P2  
+**Priority:** P2
 **Confidence:** 87/100
 
 When the queue exceeds an entry or byte limit, the controller synchronously calls `flush()`. This is bounded and lossless, but a burst can move a large render batch into the SSE message callback instead of the next paint opportunity, causing input latency.
@@ -139,7 +160,7 @@ When the queue exceeds an entry or byte limit, the controller synchronously call
 
 ### S6 — Follow-scroll still relies on repeated layout geometry reads
 
-**Priority:** P2, measurement-gated  
+**Priority:** P2, measurement-gated
 **Confidence:** 85/100
 
 The current state machine correctly gives scroll ownership to the user, but `isChatNearBottom()` reads `scrollHeight`, `scrollTop`, and `clientHeight`, and `applyChatFollowScroll()` reads `scrollHeight` before writing `scrollTop`. Streaming and sticky-prompt updates can add more geometry work around the same frame.
@@ -156,7 +177,7 @@ The current state machine correctly gives scroll ownership to the user, but `isC
 
 ### S7 — Streaming lacks direct chunk-to-paint and main-thread cost measurements
 
-**Priority:** P0  
+**Priority:** P0
 **Confidence:** 98/100
 
 The existing isolation ledger proves ordering and coalescing but does not measure visible latency or browser work. The report recommends separating transport frequency, publish frequency, queue pressure, commit duration, long tasks, focus loss, and unexpected scroll movement.
@@ -185,7 +206,7 @@ Instrumentation must be local-only, bounded, disabled by default, and negligible
 
 ### S8 — CSS containment is untested, not categorically missing
 
-**Priority:** P3, trace-gated  
+**Priority:** P3, trace-gated
 **Confidence:** 78/100
 
 The report recommends containment for dynamic streaming regions, but this WebUI has sticky elements, text selection preservation, message adoption, popovers, and auto-sized transcript content. Blanket containment or `content-visibility` could break layout, find-in-page, selection, or accessibility.
@@ -199,7 +220,7 @@ The report recommends containment for dynamic streaming regions, but this WebUI 
 
 ### S9 — Worker offload is a conditional optimization, not the first step
 
-**Priority:** P3, evidence-gated  
+**Priority:** P3, evidence-gated
 **Confidence:** 89/100
 
 No Web Worker is currently used for SSE JSON parsing, Markdown parsing, or syntax tokenization. A worker adds messaging, bundling, cancellation, and service-worker asset-coherence costs. EventSource already provides decoded complete event strings, so moving `JSON.parse()` alone is unlikely to justify the complexity.
@@ -215,6 +236,8 @@ No Web Worker is currently used for SSE JSON parsing, Markdown parsing, or synta
 ## Recommended implementation sequence
 
 ### Phase 0 — Streaming-specific baseline
+
+**Status: implemented 2026-08-17 (`b4339e8`), with two open gaps** — browser profiling on documented target hardware, and fixtures for background-tab reconciliation and long-transcript-plus-active-stream scenarios (see Implementation progress).
 
 **Likely files**
 
@@ -402,7 +425,7 @@ Do not place queue internals, worker protocols, payload schemas, or benchmark co
 
 ## Completion checklist
 
-- [ ] Streaming-specific diagnostics and deterministic fixtures are available.
+- [x] Streaming-specific diagnostics and deterministic fixtures are available (`b4339e8`; background-tab and long-transcript workloads still pending).
 - [ ] Long open Markdown/code tails no longer cause repeated full accumulated highlighting (under-limit fences) or repeated full-message boundary scans and full-tail DOM rebuilds.
 - [ ] Derived thinking/final output is incremental with verified authoritative fallbacks.
 - [ ] Normal text/thinking formatting uses a measured bounded cadence.
