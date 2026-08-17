@@ -49,6 +49,10 @@ export function classifyTranscriptStreamEvent(event) {
   });
 }
 
+function defaultNow() {
+  return typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
+}
+
 function defaultScheduleFrame(callback) {
   if (typeof globalThis.requestAnimationFrame === "function") return globalThis.requestAnimationFrame(callback);
   return globalThis.setTimeout(callback, 0);
@@ -106,6 +110,7 @@ function mergedAdjacentEntry(previous, incoming) {
     return {
       ...incoming,
       event,
+      receivedAt: previous.receivedAt !== undefined ? previous.receivedAt : incoming.receivedAt,
       bytes: eventByteSize(event),
       sourceCount: previous.sourceCount + incoming.sourceCount,
       sourceIndexes: [...previous.sourceIndexes, ...incoming.sourceIndexes].slice(-DIAGNOSTIC_INDEX_LIMIT),
@@ -123,6 +128,7 @@ function mergedAdjacentEntry(previous, incoming) {
   return {
     ...incoming,
     event,
+    receivedAt: previous.receivedAt !== undefined ? previous.receivedAt : incoming.receivedAt,
     bytes: eventByteSize(event),
     sourceCount: previous.sourceCount + incoming.sourceCount,
     sourceIndexes: [...previous.sourceIndexes, ...incoming.sourceIndexes].slice(-DIAGNOSTIC_INDEX_LIMIT),
@@ -140,6 +146,7 @@ function mergedAdjacentEntry(previous, incoming) {
 export function createStreamOutputController({
   scheduleFrame = defaultScheduleFrame,
   cancelFrame = defaultCancelFrame,
+  now = defaultNow,
   isOwnerCurrent = () => true,
   applyTextUpdate = () => {},
   applyThinkingUpdate = () => {},
@@ -157,6 +164,7 @@ export function createStreamOutputController({
   if (typeof scheduleFrame !== "function" || typeof cancelFrame !== "function") {
     throw new TypeError("scheduleFrame and cancelFrame must be functions");
   }
+  if (typeof now !== "function") throw new TypeError("now must be a function");
   const entryLimit = positiveLimit(maxPendingEntries, DEFAULT_STREAM_PENDING_ENTRY_LIMIT, "maxPendingEntries");
   const byteLimit = positiveLimit(maxPendingBytes, DEFAULT_STREAM_PENDING_BYTE_LIMIT, "maxPendingBytes");
   const diagnosticsEnabled = typeof onDiagnostic === "function";
@@ -226,12 +234,28 @@ export function createStreamOutputController({
     const entries = pending;
     pending = [];
     pendingBytes = 0;
+    // Latency/duration measurement only runs when a diagnostic hook is
+    // installed so the disabled hot path never pays for clock reads.
+    const drainStart = diagnosticsEnabled ? now() : 0;
     let applied = 0;
     for (const entry of entries) {
       if (applyEntry(entry)) applied += 1;
     }
     if (applied > 0) applyFollowScroll();
-    emitDiagnostic({ type: "batch", entries: entries.length, sourceCount: entries.reduce((total, entry) => total + entry.sourceCount, 0), applied });
+    if (diagnosticsEnabled) {
+      let maxAgeMs = 0;
+      for (const entry of entries) {
+        if (typeof entry.receivedAt === "number") maxAgeMs = Math.max(maxAgeMs, drainStart - entry.receivedAt);
+      }
+      emitDiagnostic({
+        type: "batch",
+        entries: entries.length,
+        sourceCount: entries.reduce((total, entry) => total + entry.sourceCount, 0),
+        applied,
+        maxAgeMs,
+        drainMs: now() - drainStart,
+      });
+    }
     return applied;
   };
 
@@ -249,9 +273,13 @@ export function createStreamOutputController({
   };
 
   const applyOversize = (entry) => {
+    const applyStart = diagnosticsEnabled ? now() : 0;
     const applied = applyEntry(entry) ? 1 : 0;
     if (applied) applyFollowScroll();
-    emitDiagnostic({ type: "batch", entries: 1, sourceCount: entry.sourceCount, applied, direct: true });
+    if (diagnosticsEnabled) {
+      const maxAgeMs = typeof entry.receivedAt === "number" ? Math.max(0, applyStart - entry.receivedAt) : 0;
+      emitDiagnostic({ type: "batch", entries: 1, sourceCount: entry.sourceCount, applied, direct: true, maxAgeMs, drainMs: now() - applyStart });
+    }
     return applied;
   };
 
@@ -298,6 +326,7 @@ export function createStreamOutputController({
         event,
         classification,
         owner,
+        receivedAt: diagnosticsEnabled ? now() : undefined,
         bytes: eventByteSize(event),
         sourceCount: 1,
         sourceIndexes: diagnosticsEnabled && index !== null ? [index] : [],

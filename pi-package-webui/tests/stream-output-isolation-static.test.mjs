@@ -85,5 +85,12 @@ assert.doesNotMatch(app, /function scheduleStreamingAssistantTextRender|function
 assert.match(app, /onUnknownStreamEvent: preserveUnknownTranscriptEvidence/, "unknown transcript-shaped events should retain transcript-only evidence");
 assert.match(app, /reconcileUnknownTranscriptEvidenceAtBarrier\(event\)/, "unknown evidence should request authoritative reconciliation only at a semantic barrier");
 assert.match(app, /streamIsolationDebug[\s\S]*?__piStreamIsolationDebug/, "the opt-in test diagnostic ledger should be exposed only behind the explicit debug flag");
+assert.match(controller, /receivedAt: diagnosticsEnabled \? now\(\) : undefined/, "receipt timing must be disabled with diagnostics");
+assert.match(controller, /maxAgeMs[\s\S]*?drainMs/, "diagnostic batches should report queue age and drain duration");
+assert.match(app, /version: 2,[\s\S]*?batchPaintMaxMs[\s\S]*?transcriptNodeMax[\s\S]*?currentMessageNodeMax/, "ledger v2 should expose paint and DOM-node high-water counters");
+assert.match(app, /function scheduleStreamPaintDiagnostic[\s\S]*?requestAnimationFrame[\s\S]*?type: "paint-opportunity"/, "paint opportunity timing should run only from the opt-in diagnostic path");
+assert.match(app, /function streamDiagnosticBytes[\s\S]*?length \* 2/, "stream byte metrics should use conservative UTF-16 accounting");
+assert.match(app, /new PerformanceObserver[\s\S]*?type: "longtask"[\s\S]*?type: "long-animation-frame"/, "supported long-task and long-frame entries should feed the ledger");
+assert.match(app, /type: "markdown-commit"[\s\S]*?tailBytes[\s\S]*?tailKind/, "mutable Markdown tail diagnostics should include size and block kind");
 
 console.log("stream-output-isolation-static.test.mjs passed");

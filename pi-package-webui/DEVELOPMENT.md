@@ -62,6 +62,27 @@ node tests/syntax-highlighting-static.test.mjs
 
 `tests/syntax-highlight.test.mjs` covers all 23 profiles and 58 aliases with exact round-trip assertions, representative token classes, prototype-pollution-style alias names, malicious-looking markup source, non-string input, and exact/over-limit character and line boundaries. `tests/syntax-highlighting-static.test.mjs` covers renderer wiring, the absence of HTML sinks, theme-token mapping against `THEME_TOKEN_GROUPS`, CSS fallbacks, app-shell closure, asset/cache revision coherence, and documentation coverage. When changing browser assets, advance `styles.css?v=`, `app.js?v=`, and `CACHE_NAME` together; several static tests assert those exact values.
 
+## Streaming performance diagnostics and workloads
+
+The bounded frame queue in `public/stream-output-controller.mjs` emits timing fields only when an `onDiagnostic` hook is installed. Receipt timestamps survive adjacent-delta merges, and each `batch` record includes the oldest source event's `maxAgeMs` plus synchronous sink/follow work as `drainMs`. The controller accepts an injectable `now()` clock for deterministic tests; when diagnostics are disabled, it performs no clock reads.
+
+The browser's existing local-only stream isolation ledger is enabled with `?streamIsolationDebug=1` or `globalThis.__PI_STREAM_ISOLATION_DEBUG__ = true` before app startup. Ledger version 2 keeps bounded records and adds high-water counters for batch latency/drain duration, receipt-to-next-paint opportunity, transcript/current-message DOM nodes, derived-text scan bytes/time, syntax-tokenization bytes/time, Markdown commit duration, mutable-tail bytes/kind, long tasks, long animation frames, focus loss near stream batches, and detached-mode scroll movement. Unsupported Performance Observer entry types fail closed and leave their counters at zero. No records leave the browser.
+
+Deterministic generators in `tests/fixtures/streaming-workloads.mjs` cover small text deltas, long unbroken paragraphs, open fences below and above syntax-highlight bounds, thinking streams, mixed semantic barriers, and non-coalescible overflow bursts. `tests/stream-output-workloads.test.mjs` verifies exact output, order, source accounting, queue bounds, latency fields, oldest-receipt preservation, oversize-event behavior, and zero diagnostic-clock reads when instrumentation is disabled.
+
+Focused contributor validation:
+
+```bash
+node --check public/app.js
+node --check public/stream-output-controller.mjs
+node tests/stream-output-controller.test.mjs
+node tests/stream-output-workloads.test.mjs
+node tests/stream-output-isolation-static.test.mjs
+node tests/streaming-ui-coupling.test.mjs
+```
+
+These counters establish Phase 0 capability; browser profiling on documented target hardware is still required before choosing cadence or tail thresholds.
+
 ## Intercom conversation projection and viewer
 
 `GET /api/intercom/conversations?tab=<tab-id>` projects bounded summaries from `SessionManager.getBranch()` for the selected server-owned session. Adding `conversation=<opaque-id>` returns one sanitized detail. Browser values never select a session path. The pure projector in `lib/intercom-conversations.mjs` accepts only structured generic Intercom records and matched native supervisor request/reply records, deduplicates protocol identities, excludes synthetic relays and attachments, and applies conversation/message/text/response bounds before serialization.

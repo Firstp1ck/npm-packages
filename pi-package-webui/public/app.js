@@ -669,7 +669,7 @@ const STREAM_ISOLATION_DEBUG_LIMIT = 4096;
 const STREAM_ISOLATION_DEBUG_ENABLED = globalThis.__PI_STREAM_ISOLATION_DEBUG__ === true
   || new URLSearchParams(window.location.search).get("streamIsolationDebug") === "1";
 const streamIsolationDebugLedger = STREAM_ISOLATION_DEBUG_ENABLED ? {
-  version: 1,
+  version: 2,
   counters: {
     receivedEvents: 0,
     appliedEvents: 0,
@@ -681,7 +681,28 @@ const streamIsolationDebugLedger = STREAM_ISOLATION_DEBUG_ENABLED ? {
     staleEvents: 0,
     highWaterPendingCount: 0,
     highWaterPendingBytes: 0,
+    // Version 2 streaming-performance baseline counters (webui-output-streaming plan, Phase 0).
+    batchLatencyMaxMs: 0,
+    batchDrainMaxMs: 0,
+    batchPaintMaxMs: 0,
+    transcriptNodeMax: 0,
+    currentMessageNodeMax: 0,
+    deriveCalls: 0,
+    deriveMaxBytes: 0,
+    deriveMaxMs: 0,
+    tokenizeCalls: 0,
+    tokenizeMaxBytes: 0,
+    tokenizeMaxMs: 0,
+    markdownCommits: 0,
+    markdownCommitMaxMs: 0,
+    tailMaxBytes: 0,
+    longTasks: 0,
+    longAnimationFrames: 0,
+    focusLossNearStreamBatch: 0,
+    detachedScrollMoves: 0,
   },
+  lastBatchAppliedAt: 0,
+  lastChatScrollTop: undefined,
   receivedIndexes: [],
   appliedIndexes: [],
   records: [],
@@ -715,6 +736,10 @@ function recordStreamIsolationDiagnostic(record) {
     if (record.kind === "unknown-message-update") counters.unknownEvents += Number(record.sourceCount) || 1;
   } else if (record.type === "batch") {
     counters.batches += 1;
+    counters.batchLatencyMaxMs = Math.max(counters.batchLatencyMaxMs, Number(record.maxAgeMs) || 0);
+    counters.batchDrainMaxMs = Math.max(counters.batchDrainMaxMs, Number(record.drainMs) || 0);
+    ledger.lastBatchAppliedAt = performance.now();
+    scheduleStreamPaintDiagnostic(record);
   } else if (record.type === "barrier") {
     counters.barriers += 1;
   } else if (record.type === "overflow") {
@@ -732,12 +757,120 @@ function recordStreamIsolationDiagnostic(record) {
   });
 }
 
+/**
+ * Streaming-performance profile records for the opt-in debug ledger. Every
+ * caller guards on `streamIsolationDebugLedger` before doing measurement work,
+ * so the disabled hot path pays only one falsy check per instrumented site.
+ */
+function streamDiagnosticBytes(value) {
+  // Match the controller's conservative UTF-16 queue accounting.
+  return String(value || "").length * 2;
+}
+
+function recordStreamProfileDiagnostic(record) {
+  const ledger = streamIsolationDebugLedger;
+  if (!ledger || !record) return;
+  const counters = ledger.counters;
+  if (record.type === "derive") {
+    counters.deriveCalls += 1;
+    counters.deriveMaxBytes = Math.max(counters.deriveMaxBytes, Number(record.bytes) || 0);
+    counters.deriveMaxMs = Math.max(counters.deriveMaxMs, Number(record.ms) || 0);
+  } else if (record.type === "tokenize") {
+    counters.tokenizeCalls += 1;
+    counters.tokenizeMaxBytes = Math.max(counters.tokenizeMaxBytes, Number(record.bytes) || 0);
+    counters.tokenizeMaxMs = Math.max(counters.tokenizeMaxMs, Number(record.ms) || 0);
+  } else if (record.type === "markdown-commit") {
+    counters.markdownCommits += 1;
+    counters.markdownCommitMaxMs = Math.max(counters.markdownCommitMaxMs, Number(record.ms) || 0);
+    counters.tailMaxBytes = Math.max(counters.tailMaxBytes, Number(record.tailBytes) || 0);
+  } else if (record.type === "paint-opportunity") {
+    counters.batchPaintMaxMs = Math.max(counters.batchPaintMaxMs, Number(record.ms) || 0);
+    counters.transcriptNodeMax = Math.max(counters.transcriptNodeMax, Number(record.transcriptNodes) || 0);
+    counters.currentMessageNodeMax = Math.max(counters.currentMessageNodeMax, Number(record.currentMessageNodes) || 0);
+  } else if (record.type === "longtask") {
+    counters.longTasks += 1;
+  } else if (record.type === "long-animation-frame") {
+    counters.longAnimationFrames += 1;
+  } else if (record.type === "focus-loss") {
+    counters.focusLossNearStreamBatch += 1;
+  } else if (record.type === "detached-scroll") {
+    counters.detachedScrollMoves += 1;
+  }
+  appendBoundedStreamDiagnostic(ledger.records, record);
+}
+
+function scheduleStreamPaintDiagnostic(batchRecord) {
+  if (!streamIsolationDebugLedger || typeof requestAnimationFrame !== "function") return;
+  const scheduledAt = performance.now();
+  requestAnimationFrame(() => {
+    const activeMessage = streamBubble?.isConnected
+      ? streamBubble
+      : streamThinkingBubble?.isConnected
+        ? streamThinkingBubble
+        : compactTextBubble?.isConnected
+          ? compactTextBubble
+          : compactThinkingBubble?.isConnected
+            ? compactThinkingBubble
+            : null;
+    recordStreamProfileDiagnostic({
+      type: "paint-opportunity",
+      ms: (Number(batchRecord.maxAgeMs) || 0) + Math.max(0, performance.now() - scheduledAt),
+      transcriptNodes: elements.chat.querySelectorAll("*").length,
+      currentMessageNodes: activeMessage?.querySelectorAll?.("*").length || 0,
+    });
+  });
+}
+
+/**
+ * Detached-mode movement tracking: while the user owns the scroll position,
+ * any chat scroll change right after a stream batch that is not explained by
+ * user intent or a recent programmatic follow write is recorded as a
+ * regression candidate. Runs only when the debug ledger is enabled.
+ */
+function noteDetachedChatScrollMovement() {
+  const ledger = streamIsolationDebugLedger;
+  if (!ledger) return;
+  const previousTop = ledger.lastChatScrollTop;
+  const currentTop = elements.chat.scrollTop;
+  ledger.lastChatScrollTop = currentTop;
+  if (autoFollowChat || previousTop === undefined) return;
+  if (isChatUserScrollIntentActive()) return;
+  if (performance.now() - lastChatProgrammaticScrollAt <= CHAT_PROGRAMMATIC_SCROLL_GRACE_MS) return;
+  const lastBatch = ledger.lastBatchAppliedAt || 0;
+  if (!lastBatch || performance.now() - lastBatch > 250) return;
+  const deltaTop = currentTop - previousTop;
+  if (deltaTop !== 0) recordStreamProfileDiagnostic({ type: "detached-scroll", deltaTop });
+}
+
 if (streamIsolationDebugLedger) {
   Object.defineProperty(globalThis, "__piStreamIsolationDebug", {
     configurable: true,
     enumerable: false,
     value: streamIsolationDebugLedger,
   });
+  try {
+    const longTaskObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) recordStreamProfileDiagnostic({ type: "longtask", ms: entry.duration });
+    });
+    longTaskObserver.observe({ type: "longtask", buffered: false });
+  } catch {
+    // Long-task timing is unsupported in this browser; counters stay at zero.
+  }
+  try {
+    const longFrameObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) recordStreamProfileDiagnostic({ type: "long-animation-frame", ms: entry.duration });
+    });
+    longFrameObserver.observe({ type: "long-animation-frame", buffered: false });
+  } catch {
+    // Long-animation-frame timing is unsupported in this browser.
+  }
+  document.addEventListener("focusout", (event) => {
+    if (event.target !== elements.promptInput) return;
+    const lastBatch = streamIsolationDebugLedger.lastBatchAppliedAt || 0;
+    if (!lastBatch) return;
+    const msSinceBatch = performance.now() - lastBatch;
+    if (msSinceBatch <= 250) recordStreamProfileDiagnostic({ type: "focus-loss", msSinceBatch });
+  }, true);
 }
 
 const streamOutputController = createStreamOutputController({
@@ -34183,7 +34316,11 @@ function appendMarkdownMermaidBlock(parent, code) {
 // reproduces the source exactly, and unknown/oversized blocks fall back to one
 // plain token so copy, selection, and transcript search stay unchanged.
 function appendMarkdownCodeTokens(codeNode, source, language) {
+  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
   const tokens = tokenizeCode(source, normalizedMarkdownLanguage(language));
+  if (streamIsolationDebugLedger) {
+    recordStreamProfileDiagnostic({ type: "tokenize", ms: performance.now() - profileStart, bytes: streamDiagnosticBytes(source), language: String(language || "") });
+  }
   if (!tokens.length) {
     codeNode.textContent = source;
     return;
@@ -34414,7 +34551,15 @@ function clearStreamingMarkdownBlock(block) {
   while (block.firstChild) block.firstChild.remove();
 }
 
+function streamingMarkdownTailProfile(text) {
+  const boundary = streamingMarkdownStableBoundary(text);
+  const tail = text.slice(boundary);
+  const fenceLines = tail.match(/^\s*```/gm);
+  return { tailBytes: streamDiagnosticBytes(tail), tailKind: fenceLines && fenceLines.length % 2 === 1 ? "open-fence" : "text" };
+}
+
 function renderStreamingMarkdown(block, text) {
+  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
   const selectionSnapshot = captureChatTextSelection(block);
   const bubble = block?.closest(".message");
   transcriptRenderer.reconcileMarkdownSurface({
@@ -34427,6 +34572,10 @@ function renderStreamingMarkdown(block, text) {
     renderInto: renderMarkdownInto,
   });
   restoreChatTextSelection(selectionSnapshot);
+  if (streamIsolationDebugLedger) {
+    const { tailBytes, tailKind } = streamingMarkdownTailProfile(String(text || ""));
+    recordStreamProfileDiagnostic({ type: "markdown-commit", ms: performance.now() - profileStart, textBytes: streamDiagnosticBytes(text), tailBytes, tailKind });
+  }
 }
 
 function appendImage(parent, part) {
@@ -37667,6 +37816,7 @@ function scrollChatToBottom({ force = false } = {}) {
 function syncAutoFollowFromChatScroll() {
   const nearBottom = isChatNearBottom();
   const recentProgrammaticScroll = performance.now() - lastChatProgrammaticScrollAt <= CHAT_PROGRAMMATIC_SCROLL_GRACE_MS;
+  if (streamIsolationDebugLedger) noteDetachedChatScrollMovement();
   if (performance.now() <= chatPausedScrollRestoreUntil) {
     autoFollowChat = false;
   } else if (isChatUserScrollAwayIntentActive()) {
@@ -42733,10 +42883,14 @@ function syncStreamRawTextFromUpdate(event, update) {
 
 function streamDerivedText() {
   if (streamDerivedTextCache.rawText === streamRawText) return streamDerivedTextCache;
+  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
   const assistantText = stripTodoProgressLines(streamRawText, { streaming: true });
   const thinkingFormat = splitThinkingFormatText(assistantText, { streaming: true });
   const finalText = thinkingFormat?.hasThinkingFormat ? stripTodoProgressLines(thinkingFormat.finalText, { streaming: true }) : assistantText;
   streamDerivedTextCache = { rawText: streamRawText, assistantText, thinkingFormat, finalText };
+  if (streamIsolationDebugLedger) {
+    recordStreamProfileDiagnostic({ type: "derive", ms: performance.now() - profileStart, bytes: streamDiagnosticBytes(streamRawText) });
+  }
   return streamDerivedTextCache;
 }
 

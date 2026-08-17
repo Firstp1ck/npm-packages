@@ -53,14 +53,19 @@ These are foundations, not targets for replacement. Do not migrate transports, i
 **Priority:** P1  
 **Confidence:** 96/100
 
-`streamingMarkdownStableBoundary()` advances only at blank lines outside fenced code blocks. A long paragraph, table, list, or open code fence can therefore remain one mutable tail for a long time. Each publish removes and recreates that tail through `renderMarkdownInto()`.
+`streamingMarkdownStableBoundary()` advances only at blank lines outside fenced code blocks. A long paragraph, table, list, or open code fence can therefore remain one mutable tail for a long time. Each publish removes and recreates that tail through `renderMarkdownInto()` (verified in `transcriptRenderer.reconcileMarkdownSurface()`: tail nodes are removed and the tail re-rendered on every reconcile).
 
-Open fenced code is the worst case: `appendMarkdownCodeBlock()` invokes syntax tokenization for the complete accumulated fence on every streaming publish. Total work can approach quadratic growth over the response.
+Open fenced code is the worst case, with one important existing bound: `tokenizeCode()` in `public/syntax-highlight.mjs` already falls back to a single plain token when the code exceeds `MAX_SYNTAX_HIGHLIGHT_CHARACTERS` (50,000) or `MAX_SYNTAX_HIGHLIGHT_LINES` (2,000). Repeated full-fence syntax tokenization therefore occurs only for open fences **under** those bounds — still approaching quadratic total work up to the cap, but capped. Above the bounds the per-publish cost is not tokenization; it is:
+
+- full-tail re-parse through `renderMarkdownInto()` (line splitting and block scanning of the whole tail);
+- full-tail DOM teardown and rebuild, including a fresh `pre`/`code` subtree containing the complete accumulated fence text;
+- `streamingMarkdownStableBoundary()` splitting the **entire accumulated message text** into lines on every publish — `reconcileMarkdownSurface()` passes the full value to `stableBoundary`, so this O(total message length) scan repeats per publish even for the already-committed stable prefix.
 
 **Treatment:**
 
 - Add a streaming-specific Markdown-tail strategy that tracks block kind and partial-line state.
-- For an open code fence, render escaped plain code incrementally during the stream; do not syntax-tokenize the complete growing fence on every update.
+- Make the stable-boundary computation incremental so the committed prefix is not re-split and re-scanned on every publish.
+- For an open code fence, render escaped plain code incrementally during the stream; do not syntax-tokenize the complete growing fence on every update (relevant for fences under the existing 50 KB / 2,000-line highlight bounds; larger fences already fall back to plain tokens but still pay full-tail re-render costs).
 - On fence close or message completion, perform one authoritative syntax-highlighted render.
 - For long non-code tails, advance safe line/block checkpoints where the current parser semantics allow it, while retaining the present full-tail fallback for ambiguous Markdown.
 - Apply a byte threshold to the mutable tail. When exceeded, use a cheaper plain-text or minimally formatted live representation until a safe boundary or completion.
@@ -225,7 +230,8 @@ No Web Worker is currently used for SSE JSON parsing, Markdown parsing, or synta
 2. Add deterministic workloads:
    - 1,000 small plain-text deltas;
    - 100 KB and 1 MB paragraphs without blank lines;
-   - 100 KB and 1 MB open fenced code blocks;
+   - an open fenced code block just under the highlight bounds (~40 KB, <2,000 lines) to capture repeated full-fence tokenization;
+   - 100 KB and 1 MB open fenced code blocks (above the highlight bounds; these measure full-tail re-parse, DOM rebuild, and full-text boundary scanning, not tokenization);
    - long thinking streams;
    - mixed text/tool/status barriers;
    - queue-overflow bursts;
@@ -251,7 +257,7 @@ Deliver as two independently reviewable patches:
 
 - Exact final text and Markdown DOM semantics match current authoritative rendering.
 - No event reordering or missing Unicode content.
-- 100 KB and 1 MB open-code fixtures no longer tokenize the full accumulated fence per publish.
+- The under-limit open-code fixture no longer tokenizes the full accumulated fence per publish (the 100 KB / 1 MB fixtures already skip tokenization today via the highlight bounds; their gate is bounded per-publish tail re-render and boundary-scan work instead).
 - Total scripting time improves by at least 30% in the confirmed hotspot fixture without more than 10% regression in short/default streams.
 - Focus, selection, code-copy controls, transcript adoption, and output-mode transitions remain correct.
 
@@ -354,7 +360,7 @@ Finalize numeric budgets from Phase 0 on documented target hardware. Initial acc
 - zero unbounded queues;
 - at most one stream DOM publish per scheduler interval;
 - transport event count substantially greater than DOM publish count under burst load;
-- no full accumulated-fence syntax tokenization per delta after Phase 1;
+- no full accumulated-fence syntax tokenization per delta after Phase 1 for fences under the highlight bounds, and no per-publish full-message boundary rescans;
 - at least 30% lower scripting time in the measured long-tail hotspot;
 - p95 visible stream latency below 100 ms during sustained output, unless a documented target-device constraint requires a different threshold;
 - no stream-attributable long task above 50 ms in normal sustained output;
@@ -397,7 +403,7 @@ Do not place queue internals, worker protocols, payload schemas, or benchmark co
 ## Completion checklist
 
 - [ ] Streaming-specific diagnostics and deterministic fixtures are available.
-- [ ] Long open Markdown/code tails no longer cause repeated full accumulated highlighting.
+- [ ] Long open Markdown/code tails no longer cause repeated full accumulated highlighting (under-limit fences) or repeated full-message boundary scans and full-tail DOM rebuilds.
 - [ ] Derived thinking/final output is incremental with verified authoritative fallbacks.
 - [ ] Normal text/thinking formatting uses a measured bounded cadence.
 - [ ] Queue byte accounting avoids repeated serialization of growing merged deltas.
