@@ -53,7 +53,7 @@ assert.match(
 );
 assert.match(
   app,
-  /const validPayload = !!parseGitFooterWebuiPayloadRaw\(request\.statusText\);[\s\S]*?validPayload \? "ready" : "failed"/,
+  /const footerPayload = parseGitFooterWebuiPayloadRaw\(request\.statusText\);[\s\S]*?const validPayload = !!footerPayload;[\s\S]*?validPayload \? "ready" : "failed"/,
   "a later valid live payload should recover failed or waiting footer state",
 );
 assert.match(

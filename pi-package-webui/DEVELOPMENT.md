@@ -64,24 +64,49 @@ node tests/syntax-highlighting-static.test.mjs
 
 ## Streaming performance diagnostics and workloads
 
-The bounded frame queue in `public/stream-output-controller.mjs` emits timing fields only when an `onDiagnostic` hook is installed. Receipt timestamps survive adjacent-delta merges, and each `batch` record includes the oldest source event's `maxAgeMs` plus synchronous sink/follow work as `drainMs`. The controller accepts an injectable `now()` clock for deterministic tests; when diagnostics are disabled, it performs no clock reads.
+The bounded frame queue in `public/stream-output-controller.mjs` emits timing fields only when an `onDiagnostic` hook is installed. Receipt timestamps survive adjacent-delta merges, and each `batch` record includes the oldest source event's `maxAgeMs` plus synchronous sink/follow work as `drainMs`. The controller accepts injectable frame, pressure-task, and clock hooks for deterministic tests; when diagnostics are disabled, it performs no clock reads. Supported message-update envelopes are measured by a JSON-equivalent UTF-16 walker, and adjacent delta merges add only escaped payload bytes while adopting the latest envelope. Unknown structured values retain a conservative one-time serialization fallback.
 
-The browser's existing local-only stream isolation ledger is enabled with `?streamIsolationDebug=1` or `globalThis.__PI_STREAM_ISOLATION_DEBUG__ = true` before app startup. Ledger version 2 keeps bounded records and adds high-water counters for batch latency/drain duration, receipt-to-next-paint opportunity, transcript/current-message DOM nodes, derived-text scan bytes/time, syntax-tokenization bytes/time, Markdown commit duration, mutable-tail bytes/kind, long tasks, long animation frames, focus loss near stream batches, and detached-mode scroll movement. Unsupported Performance Observer entry types fail closed and leave their counters at zero. No records leave the browser.
+Primary queue entry/byte limits are unchanged. First non-coalescible pressure may occupy one explicit urgent entry (at most one primary byte-limit event) and schedules a zero-delay pressure task rather than rendering inside the EventSource callback. A second same-task pressure event synchronously drains primary then urgent entries in source order. Semantic barriers, cancellation, owner checks, and oversize direct application retain synchronous lossless behavior. `pendingCount()`, `pendingBytes()`, and `limits()` include the urgent slot explicitly.
 
-Deterministic generators in `tests/fixtures/streaming-workloads.mjs` cover small text deltas, long unbroken paragraphs, open fences below and above syntax-highlight bounds, thinking streams, mixed semantic barriers, and non-coalescible overflow bursts. `tests/stream-output-workloads.test.mjs` verifies exact output, order, source accounting, queue bounds, latency fields, oldest-receipt preservation, oversize-event behavior, and zero diagnostic-clock reads when instrumentation is disabled.
+`public/stream-render-scheduler.mjs` owns the independently tested normal text/thinking formatting cadence. The first eligible output renders immediately; sustained requests are latest-wins at a measured 40 ms interval. `text_end`, `thinking_end`, tool/lifecycle boundaries, output-mode transitions, reconnect/disconnect, user cancellation, and visibility transitions synchronously flush pending formatting. Compact mode keeps its independent 100 ms scheduler. Follow-scroll is requested only after the corresponding normal formatter has committed its DOM update.
+
+The browser's existing local-only stream isolation ledger is enabled with `?streamIsolationDebug=1` or `globalThis.__PI_STREAM_ISOLATION_DEBUG__ = true` before app startup. Ledger version 2 keeps bounded records and adds high-water counters for batch latency/drain duration, receipt-to-next-paint opportunity, transcript/current-message DOM nodes, derived-text scan bytes/time, syntax-tokenization bytes/time, Markdown commit duration, mutable-tail bytes/kind, long tasks, long animation frames, focus loss near stream batches, detached-mode scroll movement, render scheduler flush/defer counts, and pressure-deferred/synchronous-fallback counts. Unsupported Performance Observer entry types fail closed and leave their counters at zero. No records leave the browser.
+
+`public/stream-derived-output.mjs` owns the pure incremental todo/thinking/final-output state. Normal text deltas scan only their appended suffix. Snapshots, output-mode changes, reconnect/disconnect, settlement, todo-capability changes, and any derived-prefix divergence rebuild from the full authoritative parser. Debug mode shadows each incremental result against that parser; `derive-fallback` and `derive-shadow-mismatch` ledger records expose recovery, while `derive.bytes` reports the code units actually scanned rather than the accumulated message size. `tests/stream-derived-output.test.mjs` checks authoritative equivalence at every code-unit split across todo, fence, CRLF, nested/consecutive thinking, channel-tag, partial-delimiter, and Unicode cases.
+
+`public/stream-markdown-tail.mjs` advances blank-line and fenced-block boundaries from only the appended suffix. `transcript-renderer.mjs` retains that opaque scanner state per surface and remains the sole mutation/selection owner. Incomplete fences use one mounted plain-code subtree and never invoke syntax tokenization or Mermaid rendering; closing the fence or completing text/thinking performs the authoritative Markdown render once. Ambiguous non-code tails above 16 KiB use one append-only plain live node until a safe boundary or completion restores full Markdown semantics. Divergence resets the scanner and renderer authoritatively. `markdown-commit` diagnostics expose `boundaryScannedChars`, `reusedTail`, and `authoritative` for count-based checks.
+
+Deterministic generators in `tests/fixtures/streaming-workloads.mjs` cover small text deltas, long unbroken paragraphs, open fences below and above syntax-highlight bounds, thinking streams, mixed semantic barriers, non-coalescible overflow bursts, hidden-tab/foreground reconciliation, and 1,000 retained messages alongside an active stream. `tests/stream-output-workloads.test.mjs` verifies exact output, order, source accounting, queue bounds, latency fields, oldest-receipt preservation, oversize-event behavior, retained-transcript immutability, authoritative hidden-output catch-up, and zero diagnostic-clock reads when instrumentation is disabled.
 
 Focused contributor validation:
 
 ```bash
 node --check public/app.js
+node --check public/stream-derived-output.mjs
+node --check public/stream-markdown-tail.mjs
 node --check public/stream-output-controller.mjs
+node --check public/stream-render-scheduler.mjs
+node tests/stream-derived-output.test.mjs
+node tests/stream-markdown-tail.test.mjs
+node tests/transcript-markdown-tail.test.mjs
+node tests/stream-render-scheduler.test.mjs
 node tests/stream-output-controller.test.mjs
 node tests/stream-output-workloads.test.mjs
 node tests/stream-output-isolation-static.test.mjs
 node tests/streaming-ui-coupling.test.mjs
 ```
 
-These counters establish Phase 0 capability; browser profiling on documented target hardware is still required before choosing cadence or tail thresholds.
+For a reproducible Chromium sample with the opt-in ledger enabled, close unrelated CPU-intensive work and run:
+
+```bash
+npx playwright test --project=chromium tests/browser/stream-output-isolation.spec.mjs --grep "Chromium streaming baseline"
+```
+
+The focused baseline tests exercise hidden-tab authoritative recovery and a 1,000-message transcript with a 1,000-delta active fenced-code stream. The runner preserves the `WS0_STREAMING_BASELINE` record and also prints `WS2_STREAMING_CANDIDATE` with boundary-scan characters, authoritative/reused-tail commits, and total Markdown/tokenization durations. The deterministic WS2 gates require one authoritative tokenizer call for the closed fence and no committed-prefix boundary rescan; event order, output hash, focus, and detached scroll remain strict.
+
+The separate `WS3 paced cadence and slow-renderer queue pressure remain bounded` Chromium case emits 1,000 indexed text deltas in paced chunks, then an alternating non-coalescible burst while injecting an 8 ms frame delay. It prints `WS3_STREAMING_CANDIDATE` with transport/batch/render counts, receipt-to-paint samples, pressure fallback counts, queue high-water, exact output hash, and continuity counters. Deterministic gates require cadence deferral, fewer formatting flushes than source applications, one bounded urgent entry, both deferred and repeated-pressure fallback paths, exact index/hash continuity, and zero focus or detached-scroll regressions. Preserve these JSON records with command exit codes in the workstream handoff. Durations are local measurements rather than CI gates and may vary with host load.
+
+`tests/stream-markdown-tail.test.mjs` reference semantics are the authoritative specification of the streaming boundary behavior going forward, anchored by the browser exact-output hash gate.
 
 ## Intercom conversation projection and viewer
 
@@ -651,7 +676,7 @@ Optional companions:
 - `@firstpick/pi-extension-todo-progress` — todo-progress rendering.
 - `@firstpick/pi-extension-tools` — TUI `/tools` active-tool manager alongside WebUI-native tool toggles.
 - `@firstpick/pi-package-remote-webui` — `/remote` trusted-LAN QR helper plus the optional browser controls for opening/closing LAN access and Remote PIN auth.
-- `@firstpick/pi-extension-git-footer-status` — richer extension-owned git/footer status, including the structured Web UI footer payload.
+- `@firstpick/pi-extension-git-footer-status` — richer extension-owned git/footer status, including the structured Web UI footer payload. The Claude Usage panel consumes its live Anthropic response-header snapshot when available and keeps the standalone Claude CLI endpoint as an explicit/fallback refresh path.
 - `@firstpick/pi-extension-stats` — stats commands and status data.
 - `@firstpick/pi-themes-bundle` — Web UI and Pi theme resources.
 

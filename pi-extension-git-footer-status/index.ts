@@ -740,6 +740,7 @@ type WebuiFooterPayload = {
   type: typeof WEBUI_FOOTER_PAYLOAD_TYPE;
   version: typeof WEBUI_FOOTER_PAYLOAD_VERSION;
   generatedAt: number;
+  providerUsage?: ProviderUsageSnapshot;
   main: WebuiFooterChip[];
   meta: WebuiFooterChip[];
   visibility: Record<FooterVisibilityKey, boolean>;
@@ -1609,6 +1610,7 @@ function buildWebuiFooterPayload(ctx: ExtensionContext, snapshot: GitSnapshot | 
     type: WEBUI_FOOTER_PAYLOAD_TYPE,
     version: WEBUI_FOOTER_PAYLOAD_VERSION,
     generatedAt: Date.now(),
+    ...(providerUsage ? { providerUsage } : {}),
     main,
     meta,
     visibility: buildWebuiVisibilityRecord(),
@@ -2403,9 +2405,11 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     // guessed data); other providers leave it untouched and render gating
     // keeps it hidden.
     if (provider === "openai-codex") {
-      latestProviderUsage = parseCodexProviderUsage(event.headers) ?? null;
+      const usage = parseCodexProviderUsage(event.headers);
+      latestProviderUsage = usage ? { ...usage, capturedAt: Date.now() } : null;
     } else if (provider === "anthropic" && model && footerCtx.modelRegistry.isUsingOAuth(model)) {
-      latestProviderUsage = parseAnthropicProviderUsage(event.headers) ?? null;
+      const usage = parseAnthropicProviderUsage(event.headers);
+      latestProviderUsage = usage ? { ...usage, capturedAt: Date.now() } : null;
     } else {
       return;
     }

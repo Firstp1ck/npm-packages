@@ -68,7 +68,7 @@ assert.match(
 assert.match(app, /case "webui_connected":[\s\S]*?resumedWithFreshSnapshot[\s\S]*?if \(!resumedWithFreshSnapshot\) scheduleForegroundReconcile/, "the deliberate reconnect must not immediately trigger a second full refresh");
 assert.match(app, /case "webui_supervisor_reconnected":[\s\S]*?foregroundReconnectSnapshotFreshUntil/, "initial supervisor replay must reuse the fresh foreground snapshot");
 
-const executeBeginCatchUp = new Function("eventSource", "streamOutputController", `
+const executeBeginCatchUp = new Function("eventSource", "streamOutputController", "flushNormalStreamRenders", `
   let foregroundTranscriptCatchUpRequired = false;
   let backgroundReconnectSnapshotFresh = true;
   let eventStreamPausedForBackground = false;
@@ -77,10 +77,16 @@ const executeBeginCatchUp = new Function("eventSource", "streamOutputController"
 `);
 let closeCount = 0;
 let cancelCount = 0;
+let normalRenderFlushCount = 0;
 const pausedState = executeBeginCatchUp(
   { close() { closeCount += 1; } },
   { cancel() { cancelCount += 1; } },
+  (reason) => {
+    assert.equal(reason, "visibility-hidden");
+    normalRenderFlushCount += 1;
+  },
 );
+assert.equal(normalRenderFlushCount, 1, "backgrounding should flush pending normal formatting exactly once before pausing");
 assert.equal(cancelCount, 1, "backgrounding should cancel pending transcript work exactly once");
 assert.equal(closeCount, 1, "backgrounding should close the active EventSource exactly once");
 assert.equal(pausedState.eventSource, null, "the closed EventSource must be detached so no queued message handler remains current");

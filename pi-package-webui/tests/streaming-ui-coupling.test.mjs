@@ -172,7 +172,7 @@ futureInvariant("theory #3: streaming markdown must not full-rebuild when earlie
   const reconcileMarkdownSurface = findFunctionBody(transcriptRenderer, "reconcileMarkdownSurface");
   assert.match(renderStreamingMarkdown, /transcriptRenderer\.reconcileMarkdownSurface\(\{[\s\S]*?stableBoundary: streamingMarkdownStableBoundary[\s\S]*?renderInto: renderMarkdownInto/, "streaming markdown must route through the coordinator's committed-block/mutable-tail reconciler");
   assert.doesNotMatch(renderStreamingMarkdown, /block\.replaceChildren\(\)/, "streaming markdown must not replace the whole block directly");
-  assert.match(reconcileMarkdownSurface, /!value\.startsWith\(state\.stableText\)[\s\S]*?invalidateSelection: diverged/, "retroactive todo/thinking rewrites must be explicit invalidations, not silent full rebuilds");
+  assert.match(reconcileMarkdownSurface, /!value\.startsWith\(state\.value\)[\s\S]*?invalidateSelection: diverged/, "retroactive todo/thinking rewrites must compare the whole previous surface value and explicitly invalidate selection");
   assert.match(reconcileMarkdownSurface, /if \(boundary > state\.stableText\.length\)/, "committed blocks must stay mounted for append-only updates");
   assert.match(reconcileMarkdownSurface, /for \(const node of state\.tailNodes\) node\.remove\(\)/, "only the mutable tail may be re-parsed per delta batch");
 });

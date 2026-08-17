@@ -9,6 +9,9 @@ import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, ge
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
 import { createTranscriptRenderer } from "./transcript-renderer.mjs";
+import { createStreamDerivedOutputState } from "./stream-derived-output.mjs";
+import { advanceStreamingMarkdownTail } from "./stream-markdown-tail.mjs";
+import { createLatestWinsRenderScheduler } from "./stream-render-scheduler.mjs";
 import { classifyTranscriptStreamEvent, createStreamOutputController, reconcileTranscriptThinkingSnapshot } from "./stream-output-controller.mjs";
 import { installMiddleButtonDragScroll } from "./middle-button-drag-scroll.mjs";
 import { tokenizeCode } from "./syntax-highlight.mjs";
@@ -639,7 +642,7 @@ let streamBubble = null;
 let streamText = null;
 let streamRawText = "";
 let streamThinkingRawText = "";
-let streamDerivedTextCache = { rawText: null, assistantText: "", thinkingFormat: null, finalText: "" };
+let streamDerivedOutputState = null;
 let streamBubbleVisibleSince = 0;
 let streamBubbleHideTimer = null;
 let streamToolCallSeen = false;
@@ -700,6 +703,10 @@ const streamIsolationDebugLedger = STREAM_ISOLATION_DEBUG_ENABLED ? {
     longAnimationFrames: 0,
     focusLossNearStreamBatch: 0,
     detachedScrollMoves: 0,
+    renderSchedulerFlushes: 0,
+    renderSchedulerDefers: 0,
+    pressureDeferred: 0,
+    pressureSynchronousFallbacks: 0,
   },
   lastBatchAppliedAt: 0,
   lastChatScrollTop: undefined,
@@ -746,6 +753,12 @@ function recordStreamIsolationDiagnostic(record) {
     counters.overflows += 1;
   } else if (record.type === "stale") {
     counters.staleEvents += 1;
+  } else if (record.type === "render-scheduler") {
+    if (record.action === "flush") counters.renderSchedulerFlushes += 1;
+    else if (record.action === "defer") counters.renderSchedulerDefers += 1;
+  } else if (record.type === "pressure") {
+    if (record.action === "deferred") counters.pressureDeferred += 1;
+    else if (record.action === "synchronous-fallback") counters.pressureSynchronousFallbacks += 1;
   }
   if (record.type === "queued") {
     counters.highWaterPendingCount = Math.max(counters.highWaterPendingCount, Number(record.pendingCount) || 0);
@@ -873,6 +886,54 @@ if (streamIsolationDebugLedger) {
   }, true);
 }
 
+let normalStreamFollowPending = false;
+const normalStreamSchedulerDiagnostic = streamIsolationDebugLedger ? recordStreamIsolationDiagnostic : undefined;
+const assistantStreamRenderScheduler = createLatestWinsRenderScheduler({
+  render: (options) => {
+    renderStreamingAssistantText(options);
+    completeNormalStreamScheduledRender();
+  },
+  onDiagnostic: normalStreamSchedulerDiagnostic,
+});
+const thinkingStreamRenderScheduler = createLatestWinsRenderScheduler({
+  render: (options = {}) => {
+    if (streamThinkingRawText) setStreamingThinkingText(streamThinkingRawText, options);
+    if (options.complete) streamThinkingBubble?.classList.add("complete");
+    completeNormalStreamScheduledRender();
+  },
+  onDiagnostic: normalStreamSchedulerDiagnostic,
+});
+
+function normalStreamRenderPending() {
+  return assistantStreamRenderScheduler.pending() || thinkingStreamRenderScheduler.pending();
+}
+
+function completeNormalStreamScheduledRender() {
+  if (!normalStreamFollowPending || normalStreamRenderPending()) return;
+  normalStreamFollowPending = false;
+  scheduleChatFollowScroll();
+}
+
+function requestNormalStreamFollowAfterRender() {
+  if (normalStreamRenderPending()) {
+    normalStreamFollowPending = true;
+    return;
+  }
+  scheduleChatFollowScroll();
+}
+
+function flushNormalStreamRenders(reason = "semantic") {
+  assistantStreamRenderScheduler.flushNow(reason);
+  thinkingStreamRenderScheduler.flushNow(reason);
+  completeNormalStreamScheduledRender();
+}
+
+function cancelNormalStreamRenders() {
+  assistantStreamRenderScheduler.cancel();
+  thinkingStreamRenderScheduler.cancel();
+  normalStreamFollowPending = false;
+}
+
 const streamOutputController = createStreamOutputController({
   isOwnerCurrent: (owner) => owner === transcriptStreamOwner(),
   applyTextUpdate: (event) => handleMessageUpdate(event),
@@ -892,7 +953,7 @@ const streamOutputController = createStreamOutputController({
   applyStreamError: (event) => handleMessageUpdate(event),
   applyFollowScroll: () => {
     if (compactOutputActive()) flushCompactLiveOutput();
-    scheduleChatFollowScroll();
+    else requestNormalStreamFollowAfterRender();
   },
   onUnknownStreamEvent: preserveUnknownTranscriptEvidence,
   onDiagnostic: streamIsolationDebugLedger ? recordStreamIsolationDiagnostic : undefined,
@@ -18992,6 +19053,39 @@ function normalizeFooterPayloadChip(value, index) {
   return chip;
 }
 
+function normalizeFooterProviderUsageWindow(value) {
+  if (!value || typeof value !== "object") return null;
+  const label = cleanFooterPayloadText(value.label, "Usage window", 32);
+  const usedPercent = Number(value.usedPercent);
+  if (!Number.isFinite(usedPercent) || usedPercent < 0 || usedPercent > 100) return null;
+  const window = { label, usedPercent };
+  const windowMinutes = typeof value.windowMinutes === "number" ? value.windowMinutes : Number.NaN;
+  if (Number.isFinite(windowMinutes) && windowMinutes > 0) window.windowMinutes = windowMinutes;
+  const resetAt = typeof value.resetAt === "number" ? value.resetAt : Number.NaN;
+  if (Number.isFinite(resetAt) && resetAt >= 0) window.resetAt = resetAt;
+  const resetAfterSeconds = typeof value.resetAfterSeconds === "number" ? value.resetAfterSeconds : Number.NaN;
+  if (Number.isFinite(resetAfterSeconds) && resetAfterSeconds >= 0) window.resetAfterSeconds = resetAfterSeconds;
+  return window;
+}
+
+function normalizeFooterProviderUsage(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.provider !== "anthropic" && value.provider !== "openai-codex") return null;
+  const capturedAt = typeof value.capturedAt === "number" ? value.capturedAt : Number.NaN;
+  if (!Number.isFinite(capturedAt) || capturedAt <= 0) return null;
+  const primary = normalizeFooterProviderUsageWindow(value.primary);
+  const secondary = normalizeFooterProviderUsageWindow(value.secondary);
+  if (!primary && !secondary) return null;
+  const plan = cleanFooterPayloadText(value.plan, "", 80);
+  return {
+    provider: value.provider,
+    capturedAt,
+    ...(primary ? { primary } : {}),
+    ...(secondary ? { secondary } : {}),
+    ...(plan ? { plan } : {}),
+  };
+}
+
 function currentGitFooterCacheCwd(tabId = activeTabId) {
   const tab = tabs.find((item) => item.id === tabId) || activeTab();
   return latestWorkspace?.cwd || tab?.cwd || "";
@@ -19005,8 +19099,9 @@ function parseGitFooterWebuiPayloadRaw(raw) {
     const main = Array.isArray(parsed.main) ? parsed.main.map(normalizeFooterPayloadChip).filter(Boolean).slice(0, 8) : [];
     const meta = Array.isArray(parsed.meta) ? parsed.meta.map(normalizeFooterPayloadChip).filter(Boolean).slice(0, 10) : [];
     const visibility = normalizeGitFooterWebuiVisibility(parsed.visibility);
-    if (!main.length && !meta.length && !parsed.visibility) return null;
-    return { main, meta, visibility };
+    const providerUsage = normalizeFooterProviderUsage(parsed.providerUsage);
+    if (!main.length && !meta.length && !parsed.visibility && !providerUsage) return null;
+    return { main, meta, visibility, ...(providerUsage ? { providerUsage } : {}) };
   } catch {
     return null;
   }
@@ -22065,6 +22160,7 @@ function applyOptimisticGitFooterBranch(branch, tabContext = activeTabContext())
     type: GIT_FOOTER_WEBUI_PAYLOAD_TYPE,
     version: GIT_FOOTER_WEBUI_PAYLOAD_VERSION,
     generatedAt: Date.now(),
+    ...(payload.providerUsage ? { providerUsage: payload.providerUsage } : {}),
     main: payload.main,
     meta: payload.meta.map((chip) => chip.key === "git" ? { ...chip, value: nextBranch, title: `git branch: ${nextBranch}` } : chip),
     visibility: payload.visibility,
@@ -24017,6 +24113,54 @@ function initializeCodexUsage() {
   codexUsageRenderTimer = setInterval(renderCodexUsage, CODEX_USAGE_RENDER_TICK_MS);
 }
 
+function claudeUsageWindowFromProvider(window, capturedAt) {
+  if (!window) return null;
+  const resetAt = Number(window.resetAt);
+  const resetAfterSeconds = Number(window.resetAfterSeconds);
+  const resetsAt = Number.isFinite(resetAt) && resetAt >= 0
+    ? new Date(resetAt).toISOString()
+    : Number.isFinite(resetAfterSeconds) && resetAfterSeconds >= 0
+      ? new Date(capturedAt + resetAfterSeconds * 1000).toISOString()
+      : undefined;
+  return {
+    label: window.label || "Usage window",
+    usedPercent: window.usedPercent,
+    ...(Number.isFinite(window.windowMinutes) ? { windowMinutes: window.windowMinutes } : {}),
+    ...(resetsAt ? { resetsAt } : {}),
+  };
+}
+
+function claudeUsageFromGitFooterPayload(payload = parseGitFooterWebuiPayload()) {
+  const providerUsage = payload?.providerUsage;
+  if (providerUsage?.provider !== "anthropic") return null;
+  const capturedAt = Number(providerUsage.capturedAt);
+  if (!Number.isFinite(capturedAt) || capturedAt <= 0) return null;
+  const windows = [providerUsage.primary, providerUsage.secondary]
+    .map((window) => claudeUsageWindowFromProvider(window, capturedAt))
+    .filter(Boolean);
+  if (windows.length === 0) return null;
+  return {
+    available: true,
+    providerId: "claude-code",
+    source: "git-footer-status-provider-headers",
+    fetchedAt: new Date(capturedAt).toISOString(),
+    summary: "Live Anthropic subscription usage from provider response headers.",
+    windows,
+    activityTitle: "",
+    activity: [],
+    notes: [],
+  };
+}
+
+function syncClaudeUsageFromGitFooterPayload(payload = parseGitFooterWebuiPayload()) {
+  const usage = claudeUsageFromGitFooterPayload(payload);
+  if (!usage) return false;
+  latestClaudeUsage = usage;
+  claudeUsageError = null;
+  renderClaudeUsage();
+  return true;
+}
+
 function claudeUsageResetDate(window) {
   const resetAt = window?.resetsAt ? new Date(window.resetsAt) : null;
   if (resetAt && Number.isFinite(resetAt.getTime())) return resetAt;
@@ -24161,15 +24305,18 @@ function renderClaudeUsage() {
   }
 }
 
-async function refreshClaudeUsage() {
+async function refreshClaudeUsage({ forceCli = false } = {}) {
+  if (!forceCli && syncClaudeUsageFromGitFooterPayload()) return;
   if (claudeUsageLoading) return;
   claudeUsageLoading = true;
   renderClaudeUsage();
   try {
     const response = await api("/api/claude-usage", { scoped: false });
+    if (!forceCli && syncClaudeUsageFromGitFooterPayload()) return;
     latestClaudeUsage = response.data || null;
     claudeUsageError = null;
   } catch (error) {
+    if (!forceCli && syncClaudeUsageFromGitFooterPayload()) return;
     claudeUsageError = error;
   } finally {
     claudeUsageLoading = false;
@@ -34556,62 +34703,93 @@ function renderMarkdown(block, text) {
 }
 
 /**
- * Incremental renderer for streaming assistant markdown. The block-based
- * parser in renderMarkdownInto only ever closes a block at a blank line
- * outside a code fence, so everything before the last such boundary is
- * stable: it is parsed exactly once and its DOM is never rebuilt. Only the
- * open tail is re-parsed per streaming tick, keeping per-tick cost flat
- * instead of O(message length).
+ * Streaming Markdown keeps the boundary automaton in transcript-owned
+ * per-surface state. The scanner consumes only appended suffixes; open fences
+ * and bounded-fallback tails reuse one mounted live subtree until an
+ * authoritative close/completion render.
  */
-let streamMarkdownState = null;
-
-function streamingMarkdownStableBoundary(text) {
-  const lines = text.split("\n");
-  let inFence = false;
-  let boundary = 0;
-  let offset = 0;
-  // Exclude the final line: it may still be streaming in.
-  for (let index = 0; index < lines.length - 1; index += 1) {
-    const line = lines[index];
-    if (inFence) {
-      if (/^\s*```\s*$/.test(line)) inFence = false;
-    } else if (/^\s*```\s*[\w.+-]*\s*$/.test(line)) {
-      inFence = true;
-    }
-    offset += line.length + 1;
-    if (!inFence && !line.trim()) boundary = offset;
-  }
-  return boundary;
+function streamingMarkdownStableBoundary(text, previousState, options) {
+  return advanceStreamingMarkdownTail(previousState, text, options);
 }
 
 function clearStreamingMarkdownBlock(block) {
   while (block.firstChild) block.firstChild.remove();
 }
 
-function streamingMarkdownTailProfile(text) {
-  const boundary = streamingMarkdownStableBoundary(text);
-  const tail = text.slice(boundary);
-  const fenceLines = tail.match(/^\s*```/gm);
-  return { tailBytes: streamDiagnosticBytes(tail), tailKind: fenceLines && fenceLines.length % 2 === 1 ? "open-fence" : "text" };
+function streamingLiveCodeSource(tail, boundaryInfo) {
+  const relativeOffset = Math.max(0, Number(boundaryInfo.fenceContentOffset) - Number(boundaryInfo.boundary));
+  return String(tail || "").slice(relativeOffset).replace(/\n+$/g, "");
 }
 
-function renderStreamingMarkdown(block, text) {
+function syncStreamingLiveCodeLanguage(wrapper, codeNode, language) {
+  const value = String(language || "");
+  let label = wrapper.querySelector(":scope > .markdown-code-language");
+  if (value && !label) {
+    label = make("div", "markdown-code-language");
+    wrapper.prepend(label);
+  }
+  if (label) {
+    label.textContent = value;
+    if (!value) label.remove();
+  }
+  codeNode.className = value ? `language-${value.replace(/[^a-z0-9_-]/gi, "")}` : "";
+}
+
+function renderStreamingMarkdownLiveTail(parent, tail, boundaryInfo) {
+  if (boundaryInfo.liveMode === "open-fence") {
+    const wrapper = make("div", "markdown-code-block");
+    const pre = make("pre", "code-block markdown-code");
+    const codeNode = make("code");
+    codeNode.append(document.createTextNode(streamingLiveCodeSource(tail, boundaryInfo)));
+    pre.append(codeNode);
+    wrapper.append(pre);
+    syncStreamingLiveCodeLanguage(wrapper, codeNode, boundaryInfo.fenceLanguage);
+    attachMarkdownCodeCopyButton(wrapper);
+    parent.append(wrapper);
+    return;
+  }
+  const paragraph = make("p", "streaming-markdown-plain-tail");
+  paragraph.append(document.createTextNode(String(tail || "")));
+  parent.append(paragraph);
+}
+
+function appendStreamingMarkdownLiveTail(nodes, previousTail, tail, boundaryInfo) {
+  const root = nodes.find((node) => node.nodeType === Node.ELEMENT_NODE);
+  const textNode = boundaryInfo.liveMode === "open-fence"
+    ? root?.querySelector(":scope > pre.markdown-code > code")?.firstChild
+    : root?.firstChild;
+  const value = boundaryInfo.liveMode === "open-fence"
+    ? streamingLiveCodeSource(tail, boundaryInfo)
+    : String(tail || "");
+  if (!textNode || textNode.nodeType !== Node.TEXT_NODE) return;
+  if (boundaryInfo.liveMode === "open-fence") {
+    const codeNode = textNode.parentElement;
+    syncStreamingLiveCodeLanguage(root, codeNode, boundaryInfo.fenceLanguage);
+  }
+  if (value.startsWith(textNode.data)) textNode.appendData(value.slice(textNode.data.length));
+  else textNode.data = value;
+}
+
+function renderStreamingMarkdown(block, text, { complete = false } = {}) {
   const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
   const selectionSnapshot = captureChatTextSelection(block);
   const bubble = block?.closest(".message");
-  transcriptRenderer.reconcileMarkdownSurface({
+  const result = transcriptRenderer.reconcileMarkdownSurface({
     key: `stream:${bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "assistant"}`,
     surface: block,
     messageKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live:assistant",
     kind: "assistant-final",
     text,
+    complete,
     stableBoundary: streamingMarkdownStableBoundary,
     renderInto: renderMarkdownInto,
+    renderLiveTail: renderStreamingMarkdownLiveTail,
+    appendLiveTail: appendStreamingMarkdownLiveTail,
   });
   restoreChatTextSelection(selectionSnapshot);
   if (streamIsolationDebugLedger) {
-    const { tailBytes, tailKind } = streamingMarkdownTailProfile(String(text || ""));
-    recordStreamProfileDiagnostic({ type: "markdown-commit", ms: performance.now() - profileStart, textBytes: streamDiagnosticBytes(text), tailBytes, tailKind });
+    const tailBytes = Math.max(0, streamDiagnosticBytes(text) - (Number(result.boundary) || 0) * 2);
+    recordStreamProfileDiagnostic({ type: "markdown-commit", ms: performance.now() - profileStart, textBytes: streamDiagnosticBytes(text), tailBytes, tailKind: result.tailKind, boundaryScannedChars: result.scannedChars, reusedTail: result.reusedTail, authoritative: complete || result.liveMode === "authoritative" });
   }
 }
 
@@ -34957,7 +35135,7 @@ function visibleThinkingText(text) {
   return value;
 }
 
-function renderThinkingMarkdown(block, text) {
+function renderThinkingMarkdown(block, text, { complete = false } = {}) {
   if (!block) return;
   block._rawThinkingText = String(text || "");
   const selectionSnapshot = captureChatTextSelection(block);
@@ -34968,8 +35146,11 @@ function renderThinkingMarkdown(block, text) {
     messageKey: bubble?.dataset?.transcriptMessageKey || bubble?.dataset?.itemKey || "live:thinking",
     kind: "assistant-thinking",
     text: block._rawThinkingText,
+    complete,
     stableBoundary: streamingMarkdownStableBoundary,
     renderInto: renderMarkdownInto,
+    renderLiveTail: renderStreamingMarkdownLiveTail,
+    appendLiveTail: appendStreamingMarkdownLiveTail,
   });
   restoreChatTextSelection(selectionSnapshot);
 }
@@ -42834,6 +43015,7 @@ function acceptOutputModeAcknowledgement(event) {
 }
 
 function transitionNormalLiveOutputToCompact() {
+  flushNormalStreamRenders("output-mode-transition");
   compactLiveState = seedFastOutputLiveState({ text: streamRawText, thinking: streamThinkingRawText });
   setStreamRawText("");
   setStreamThinkingRawText("");
@@ -42854,6 +43036,8 @@ function transitionCompactLiveOutputToNormal(tabContext = activeTabContext()) {
 
 function applyOutputModeControl(event, tabContext = activeTabContext()) {
   if (event?.protocolVersion !== 1 || !["normal", "compact-v1"].includes(event.activeMode)) return false;
+  flushNormalStreamRenders("output-mode-change");
+  fallbackStreamDerivedOutput("output-mode-change");
   const previousMode = activeOutputMode;
   if (previousMode === "normal" && event.activeMode === "compact-v1") {
     transitionNormalLiveOutputToCompact();
@@ -42881,23 +43065,67 @@ function removeStreamBubble() {
   renderRunIndicator({ scroll: false });
 }
 
-function resetStreamDerivedTextCache() {
-  streamDerivedTextCache = { rawText: null, assistantText: "", thinkingFormat: null, finalText: "" };
+function ensureStreamDerivedOutputState() {
+  const todoProgressDetected = isOptionalFeatureDetected("todoProgressWidget");
+  if (!streamDerivedOutputState) {
+    streamDerivedOutputState = createStreamDerivedOutputState({
+      todoProgressDetected,
+      shadow: !!streamIsolationDebugLedger,
+    });
+  } else {
+    streamDerivedOutputState.setTodoProgressDetected(todoProgressDetected);
+  }
+  return streamDerivedOutputState;
 }
 
-function setStreamRawText(text) {
+function recordStreamDerivedOutputDiagnostic(diagnostic, ms = 0) {
+  if (!streamIsolationDebugLedger || (!diagnostic.scannedCodeUnits && !diagnostic.fallbackReason && !diagnostic.shadowMismatch)) return;
+  const bytes = diagnostic.scannedCodeUnits * 2;
+  recordStreamProfileDiagnostic({ type: "derive", ms, bytes });
+  if (diagnostic.fallbackReason) recordStreamProfileDiagnostic({ type: "derive-fallback", reason: diagnostic.fallbackReason, bytes });
+  if (diagnostic.shadowMismatch) recordStreamProfileDiagnostic({ type: "derive-shadow-mismatch", reason: diagnostic.fallbackReason || "shadow-mismatch" });
+}
+
+function captureStreamDerivedOutputProfile(startedAt) {
+  recordStreamDerivedOutputDiagnostic(
+    ensureStreamDerivedOutputState().takeDiagnostics(),
+    streamIsolationDebugLedger ? performance.now() - startedAt : 0,
+  );
+}
+
+function resetStreamDerivedOutputState(reason = "reset") {
+  if (!streamDerivedOutputState) return;
+  streamDerivedOutputState.reset({
+    todoProgressDetected: isOptionalFeatureDetected("todoProgressWidget"),
+    reason,
+  });
+  recordStreamDerivedOutputDiagnostic(streamDerivedOutputState.takeDiagnostics());
+}
+
+function fallbackStreamDerivedOutput(reason) {
+  if (!streamRawText || !streamDerivedOutputState) return;
+  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
+  ensureStreamDerivedOutputState().replace(streamRawText, { reason, force: true });
+  captureStreamDerivedOutputProfile(profileStart);
+}
+
+function setStreamRawText(text, { reason = "snapshot" } = {}) {
   const nextText = String(text || "");
   if (nextText === streamRawText) return false;
+  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
   streamRawText = nextText;
-  resetStreamDerivedTextCache();
+  ensureStreamDerivedOutputState().replace(nextText, { reason });
+  captureStreamDerivedOutputProfile(profileStart);
   return true;
 }
 
 function appendStreamRawText(delta) {
   const text = String(delta || "");
   if (!text) return false;
+  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
   streamRawText += text;
-  resetStreamDerivedTextCache();
+  ensureStreamDerivedOutputState().append(text);
+  captureStreamDerivedOutputProfile(profileStart);
   return true;
 }
 
@@ -42919,16 +43147,13 @@ function syncStreamRawTextFromUpdate(event, update) {
 }
 
 function streamDerivedText() {
-  if (streamDerivedTextCache.rawText === streamRawText) return streamDerivedTextCache;
-  const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
-  const assistantText = stripTodoProgressLines(streamRawText, { streaming: true });
-  const thinkingFormat = splitThinkingFormatText(assistantText, { streaming: true });
-  const finalText = thinkingFormat?.hasThinkingFormat ? stripTodoProgressLines(thinkingFormat.finalText, { streaming: true }) : assistantText;
-  streamDerivedTextCache = { rawText: streamRawText, assistantText, thinkingFormat, finalText };
-  if (streamIsolationDebugLedger) {
-    recordStreamProfileDiagnostic({ type: "derive", ms: performance.now() - profileStart, bytes: streamDiagnosticBytes(streamRawText) });
+  const state = ensureStreamDerivedOutputState();
+  if (state.value().rawText !== streamRawText) {
+    const profileStart = streamIsolationDebugLedger ? performance.now() : 0;
+    state.replace(streamRawText, { reason: "state-divergence" });
+    captureStreamDerivedOutputProfile(profileStart);
   }
-  return streamDerivedTextCache;
+  return state.value();
 }
 
 function streamRenderableAssistantText() {
@@ -43003,27 +43228,28 @@ function scheduleStreamBubbleHide() {
   }, delayMs);
 }
 
-function syncStreamingThinkingFormat() {
+function syncStreamingThinkingFormat({ complete = false } = {}) {
   const parsed = streamDerivedText().thinkingFormat;
   if (!parsed?.hasThinkingFormat) return null;
   const thinking = visibleThinkingText(parsed.thinkingText);
-  if (thinking) setStreamingThinkingText(thinking);
+  if (thinking) setStreamingThinkingText(thinking, { complete: complete || parsed.complete });
   if (parsed.complete && streamThinkingBubble) streamThinkingBubble.classList.add("complete");
   return parsed;
 }
 
-function renderStreamingAssistantText() {
-  const thinkingFormat = syncStreamingThinkingFormat();
+function renderStreamingAssistantText({ complete = false } = {}) {
+  const thinkingFormat = syncStreamingThinkingFormat({ complete });
   const finalText = thinkingFormat?.hasThinkingFormat ? streamDerivedText().finalText : streamRenderableAssistantText();
   if (finalText) {
     ensureStreamBubble();
-    renderStreamingMarkdown(streamText, finalText);
+    renderStreamingMarkdown(streamText, finalText, { complete });
   } else {
     scheduleStreamBubbleHide();
   }
 }
 
 function suppressStreamingAssistantTextBeforeToolCall() {
+  flushNormalStreamRenders("tool-call-boundary");
   setStreamRawText("");
   removeStreamBubble();
 }
@@ -43118,14 +43344,14 @@ function showStreamingThinking(initialText = "") {
 }
 
 function resetStreamBubble({ preserveCompact = false } = {}) {
+  cancelNormalStreamRenders();
   resetCompactLiveOutput({ remove: !preserveCompact });
   cancelStreamBubbleHide();
   streamBubble = null;
   streamText = null;
   streamRawText = "";
   streamThinkingRawText = "";
-  resetStreamDerivedTextCache();
-  streamMarkdownState = null;
+  resetStreamDerivedOutputState("reset");
   streamBubbleVisibleSince = 0;
   streamToolCallSeen = false;
   resetStreamingToolCallState({ remove: true });
@@ -43291,11 +43517,11 @@ function assistantThinkingTextFromMessage(message, { streaming = false } = {}) {
   return parts.length ? parts.join("\n\n") : "";
 }
 
-function setStreamingThinkingText(text) {
+function setStreamingThinkingText(text, { complete = false } = {}) {
   const thinking = visibleThinkingText(text);
   if (!thinkingOutputVisible || !thinking) return false;
   showStreamingThinking("");
-  if (streamThinking) renderThinkingMarkdown(streamThinking, thinking);
+  if (streamThinking) renderThinkingMarkdown(streamThinking, thinking, { complete });
   return true;
 }
 
@@ -43320,16 +43546,17 @@ function appendStreamThinkingText(delta) {
   return true;
 }
 
-function syncStreamingThinkingFromUpdate(event, update, { placeholder = "" } = {}) {
+function syncStreamingThinkingFromUpdate(event, update, { placeholder = "", render = true } = {}) {
   if (!thinkingOutputVisible) return true;
   const delta = thinkingDeltaText(update);
   if (update.type === "thinking_delta" && delta) {
     appendStreamThinkingText(delta);
-    return setStreamingThinkingText(streamThinkingRawText || placeholder);
+    return render ? setStreamingThinkingText(streamThinkingRawText || placeholder) : true;
   }
   if (update.type === "thinking_start") {
     if (delta) setStreamThinkingRawText(delta);
-    return streamThinkingRawText ? setStreamingThinkingText(streamThinkingRawText || placeholder) : false;
+    if (!streamThinkingRawText) return false;
+    return render ? setStreamingThinkingText(streamThinkingRawText || placeholder) : true;
   }
   if (update.type === "thinking_end") {
     if (delta) setStreamThinkingRawText(delta, { reconcile: true });
@@ -43337,12 +43564,12 @@ function syncStreamingThinkingFromUpdate(event, update, { placeholder = "" } = {
       const fallback = streamingThinkingTextFallback(event);
       if (fallback !== null) setStreamThinkingRawText(fallback, { reconcile: true });
     }
-    return setStreamingThinkingText(streamThinkingRawText || placeholder);
+    return render ? setStreamingThinkingText(streamThinkingRawText || placeholder, { complete: true }) : true;
   }
   const fallback = streamingThinkingTextFallback(event);
   if (fallback === null) return false;
   setStreamThinkingRawText(fallback);
-  return setStreamingThinkingText(streamThinkingRawText || placeholder);
+  return render ? setStreamingThinkingText(streamThinkingRawText || placeholder) : true;
 }
 
 function assistantStreamErrorMessage(event, update = event?.assistantMessageEvent || {}) {
@@ -43359,20 +43586,20 @@ function assistantStreamErrorMessage(event, update = event?.assistantMessageEven
 function handleMessageUpdate(event) {
   if (compactOutputActive() && handleCompactMessageUpdate(event)) return;
   const update = event.assistantMessageEvent || {};
-  if (update.type === "thinking_start") {
-    syncStreamingThinkingFromUpdate(event, update);
-  } else if (update.type === "thinking_delta") {
-    const delta = thinkingDeltaText(update);
-    const synced = syncStreamingThinkingFromUpdate(event, update);
-    if (thinkingOutputVisible && delta && (!synced || !streamThinking?.textContent)) {
-      showStreamingThinking("");
-      if (streamThinking) renderThinkingMarkdown(streamThinking, `${streamThinking._rawThinkingText || ""}${delta}`);
-    }
+  if (update.type === "thinking_start" || update.type === "thinking_delta") {
+    syncStreamingThinkingFromUpdate(event, update, { render: false });
+    if (thinkingOutputVisible && streamThinkingRawText) thinkingStreamRenderScheduler.request({ complete: false });
   } else if (update.type === "thinking_end") {
-    if (syncStreamingThinkingFromUpdate(event, update)) streamThinkingBubble?.classList.add("complete");
+    syncStreamingThinkingFromUpdate(event, update, { render: false });
+    if (thinkingOutputVisible && streamThinkingRawText) {
+      thinkingStreamRenderScheduler.request({ complete: true });
+      thinkingStreamRenderScheduler.flushNow("thinking_end");
+    }
   } else if (update.type === "text_delta" || update.type === "text_end") {
     syncStreamRawTextFromUpdate(event, update);
-    renderStreamingAssistantText();
+    if (update.type === "text_end") fallbackStreamDerivedOutput("settlement:text_end");
+    assistantStreamRenderScheduler.request({ complete: update.type === "text_end" });
+    if (update.type === "text_end") assistantStreamRenderScheduler.flushNow("text_end");
   } else if (update.type === "toolcall_start") {
     streamToolCallSeen = true;
     suppressStreamingAssistantTextBeforeToolCall();
@@ -45474,13 +45701,15 @@ function handleExtensionUiRequest(request) {
       if (request.statusText) {
         statusEntries.set(statusKey, request.statusText);
         if (statusKey === GIT_FOOTER_WEBUI_STATUS_KEY) {
-          const validPayload = !!parseGitFooterWebuiPayloadRaw(request.statusText);
+          const footerPayload = parseGitFooterWebuiPayloadRaw(request.statusText);
+          const validPayload = !!footerPayload;
           cacheGitFooterWebuiPayload(request.statusText, request.tabId);
           settleGitFooterPayload(
             request.tabId || activeTabId,
             validPayload ? "ready" : "failed",
             validPayload ? "" : "Git footer returned invalid status data — refresh to retry",
           );
+          if (footerPayload) syncClaudeUsageFromGitFooterPayload(footerPayload);
         }
       } else {
         statusEntries.delete(statusKey);
@@ -46059,6 +46288,7 @@ const TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES = new Set([
 function beginForegroundTranscriptCatchUp() {
   foregroundTranscriptCatchUpRequired = true;
   backgroundReconnectSnapshotFresh = false;
+  flushNormalStreamRenders("visibility-hidden");
   streamOutputController.cancel();
   if (!eventSource) return;
   eventStreamPausedForBackground = true;
@@ -46083,6 +46313,10 @@ function dispatchTranscriptStreamEvent(event) {
 function flushTranscriptStreamBarrier(event) {
   if (!TRANSCRIPT_STREAM_BARRIER_EVENT_TYPES.has(event?.type)) return;
   streamOutputController.barrier(event.type);
+  if (["message_end", "agent_end", "agent_settled", "compaction_end", "pi_process_exit", "pi_process_error"].includes(event.type)) {
+    fallbackStreamDerivedOutput(`settlement:${event.type}`);
+  }
+  flushNormalStreamRenders(event.type);
   reconcileUnknownTranscriptEvidenceAtBarrier(event);
   if (event.type === "pi_process_exit" || event.type === "pi_process_error") streamOutputController.cancel();
 }
@@ -46489,9 +46723,12 @@ function handleEvent(event) {
 }
 
 function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto", fallbackAttempted = false } = {}) {
+  flushNormalStreamRenders("reconnect");
+  cancelNormalStreamRenders();
   eventSource?.close();
   eventSource = null;
   streamOutputController.cancel();
+  fallbackStreamDerivedOutput("reconnect");
   resetCompactLiveOutput();
   activeOutputMode = "normal";
   outputModeAcknowledged = false;
@@ -46523,7 +46760,9 @@ function connectEvents(tabContext = activeTabContext(), { requestedMode = "auto"
   source.onerror = () => {
     if (eventSource !== source || !isCurrentTabContext(tabContext)) return;
     streamOutputController.flush();
+    flushNormalStreamRenders("disconnect");
     streamOutputController.cancel();
+    fallbackStreamDerivedOutput("disconnect");
     if (compactOutputActive()) compactLiveScheduler.flushNow();
     addEvent("event stream disconnected; browser will retry", "warn");
     fetch("/api/health", { cache: "no-store" }).catch((error) => setBackendOffline(true, error));
@@ -47205,6 +47444,7 @@ async function abortActiveRun({ source = "button" } = {}) {
   if (abortRequestInFlight || !isAbortAvailable()) return;
   const tabContext = activeTabContext();
   streamOutputController.barrier("user-abort");
+  flushNormalStreamRenders("user-abort");
   reconcileUnknownTranscriptEvidenceAtBarrier({ type: "user_abort", tabId: tabContext.tabId });
   abortRequestInFlight = true;
   resetAbortLongPressAffordance();
@@ -47930,6 +48170,7 @@ window.addEventListener("keydown", (event) => {
 window.addEventListener("keydown", handleNativeAppShortcut, { capture: true });
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    flushNormalStreamRenders("visibility-recovery");
     scheduleForegroundReconcile("visibility resume", 0);
     refreshSubagents().finally(() => scheduleRefreshSubagents());
   } else {
@@ -48154,7 +48395,7 @@ elements.refreshCodexUsageButton?.addEventListener("click", () => {
   refreshCodexUsage({ forceAuthRefresh: true }).finally(() => scheduleRefreshCodexUsage());
 });
 elements.refreshClaudeUsageButton?.addEventListener("click", () => {
-  refreshClaudeUsage().finally(() => scheduleRefreshClaudeUsage());
+  refreshClaudeUsage({ forceCli: true }).finally(() => scheduleRefreshClaudeUsage());
 });
 elements.fileTreeRefreshButton?.addEventListener("click", () => refreshFileTreeRoot().catch((error) => addEvent(error.message || String(error), "error")));
 elements.fileTreeRoot?.addEventListener("keydown", handleFileTreeKeydown);

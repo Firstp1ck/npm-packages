@@ -20,7 +20,7 @@ assert.match(css, /#promptInput \{[\s\S]*max-height: min\(25vh, 10rem\);[\s\S]*o
 assert.match(resizePromptInput, /input\.style\.height = "auto";[\s\S]*Math\.min\(input\.scrollHeight, maxHeight\)[\s\S]*input\.style\.overflowY = "auto";/, "every auto-resize pass should preserve vertical scrolling after the height cap is reached or growth stalls");
 assert.doesNotMatch(resizePromptInput, /overflowY[^\n]+"hidden"/, "auto-resizing must not disable the prompt's vertical overflow fallback");
 assert.match(html, /styles\.css\?v=131/, "the page should request the scroll-enabled stylesheet revision");
-assert.match(html, /app\.js\?v=152/, "the page should request the scroll-enabled app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v118"/, "the PWA cache identity should advance with the prompt scroll assets");
+assert.match(html, /app\.js\?v=156/, "the page should request the scroll-enabled app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v122"/, "the PWA cache identity should advance with the prompt scroll assets");
 
 console.log("prompt-input-vertical-scroll-static.test.mjs passed");

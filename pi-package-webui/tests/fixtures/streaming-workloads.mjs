@@ -120,6 +120,42 @@ export function overflowBurstEvents({ pairs = 200 } = {}) {
   return events;
 }
 
+/**
+ * Hidden-tab workload. The browser suppresses these live events while hidden
+ * and uses `authoritativeText` when it returns to the foreground.
+ */
+export function backgroundForegroundReconciliationScenario(deltaCount = 1000) {
+  const hiddenEvents = smallTextDeltaEvents(deltaCount).map((event, index) => ({
+    ...event,
+    baselineIndex: index,
+  }));
+  return {
+    hiddenEvents,
+    authoritativeText: concatenatedDeltaText(hiddenEvents),
+  };
+}
+
+/** Deterministic retained messages used by the long-transcript browser baseline. */
+export function longTranscriptMessages(messageCount = 1000) {
+  return Array.from({ length: messageCount }, (_, index) => {
+    const role = index % 2 === 0 ? "user" : "assistant";
+    const text = `LONG-TRANSCRIPT-${String(index).padStart(4, "0")} ${WORD_POOL[index % WORD_POOL.length]} ${"x".repeat(80)}`;
+    return {
+      role,
+      content: role === "assistant" ? [{ type: "text", text }] : text,
+      timestamp: 10_000 + index,
+    };
+  });
+}
+
+/** Thousands of retained messages plus a simultaneous deterministic stream. */
+export function longTranscriptActiveStreamScenario({ messageCount = 1000, deltaCount = 1000 } = {}) {
+  return {
+    retainedMessages: longTranscriptMessages(messageCount),
+    activeEvents: smallTextDeltaEvents(deltaCount),
+  };
+}
+
 /** Concatenate every delta of one assistant-message-event type, in order. */
 export function concatenatedDeltaText(events, type = "text_delta") {
   let text = "";

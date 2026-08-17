@@ -30,6 +30,7 @@ import {
   resolveSamplingParameterCapabilities,
 } from "../../lib/sampling-parameter-capabilities.mjs";
 import { validateSamplingParameterObject } from "../../public/sampling-parameter-controls.mjs";
+import { longTranscriptMessages } from "./streaming-workloads.mjs";
 
 const sessionIndex = process.argv.indexOf("--session");
 const sessionFile = sessionIndex !== -1
@@ -119,6 +120,7 @@ let scriptedStreaming = false;
 let continuityRun = 0;
 let streamIsolationRun = 0;
 const pendingStreamIsolationRuns = new Map();
+let streamIsolationLongTranscriptPopulated = false;
 let largeTranscriptEnabled = false;
 const fixtureSubagentRuns = [];
 const fixtureSubagentGates = [];
@@ -931,7 +933,13 @@ function handleFastModeFixturePrompt(command, base) {
   return true;
 }
 
-function streamIsolationTextDelta(index) {
+function streamIsolationTextDelta(index, scenario = "standard") {
+  if (scenario === "long-transcript") {
+    const line = `const v${String(index).padStart(4, "0")} = ${index};\n`;
+    if (index === 0) return `\`\`\`js\n${line}`;
+    if (index === 999) return `${line}\`\`\`\nLONG-STREAM-TAIL`;
+    return line;
+  }
   const digit = String(index % 10);
   if (index === 0) return `ISOLATION-TEXT-BEGIN ${digit}`;
   if (index === 999) return `${digit} ISOLATION-TEXT-TAIL`;
@@ -942,11 +950,19 @@ function logStreamIsolationPhase(runId, mode, scenario, phase) {
   logJsonLine({ direction: "isolation-phase", isolationRunId: runId, isolationMode: mode, isolationScenario: scenario, isolationPhase: phase });
 }
 
+function ensureStreamIsolationLongTranscript() {
+  if (streamIsolationLongTranscriptPopulated) return 1000;
+  for (const message of longTranscriptMessages(1000)) appendDynamicMessage(message);
+  streamIsolationLongTranscriptPopulated = true;
+  return 1000;
+}
+
 function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
   const runId = `stream-isolation-${mode}-${scenario}-${++streamIsolationRun}`;
+  const retainedMessageCount = scenario === "long-transcript" ? ensureStreamIsolationLongTranscript() : 0;
   const toolCallId = `${runId}-execution`;
   const streamedToolCallId = `${runId}-call`;
-  const textDeltas = Array.from({ length: 1_000 }, (_, index) => streamIsolationTextDelta(index));
+  const textDeltas = Array.from({ length: 1_000 }, (_, index) => streamIsolationTextDelta(index, scenario));
   const finalText = textDeltas.join("");
   const thinkingText = "ISOLATION-THINKING-PATH";
   const toolCall = { type: "toolCall", id: streamedToolCallId, name: "read", arguments: { path: "isolation.txt" } };
@@ -993,7 +1009,30 @@ function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
         emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_end", delta: thinkingText } }, "raw"));
       },
     },
-    {
+  ];
+
+  if (scenario === "paced-pressure") {
+    for (let start = 0; start < 1_000; start += 10) {
+      const end = start + 10;
+      steps.push({
+        afterMs: start === 0 ? 100 : 8,
+        run: () => {
+          emitTextRange(start, end);
+          if (end !== 1_000) return;
+          // Alternating kinds intentionally defeat adjacent coalescing. The
+          // final text_end snapshot remains authoritative, so this pressure
+          // phase can exercise queue bounds without changing settled output.
+          for (let pressureIndex = 0; pressureIndex < 260; pressureIndex += 1) {
+            emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "p" } }, "pressure"));
+            emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "x" } }, "pressure"));
+          }
+          emitScriptedEvent(tagged({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, text: finalText } }, "raw"));
+          logStreamIsolationPhase(runId, mode, scenario, "text-complete");
+        },
+      });
+    }
+  } else {
+    steps.push({
       afterMs: 100,
       run: () => {
         if (scenario === "abort") {
@@ -1004,8 +1043,8 @@ function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
           logStreamIsolationPhase(runId, mode, scenario, "text-complete");
         }
       },
-    },
-  ];
+    });
+  }
 
   if (scenario === "abort") {
     // Keep a deterministic partial stream pending long enough for the browser
@@ -1057,7 +1096,10 @@ function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
   }
   completionSteps.push(
     {
-      afterMs: 1_200,
+      // Keep the expensive long-transcript stream live long enough for the
+      // browser ledger and continuity assertions to sample it before the
+      // authoritative settlement replaces the transient bubble.
+      afterMs: scenario === "long-transcript" ? 15_000 : 1_200,
       run: () => {
         emitScriptedEvent(tagged({ type: "tool_execution_end", toolCallId, toolName: "read", isError: false, result: { content: [{ type: "text", text: "ISOLATION-TOOL-RESULT" }] } }, "post-burst"));
         logStreamIsolationPhase(runId, mode, scenario, "tool-complete");
@@ -1085,7 +1127,7 @@ function runStreamIsolationFixtureFlow(mode, scenario = "standard") {
     pendingStreamIsolationRuns.delete(runId);
     runScriptedSteps(scenario === "lifecycle" ? steps : [...steps, ...completionSteps]);
   });
-  return { runId, finalText };
+  return { runId, finalText, retainedMessageCount };
 }
 
 function continueStreamIsolationFixture(runId) {
@@ -1097,12 +1139,17 @@ function continueStreamIsolationFixture(runId) {
 
 function handleStreamIsolationFixturePrompt(command, base) {
   if (!streamIsolationEnabled) return false;
-  const match = String(command.message || "").trim().match(/^fixture stream isolation (normal|compact)(?: (standard|abort|lifecycle))?$/);
+  const message = String(command.message || "").trim();
+  if (message === "fixture stream isolation populate long transcript") {
+    respond({ ...base, data: { output: "stream isolation long transcript populated", retainedMessageCount: ensureStreamIsolationLongTranscript() } });
+    return true;
+  }
+  const match = message.match(/^fixture stream isolation (normal|compact)(?: (standard|abort|lifecycle|background|long-transcript|paced-pressure))?$/);
   if (!match) return false;
   const mode = match[1];
   const scenario = match[2] || "standard";
-  const { runId, finalText } = runStreamIsolationFixtureFlow(mode, scenario);
-  respond({ ...base, data: { output: "stream isolation fixture accepted", runId, deltaCount: 1_000, mode, scenario, finalText } });
+  const { runId, finalText, retainedMessageCount } = runStreamIsolationFixtureFlow(mode, scenario);
+  respond({ ...base, data: { output: "stream isolation fixture accepted", runId, deltaCount: 1_000, retainedMessageCount, mode, scenario, finalText } });
   return true;
 }
 

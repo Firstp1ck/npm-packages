@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { splitThinkingFormatTextAuthoritative } from "../public/stream-derived-output.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = await readFile(join(root, "public", "app.js"), "utf8");
@@ -60,5 +61,19 @@ assert.deepEqual(parse("<|analysis>channel reasoning<analysis|>\nanswer"), {
   finalText: "answer",
   complete: true,
 }, "channel-style thinking delimiters should remain unchanged");
+
+for (const [text, options] of [
+  ["<th", { streaming: true }],
+  ["<think>reasoning</thi", { streaming: true }],
+  ["<think>first</think><th", { streaming: true }],
+  ["<think>first</think><think>second</think>\r\nanswer", { streaming: true }],
+  ["<|Analysis>Unicode 😀<ANALYSIS|>\nanswer", { streaming: true }],
+]) {
+  assert.deepEqual(
+    parse(text, options),
+    JSON.parse(JSON.stringify(splitThinkingFormatTextAuthoritative(text, options))),
+    `stream-derived authoritative parsing should stay aligned for ${JSON.stringify(text)}`,
+  );
+}
 
 console.log("thinking-format-parser.test.mjs passed");

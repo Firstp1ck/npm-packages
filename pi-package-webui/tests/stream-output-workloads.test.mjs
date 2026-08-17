@@ -5,8 +5,10 @@ import {
   createStreamOutputController,
 } from "../public/stream-output-controller.mjs";
 import {
+  backgroundForegroundReconciliationScenario,
   concatenatedDeltaText,
   longParagraphDeltaEvents,
+  longTranscriptActiveStreamScenario,
   messageUpdateEvent,
   mixedSemanticBurstEvents,
   openFenceDeltaEvents,
@@ -113,8 +115,8 @@ function harness({ diagnostics = true, nowStepMs = 1 } = {}) {
   const overflow = run.records.filter((record) => record.type === "overflow");
   assert.ok(overflow.length > 0, "1 MB through a 256 KB queue must report overflow");
   for (const record of run.records.filter((entry) => entry.type === "queued")) {
-    assert.ok(record.pendingBytes <= DEFAULT_STREAM_PENDING_BYTE_LIMIT, "pending bytes must never exceed the configured bound");
-    assert.ok(record.pendingCount <= DEFAULT_STREAM_PENDING_ENTRY_LIMIT, "pending entries must never exceed the configured bound");
+    assert.ok(record.pendingBytes <= DEFAULT_STREAM_PENDING_BYTE_LIMIT * 2, "primary plus one urgent entry must remain within the explicit total bound");
+    assert.ok(record.pendingCount <= DEFAULT_STREAM_PENDING_ENTRY_LIMIT + 1, "primary plus one urgent entry must remain bounded");
   }
 }
 
@@ -181,7 +183,7 @@ for (const codeBytes of [40 * 1024, 100 * 1024]) {
   const entryOverflows = run.records.filter((record) => record.type === "overflow" && record.reason === "entry-limit");
   assert.ok(entryOverflows.length > 0, "400 non-coalescible events must hit the 128-entry limit");
   for (const record of run.records.filter((entry) => entry.type === "queued")) {
-    assert.ok(record.pendingCount <= DEFAULT_STREAM_PENDING_ENTRY_LIMIT);
+    assert.ok(record.pendingCount <= DEFAULT_STREAM_PENDING_ENTRY_LIMIT + 1);
   }
   // Alternation must be preserved within each flushed window: text i before thinking i.
   const textIndex = run.applied.order.filter((kind) => kind.startsWith("text") || kind.startsWith("thinking"));
@@ -234,6 +236,41 @@ for (const codeBytes of [40 * 1024, 100 * 1024]) {
   assert.equal(typeof direct.maxAgeMs, "number");
   assert.equal(typeof direct.drainMs, "number");
   assert.equal(run.applied.text.length, DEFAULT_STREAM_PENDING_BYTE_LIMIT, "oversize events are applied, never dropped");
+}
+
+// 11) Background events are deterministic and reconcile to one exact snapshot.
+{
+  const first = backgroundForegroundReconciliationScenario(1000);
+  const second = backgroundForegroundReconciliationScenario(1000);
+  assert.deepEqual(second, first, "background fixture must be byte-for-byte deterministic");
+  assert.deepEqual(first.hiddenEvents.map((event) => event.baselineIndex), Array.from({ length: 1000 }, (_, index) => index));
+  assert.equal(first.authoritativeText, concatenatedDeltaText(first.hiddenEvents));
+
+  const run = harness();
+  // Hidden-tab policy suppresses controller dispatch entirely. Foreground
+  // reconciliation applies the authoritative snapshot once, represented here
+  // by the same exact text delta consumed by the sink.
+  assert.equal(run.applied.text, "", "hidden events must not mutate live output");
+  run.controller.dispatch(messageUpdateEvent("text_delta", first.authoritativeText));
+  run.frames.runAll();
+  assert.equal(run.applied.text, first.authoritativeText, "foreground snapshot must restore exact hidden output once");
+  assert.equal(run.records.filter((record) => record.type === "receipt").length, 1, "catch-up must not replay hidden transport cadence");
+}
+
+// 12) A large retained transcript does not change active-stream order or text.
+{
+  const scenario = longTranscriptActiveStreamScenario({ messageCount: 1000, deltaCount: 1000 });
+  const retainedBefore = structuredClone(scenario.retainedMessages);
+  assert.equal(scenario.retainedMessages.length, 1000);
+  assert.equal(scenario.retainedMessages[0].content.startsWith("LONG-TRANSCRIPT-0000"), true);
+  assert.equal(scenario.retainedMessages.at(-1).content[0].text.startsWith("LONG-TRANSCRIPT-0999"), true);
+
+  const run = harness();
+  run.dispatchAll(scenario.activeEvents);
+  run.frames.runAll();
+  assert.equal(run.applied.text, concatenatedDeltaText(scenario.activeEvents), "active stream must remain exact beside a long transcript");
+  assert.deepEqual(scenario.retainedMessages, retainedBefore, "active streaming must not mutate retained transcript fixtures");
+  assert.equal(run.records.filter((record) => record.type === "receipt").length, 1000);
 }
 
 console.log("stream-output-workloads tests passed");

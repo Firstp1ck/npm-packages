@@ -16,6 +16,8 @@ export type ProviderUsageWindow = {
 
 export type ProviderUsageSnapshot = {
   provider: ProviderUsageSource;
+  /** Time when these headers were captured from a provider response. */
+  capturedAt?: number;
   primary?: ProviderUsageWindow;
   secondary?: ProviderUsageWindow;
   plan?: string;

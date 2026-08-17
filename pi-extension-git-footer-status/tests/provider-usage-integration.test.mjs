@@ -191,6 +191,14 @@ test("openai-codex: captures usage and renders native segment and WebUI Usage ch
   assert.equal(chip.label, "Usage");
   assert.equal(chip.value, "weekly 29% · weekly 0%");
   assert.deepEqual(chip.usageWindows, { primaryPercent: 29, secondaryPercent: 0 });
+  assert.equal(payload.providerUsage.provider, "openai-codex");
+  assert.ok(Number.isFinite(payload.providerUsage.capturedAt), "structured provider usage should carry its response-capture timestamp");
+  assert.deepEqual(payload.providerUsage.primary, {
+    label: "weekly",
+    usedPercent: 29,
+    windowMinutes: 10080,
+    resetAt: 1760000000000,
+  });
   assert.match(chip.title, /plan plus/);
   assert.match(chip.title, /weekly window: 29% used/);
   assert.match(chip.title, /weekly window: 0% used/);
@@ -237,10 +245,19 @@ test("anthropic OAuth: renders usage from unified headers", async () => {
 
   await harness.emit("after_provider_response", { status: 200, headers: ANTHROPIC_HEADERS });
 
-  const chip = usageChip(lastWebuiPayload(harness.state));
+  const payload = lastWebuiPayload(harness.state);
+  const chip = usageChip(payload);
   assert.ok(chip, "expected a WebUI usage chip for OAuth Anthropic");
   assert.equal(chip.value, "5h 40% · 7d 90%");
   assert.deepEqual(chip.usageWindows, { primaryPercent: 40, secondaryPercent: 90 });
+  assert.equal(payload.providerUsage.provider, "anthropic");
+  assert.ok(Number.isFinite(payload.providerUsage.capturedAt), "Anthropic usage should publish the live response-capture timestamp");
+  assert.deepEqual(payload.providerUsage.primary, {
+    label: "5h",
+    usedPercent: 40,
+    windowMinutes: 300,
+    resetAt: Date.parse("2026-01-02T03:04:05.000Z"),
+  });
   assert.match(chip.title, /Anthropic subscription usage/);
 
   const lines = nativeLines(harness.state, harness.ctx).join("\n");

@@ -301,19 +301,35 @@ export function createTranscriptRenderer({ chat, contextKey = () => "", surfaceS
     messageKey,
     kind = "assistant-final",
     text = "",
+    complete = false,
     stableBoundary,
     renderInto,
+    renderLiveTail,
+    appendLiveTail,
   } = {}) {
     if (!surface || typeof stableBoundary !== "function" || typeof renderInto !== "function") return { applied: false, invalid: true };
     const value = String(text || "");
     let state = markdownStates.get(surface);
-    const diverged = !!state && !value.startsWith(state.stableText);
-    const replacesMutableTail = !!state?.tailNodes?.length;
-    return commitTranscriptMutation({
+    const diverged = !!state && !value.startsWith(state.value);
+    const boundaryResult = stableBoundary(value, diverged ? null : state?.boundaryState, { complete, appendOnly: !!state && !diverged });
+    const boundaryInfo = boundaryResult && typeof boundaryResult === "object"
+      ? boundaryResult
+      : { boundary: Number(boundaryResult) || 0, state: null, liveMode: "markdown", tailKind: "text", scannedChars: value.length };
+    const stableFloor = diverged ? 0 : state?.stableText?.length || 0;
+    const nextBoundary = Math.max(stableFloor, Math.min(value.length, Number(boundaryInfo.boundary) || 0));
+    const nextTail = value.slice(nextBoundary);
+    const canReuseLiveTail = !!state?.tailNodes?.length
+      && typeof appendLiveTail === "function"
+      && ["open-fence", "plain"].includes(boundaryInfo.liveMode)
+      && state.tailMode === boundaryInfo.liveMode
+      && state.tailBoundary === nextBoundary
+      && nextTail.startsWith(state.tailText);
+    const replacesMutableTail = !!state?.tailNodes?.length && !canReuseLiveTail;
+    const mutation = commitTranscriptMutation({
       key: key || `markdown:${surfaceKey(surface)}`,
       context,
-      // Removing/reparsing the open tail is destructive even for append-only
-      // transport data. It must wait for an intersecting native drag gesture.
+      // Replacing/reparsing an open tail is destructive and must wait for an
+      // intersecting native drag. Suffix appends reuse the mounted live nodes.
       kind: diverged || replacesMutableTail ? "reconcile" : "append",
       surfaces: [surface],
       invalidateSelection: diverged,
@@ -322,30 +338,63 @@ export function createTranscriptRenderer({ chat, contextKey = () => "", surfaceS
         state = markdownStates.get(surface);
         if (!state || diverged) {
           for (const node of [...surface.childNodes]) node.remove();
-          state = { stableText: "", tailNodes: [], committedBlocks: 0 };
+          state = { stableText: "", value: "", tailNodes: [], tailText: "", tailMode: "", tailBoundary: 0, boundaryState: null, committedBlocks: 0 };
           markdownStates.set(surface, state);
         }
-        for (const node of state.tailNodes) node.remove();
-        state.tailNodes = [];
-        const boundary = Math.max(state.stableText.length, Math.min(value.length, Number(stableBoundary(value)) || 0));
-        if (boundary > state.stableText.length) {
-          const fragment = document.createDocumentFragment();
-          renderInto(fragment, value.slice(state.stableText.length, boundary));
-          const nodes = [...fragment.childNodes];
-          state.committedBlocks = ownBlocks(nodes, { messageKey, kind, start: state.committedBlocks });
-          surface.append(fragment);
-          state.stableText = value.slice(0, boundary);
+
+        const boundary = Math.max(state.stableText.length, nextBoundary);
+        const tail = value.slice(boundary);
+        const reuse = !!state.tailNodes.length
+          && typeof appendLiveTail === "function"
+          && ["open-fence", "plain"].includes(boundaryInfo.liveMode)
+          && state.tailMode === boundaryInfo.liveMode
+          && state.tailBoundary === boundary
+          && tail.startsWith(state.tailText);
+
+        if (reuse) {
+          appendLiveTail(state.tailNodes, state.tailText, tail, boundaryInfo);
+        } else {
+          const committedSlice = value.slice(state.stableText.length, boundary);
+          const promotesMountedTail = !!state.tailNodes.length
+            && ["markdown", "authoritative"].includes(state.tailMode)
+            && committedSlice.startsWith(state.tailText)
+            && !committedSlice.slice(state.tailText.length).trim();
+          if (promotesMountedTail) {
+            state.committedBlocks = ownBlocks(state.tailNodes, { messageKey, kind, start: state.committedBlocks });
+            state.tailNodes = [];
+            state.stableText = value.slice(0, boundary);
+          } else {
+            for (const node of state.tailNodes) node.remove();
+            state.tailNodes = [];
+            if (boundary > state.stableText.length) {
+              const fragment = document.createDocumentFragment();
+              renderInto(fragment, committedSlice);
+              const nodes = [...fragment.childNodes];
+              state.committedBlocks = ownBlocks(nodes, { messageKey, kind, start: state.committedBlocks });
+              surface.append(fragment);
+              state.stableText = value.slice(0, boundary);
+            }
+          }
+          if (tail.trim()) {
+            const fragment = document.createDocumentFragment();
+            if (["open-fence", "plain"].includes(boundaryInfo.liveMode) && typeof renderLiveTail === "function") {
+              renderLiveTail(fragment, tail, boundaryInfo);
+            } else {
+              renderInto(fragment, tail);
+            }
+            state.tailNodes = [...fragment.childNodes];
+            ownBlocks(state.tailNodes, { messageKey, kind, tail: true });
+            surface.append(fragment);
+          }
         }
-        const tail = value.slice(state.stableText.length);
-        if (tail.trim()) {
-          const fragment = document.createDocumentFragment();
-          renderInto(fragment, tail);
-          state.tailNodes = [...fragment.childNodes];
-          ownBlocks(state.tailNodes, { messageKey, kind, tail: true });
-          surface.append(fragment);
-        }
+        state.value = value;
+        state.tailText = tail;
+        state.tailMode = boundaryInfo.liveMode || "markdown";
+        state.tailBoundary = boundary;
+        state.boundaryState = boundaryInfo.state || null;
       },
     });
+    return { ...mutation, boundary: nextBoundary, tailKind: boundaryInfo.tailKind || "text", liveMode: boundaryInfo.liveMode || "markdown", scannedChars: Number(boundaryInfo.scannedChars) || 0, fallback: !!boundaryInfo.fallback, reusedTail: canReuseLiveTail };
   }
 
   function updateTextSurface({ key, context = contextKey(), surface, messageKey, kind = "compact-output", text = "" } = {}) {

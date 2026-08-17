@@ -29,4 +29,4 @@ Run `node --test tests/git-snapshot.test.mjs` from this package directory after 
   - staged/unstaged/untracked/conflicts
   - operation state (rebase/merge/cherry-pick/revert/bisect)
   - stash/submodule/worktree/tag/last-commit-age/signing mismatch indicators
-- Publishes the same footer data as a structured `git-footer-webui` status payload so Pi Web UI can render the extension-owned footer instead of duplicating this logic in the Web UI package.
+- Publishes the same footer data as a structured `git-footer-webui` status payload so Pi Web UI can render the extension-owned footer instead of duplicating this logic in the Web UI package. The payload also carries the sanitized provider-usage snapshot and its response-capture timestamp independently of footer-chip visibility, allowing other Web UI views to reuse the same live source without parsing display text.

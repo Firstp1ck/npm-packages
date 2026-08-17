@@ -15,7 +15,7 @@ const entries = [
   ["remoteWebui", "@firstpick/pi-package-remote-webui", "^0.1.8"],
   ["questionnaire", "@firstpick/pi-package-questionnaire", "^0.1.0"],
   ["naturalConversation", "@firstpick/pi-package-natural-conversation", "^0.1.4"],
-  ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status", "^0.4.3"],
+  ["gitFooterStatus", "@firstpick/pi-extension-git-footer-status", "^0.5.0"],
   ["statsCommand", "@firstpick/pi-extension-stats", "^0.2.9"],
   ["codexFastMode", "@firstpick/pi-extension-codex-fast-mode", "^0.1.0"],
   ["themeBundle", "@firstpick/pi-themes-bundle", "^0.1.5"],

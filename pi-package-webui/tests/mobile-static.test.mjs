@@ -45,7 +45,7 @@ const companionDependencies = {
   "@firstpick/pi-extension-bang-command-autocomplete": "^0.2.2",
   "@firstpick/pi-extension-btw": "^0.1.4",
   "@firstpick/pi-extension-fish-user-bash": "^0.2.2",
-  "@firstpick/pi-extension-git-footer-status": "^0.4.3",
+  "@firstpick/pi-extension-git-footer-status": "^0.5.0",
   "@firstpick/pi-extension-release-aur": "^0.1.8",
   "@firstpick/pi-extension-release-npm": "^0.4.4",
   "@firstpick/pi-extension-safety-guard": "^0.2.6",

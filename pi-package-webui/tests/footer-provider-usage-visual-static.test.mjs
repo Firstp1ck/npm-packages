@@ -21,6 +21,9 @@ const usageNormalization = normalizeChip.slice(normalizeChip.indexOf("if (value.
 const applyUsage = between(app, "function applyFooterUsageWindows", "const FOOTER_MIDDLE_TRUNCATION_END_CHARS");
 const shapeKey = between(app, "function gitFooterChipShapeKey", "function footerBranchPickerRenderKey");
 const inPlaceUpdate = between(app, "function updateGitFooterChipNodeValue", "let gitFooterRenderCache");
+const providerUsageNormalization = between(app, "function normalizeFooterProviderUsageWindow", "function currentGitFooterCacheCwd");
+const claudeUsageSync = between(app, "function claudeUsageWindowFromProvider", "function claudeUsageResetDate");
+const claudeUsageRefresh = between(app, "async function refreshClaudeUsage", "function scheduleRefreshClaudeUsage");
 
 assert.match(parser, /x-codex-primary-window-minutes/, "Codex parser should read the primary window duration");
 assert.match(parser, /x-codex-secondary-window-minutes/, "Codex parser should read the secondary window duration");
@@ -31,7 +34,19 @@ assert.match(parser, /providerUsageWindows\(usage\)[\s\S]*\.map\(\(window\)/, "f
 assert.match(producer, /usageWindows\?:\s*\{\s*primaryPercent\?:\s*number;\s*secondaryPercent\?:\s*number;/s, "producer should type each usage window as independently optional");
 assert.match(producer, /providerUsage\.primary \? \{ primaryPercent: providerUsage\.primary\.usedPercent \}/, "Usage chip should publish an available primary percentage");
 assert.match(producer, /providerUsage\.secondary \? \{ secondaryPercent: providerUsage\.secondary\.usedPercent \}/, "Usage chip should publish an available secondary percentage");
+assert.match(producer, /\.\.\.\(providerUsage \? \{ providerUsage \} : \{\}\)/, "footer payload should publish structured provider usage independently of Usage-chip visibility");
+assert.match(producer, /latestProviderUsage = usage \? \{ \.\.\.usage, capturedAt: Date\.now\(\) \} : null;/, "provider-response capture should timestamp fresh usage snapshots");
 assert.match(app, /usage:\s*"Provider subscription usage\.[^"]*every available provider-reported rate window\./, "Usage tooltip should explain that partial provider windows remain visible");
+
+assert.match(providerUsageNormalization, /value\.provider !== "anthropic" && value\.provider !== "openai-codex"/, "consumer should allow only supported provider-usage sources");
+assert.match(providerUsageNormalization, /normalizeFooterProviderUsageWindow\(value\.primary\)[\s\S]*normalizeFooterProviderUsageWindow\(value\.secondary\)/, "consumer should normalize both structured provider windows without parsing display text");
+assert.match(app, /const providerUsage = normalizeFooterProviderUsage\(parsed\.providerUsage\);[\s\S]*\{ providerUsage \}/, "footer payload parsing should retain normalized provider usage metadata");
+assert.match(claudeUsageSync, /providerUsage\?\.provider !== "anthropic"[\s\S]*source: "git-footer-status-provider-headers"[\s\S]*windows/, "Claude Usage should consume the same live Anthropic header snapshot as the footer");
+assert.match(claudeUsageSync, /capturedAt \+ resetAfterSeconds \* 1000/, "relative reset times should be anchored to provider capture time instead of drifting on each render");
+assert.match(claudeUsageRefresh, /if \(!forceCli && syncClaudeUsageFromGitFooterPayload\(\)\) return;/, "scheduled Claude refreshes should prefer the live footer snapshot");
+assert.match(app, /if \(footerPayload\) syncClaudeUsageFromGitFooterPayload\(footerPayload\);/, "incoming footer status should update the Claude Usage panel immediately");
+assert.match(app, /function applyOptimisticGitFooterBranch[\s\S]*payload\.providerUsage \? \{ providerUsage: payload\.providerUsage \}/, "optimistic branch updates should preserve the provider snapshot used by Claude Usage");
+assert.match(app, /refreshClaudeUsage\(\{ forceCli: true \}\)/, "the explicit Refresh usage button should retain the CLI fallback path");
 
 assert.match(usageNormalization, /value\.usageWindows\.primaryPercent/, "consumer should read structured primary metadata");
 assert.match(usageNormalization, /value\.usageWindows\.secondaryPercent/, "consumer should read structured secondary metadata");

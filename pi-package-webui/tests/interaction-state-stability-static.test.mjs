@@ -227,7 +227,9 @@ assert.match(updateTextSurface, /_transcriptTextNode[\s\S]*node\.appendData\(val
 // Stable committed blocks and a bounded mutable tail.
 assert.match(reconcileMarkdownSurface, /if \(boundary > state\.stableText\.length\)/, "committed blocks must never be re-rendered for append-only input");
 assert.match(reconcileMarkdownSurface, /for \(const node of state\.tailNodes\) node\.remove\(\)/, "only the mutable tail may be detached during streaming");
-assert.match(reconcileMarkdownSurface, /const diverged = !!state && !value\.startsWith\(state\.stableText\);[\s\S]*invalidateSelection: diverged/, "authoritative divergence must explicitly invalidate selection rather than silently rebuilding");
+assert.match(reconcileMarkdownSurface, /const diverged = !!state && !value\.startsWith\(state\.value\);[\s\S]*invalidateSelection: diverged/, "authoritative divergence must compare the whole previous value and explicitly invalidate selection");
+assert.match(reconcileMarkdownSurface, /canReuseLiveTail[\s\S]*appendLiveTail\(state\.tailNodes, state\.tailText, tail, boundaryInfo\)/, "open fences and bounded plain tails must append into their mounted live nodes");
+assert.match(reconcileMarkdownSurface, /promotesMountedTail[\s\S]*ownBlocks\(state\.tailNodes[\s\S]*state\.tailNodes = \[\]/, "a newly stable mounted tail must be promoted without detaching its DOM");
 
 // Live settlement adoption.
 assert.match(authoritativeAssistantTextForAdoption, /if \(finalParts\.length !== 1\) return null;/, "multi-part settlement must not be fuzzy-adopted onto a single live surface");

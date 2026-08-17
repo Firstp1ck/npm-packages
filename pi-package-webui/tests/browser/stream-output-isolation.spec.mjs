@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:net";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { cpus, hostname, release, totalmem } from "node:os";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -76,7 +78,7 @@ async function waitForPhase(runId, phase) {
 
 async function assertFixtureContract(runId, mode, scenario = "standard") {
   const entries = await waitForPhase(runId, scenario === "abort" ? "abort-ready" : "settled");
-  const textDeltas = entries.filter((entry) => entry.isolationPhase === "raw" && entry.type === "message_update" && entry.assistantMessageEventType === "text_delta");
+  const textDeltas = entries.filter((entry) => entry.isolationPhase === "raw" && entry.type === "message_update" && entry.assistantMessageEventType === "text_delta" && Number.isInteger(entry.isolationDeltaIndex));
   const expectedCount = scenario === "abort" ? 500 : deltaCount;
   assert.equal(textDeltas.length, expectedCount, `${mode}/${scenario} fixture must emit the expected non-empty text deltas`);
   assert.deepEqual(textDeltas.map((entry) => entry.isolationDeltaIndex), expectedIndexes.slice(0, expectedCount));
@@ -177,6 +179,7 @@ async function installIsolationInstrumentation(page, { pauseChat = false } = {})
     };
     const underTranscript = (node) => (node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement)?.closest?.("#chat") !== null;
     const allowedFollowMutation = (record) => record.type === "attributes" && record.attributeName === "hidden" && record.target === document.querySelector("#jumpToLatestButton");
+    const allowedElapsedMetadataMutation = (record) => record.type === "childList" && record.target?.matches?.("span.run-indicator-meta") === true;
     const scrollNodes = [...document.querySelectorAll("*")].filter((node) => {
       if (node.closest?.("#chat")) return false;
       return node === document.scrollingElement || node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth || node.scrollTop !== 0 || node.scrollLeft !== 0;
@@ -185,6 +188,7 @@ async function installIsolationInstrumentation(page, { pauseChat = false } = {})
     const proof = {
       allowedMutations: { attributes: 0, characterData: 0, childList: 0 },
       allowedFollowMutations: 0,
+      allowedElapsedMetadataMutations: 0,
       forbiddenMutations: { attributes: 0, characterData: 0, childList: 0 },
       forbiddenMutationExamples: [],
       focusEvents: [], focusCalls: [], scrollIntoViewCalls: [], fetchCalls: [], eventSourceConstructions: [],
@@ -202,6 +206,7 @@ async function installIsolationInstrumentation(page, { pauseChat = false } = {})
       for (const record of records) {
         if (underTranscript(record.target)) proof.allowedMutations[record.type] += 1;
         else if (allowedFollowMutation(record)) proof.allowedFollowMutations += 1;
+        else if (allowedElapsedMetadataMutation(record)) proof.allowedElapsedMetadataMutations += 1;
         else {
           proof.forbiddenMutations[record.type] += 1;
           if (proof.forbiddenMutationExamples.length < 20) proof.forbiddenMutationExamples.push(`${record.type}:${describe(record.target)}:${record.attributeName || ""}`);
@@ -244,6 +249,7 @@ async function finishIsolationInstrumentation(page) {
     return {
       allowedMutations: proof.allowedMutations,
       allowedFollowMutations: proof.allowedFollowMutations,
+      allowedElapsedMetadataMutations: proof.allowedElapsedMetadataMutations,
       forbiddenMutations: proof.forbiddenMutations,
       forbiddenMutationExamples: proof.forbiddenMutationExamples,
       focusEvents: proof.focusEvents,
@@ -266,6 +272,7 @@ async function finishIsolationInstrumentation(page) {
         counters: { ...ledger.counters },
         receivedIndexes: [...ledger.receivedIndexes],
         appliedIndexes: [...ledger.appliedIndexes],
+        records: ledger.records.map((record) => ({ ...record })),
       },
     };
   });
@@ -288,6 +295,12 @@ async function holdIndependentPollResponses(page) {
     await page.unroute(matcher, handler);
     await Promise.allSettled(held.splice(0).map((route) => route.continue()));
   };
+}
+
+function percentileNearestRank(values, percentile) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.max(0, Math.ceil(percentile * sorted.length) - 1)];
 }
 
 function assertIsolationMetrics(metrics, networkRequests, surface, expectedSelection, expectedIndexCount = deltaCount) {
@@ -321,7 +334,12 @@ async function startFixture(page, mode, scenario = "standard") {
     data: { message: `fixture stream isolation ${mode} ${scenario}`, requestId: `stream-isolation-${mode}-${scenario}-${Date.now()}` },
   });
   assert.equal(response.data?.deltaCount, deltaCount);
-  assert.equal(response.data?.finalText, expectedFinalText);
+  if (scenario !== "long-transcript") assert.equal(response.data?.finalText, expectedFinalText);
+  else {
+    assert.equal(response.data?.retainedMessageCount, 1000);
+    assert.ok(response.data?.finalText?.startsWith("```js\nconst v0000 = 0;\n"));
+    assert.ok(response.data?.finalText?.endsWith("```\nLONG-STREAM-TAIL"));
+  }
   await waitForPhase(response.data.runId, "ready");
   await expect(page.locator("#abortButton")).toBeVisible();
   await expect(page.locator(".message.toolExecution").last()).toContainText("read");
@@ -342,7 +360,7 @@ async function startFixture(page, mode, scenario = "standard") {
   // stream-delta-caused chrome mutation in the observed window.
   await expect(page.locator("#optionalFeatureMigrationSurface")).toBeHidden();
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  return { tabId, runId: response.data.runId };
+  return { tabId, runId: response.data.runId, finalText: response.data.finalText, retainedMessageCount: response.data.retainedMessageCount || 0 };
 }
 
 async function continueFixture(tabId, runId) {
@@ -444,6 +462,54 @@ test("desktop compact isolation preserves paused reader and modal", async ({ pag
 test("mobile 390x844 normal isolation", async ({ page }) => runIsolationCase(page, { mode: "normal", viewport: { width: 390, height: 844 }, label: "mobile-390" }));
 test("mobile 320x568 compact isolation", async ({ page }) => runIsolationCase(page, { mode: "compact", viewport: { width: 320, height: 568 }, pauseChat: true, label: "mobile-320" }));
 
+test("Chromium streaming baseline: hidden output reconciles exactly on foreground", async ({ page }) => {
+  await serverApi("/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
+  const expectedSelection = await prepareInteractiveState(page, { viewport: { width: 1280, height: 720 }, pauseChat: true });
+  const completed = page.locator(".message.assistant:not(.streaming) .markdown-body", { hasText: "ISOLATION-TEXT-TAIL" });
+  const completedBefore = await completed.count();
+  const { tabId, runId } = await startFixture(page, "normal", "background");
+  const before = await page.evaluate(() => ({
+    activeElement: document.activeElement?.id || "",
+    selection: window.getSelection()?.toString() || "",
+    chatTop: document.querySelector("#chat")?.scrollTop || 0,
+  }));
+
+  await page.evaluate(() => {
+    window.__ws0VisibilityState = "hidden";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => window.__ws0VisibilityState,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.waitForTimeout(200);
+  await continueFixture(tabId, runId);
+  await waitForPhase(runId, "settled");
+  await expect(completed).toHaveCount(completedBefore);
+
+  await page.evaluate(() => {
+    window.__ws0VisibilityState = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(completed).toHaveCount(completedBefore + 1);
+  await waitForSettlement(page, tabId);
+  const after = await page.evaluate(() => {
+    const selection = window.getSelection();
+    return {
+      activeElement: document.activeElement?.id || "",
+      selection: selection?.toString() || "",
+      selectionConnected: selection?.anchorNode?.isConnected === true && selection?.focusNode?.isConnected === true,
+      chatTop: document.querySelector("#chat")?.scrollTop || 0,
+    };
+  });
+  assert.equal(before.activeElement, "promptInput");
+  assert.equal(after.activeElement, before.activeElement, "foreground reconciliation must preserve composer focus");
+  assert.equal(after.selection, expectedSelection, "foreground reconciliation must preserve exact selected text");
+  assert.equal(after.selectionConnected, true);
+  assert.equal(after.chatTop, before.chatTop, "foreground reconciliation must preserve detached scroll position exactly");
+  await assertFixtureContract(runId, "normal", "background");
+});
+
 test("abort flushes and preserves the partial text tail before lifecycle chrome settles", async ({ page }) => {
   await serverApi("/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
   const expectedSelection = await prepareInteractiveState(page, { viewport: { width: 1280, height: 720 } });
@@ -507,4 +573,243 @@ test("retry compaction reconnect and settlement retain lifecycle control identit
   await expect(page.locator("#followUpButton")).toBeHidden();
   assert.equal(await steer.evaluate((node) => node.isConnected), true, "Steer must retain node identity through settlement");
   assert.equal(await followUp.evaluate((node) => node.isConnected), true, "Follow-up must retain node identity through settlement");
+});
+
+test("WS3 paced cadence and slow-renderer queue pressure remain bounded", async ({ page }) => {
+  test.setTimeout(120_000);
+  await serverApi("/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
+  const expectedSelection = await prepareInteractiveState(page, { viewport: { width: 1280, height: 720 }, pauseChat: true });
+  const { tabId, runId, finalText } = await startFixture(page, "normal", "paced-pressure");
+  const releaseIndependentPolls = await holdIndependentPollResponses(page);
+  const networkRequests = [];
+  const onRequest = (request) => networkRequests.push(`${request.method()} ${request.url()}`);
+  page.on("request", onRequest);
+  await installIsolationInstrumentation(page, { pauseChat: true });
+  await page.evaluate(() => {
+    const original = window.requestAnimationFrame.bind(window);
+    window.__ws3OriginalRequestAnimationFrame = original;
+    window.requestAnimationFrame = (callback) => original((timestamp) => {
+      const deadline = performance.now() + 8;
+      while (performance.now() < deadline) { /* deterministic slow-renderer pressure */ }
+      callback(timestamp);
+    });
+  });
+
+  await continueFixture(tabId, runId);
+  await waitForPhase(runId, "text-complete");
+  await expect.poll(() => page.evaluate(() => window.__piStreamIsolationDebug?.appliedIndexes?.length || 0)).toBe(deltaCount);
+  const liveMarkdown = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  await expect(liveMarkdown).toContainText("ISOLATION-TEXT-TAIL");
+  assert.equal((await liveMarkdown.textContent()).trim(), finalText, "paced pressure must end on the authoritative exact snapshot");
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  const metrics = await finishIsolationInstrumentation(page);
+  await page.evaluate(() => {
+    if (window.__ws3OriginalRequestAnimationFrame) window.requestAnimationFrame = window.__ws3OriginalRequestAnimationFrame;
+    delete window.__ws3OriginalRequestAnimationFrame;
+  });
+  page.off("request", onRequest);
+  await releaseIndependentPolls();
+
+  assert.deepEqual(metrics.forbiddenMutations, { attributes: 0, characterData: 0, childList: 0 }, metrics.forbiddenMutationExamples.join(", "));
+  assert.deepEqual(metrics.focusEvents, []);
+  assert.deepEqual(metrics.focusCalls, []);
+  assert.equal(metrics.activeElementChanged, false);
+  assert.deepEqual(metrics.identityChanges, []);
+  assert.deepEqual(metrics.scrollChanges, []);
+  assert.equal(metrics.chatTopAfter, metrics.chatTopBefore, "slow rendering must not move a detached reader");
+  assert.equal(metrics.selectionBefore, expectedSelection);
+  assert.equal(metrics.selectionAfter, expectedSelection);
+  assert.equal(metrics.selectionNodesConnected, true);
+  assert.deepEqual(metrics.debug.receivedIndexes, expectedIndexes);
+  assert.deepEqual(metrics.debug.appliedIndexes, expectedIndexes);
+  assert.deepEqual(networkRequests.filter((request) => !isIndependentPollRequest(request.split(" ").slice(1).join(" "))), []);
+
+  const counters = metrics.debug.counters;
+  assert.ok(counters.renderSchedulerFlushes > 2, "paced output must exercise sustained normal formatting");
+  assert.ok(counters.renderSchedulerDefers > 0, "paced output must defer at least one latest-wins render");
+  assert.ok(counters.renderSchedulerFlushes < counters.appliedEvents, "formatting publishes must remain below applied transport sources");
+  assert.ok(counters.pressureDeferred > 0, "the first queue-pressure drain must leave the EventSource callback");
+  assert.ok(counters.pressureSynchronousFallbacks > 0, "repeated same-task pressure must exercise the synchronous lossless fallback");
+  assert.ok(counters.highWaterPendingCount <= 129, `primary plus urgent entry should cap at 129, got ${counters.highWaterPendingCount}`);
+  assert.ok(counters.highWaterPendingBytes <= 2 * 256 * 1024, "primary plus urgent bytes must remain explicitly bounded");
+  assert.equal(counters.focusLossNearStreamBatch, 0);
+  assert.equal(counters.detachedScrollMoves, 0);
+
+  const records = metrics.debug.records;
+  const paintMs = records.filter((record) => record.type === "paint-opportunity").map((record) => Number(record.ms)).filter(Number.isFinite);
+  const longTaskMs = records.filter((record) => record.type === "longtask").map((record) => Number(record.ms)).filter(Number.isFinite);
+  const longFrameMs = records.filter((record) => record.type === "long-animation-frame").map((record) => Number(record.ms)).filter(Number.isFinite);
+  console.log(`WS3_STREAMING_CANDIDATE ${JSON.stringify({
+    scenario: {
+      sourceIndexedTextDeltas: deltaCount,
+      finalTextBytesUtf8: Buffer.byteLength(finalText),
+      finalTextSha256: createHash("sha256").update(finalText).digest("hex"),
+      injectedFrameDelayMs: 8,
+      selectedCadenceMs: 40,
+    },
+    eventAndRenderCounts: {
+      receivedEvents: counters.receivedEvents,
+      appliedEvents: counters.appliedEvents,
+      sinkCalls: counters.sinkCalls,
+      controllerBatches: counters.batches,
+      renderSchedulerFlushes: counters.renderSchedulerFlushes,
+      renderSchedulerDefers: counters.renderSchedulerDefers,
+      markdownCommits: counters.markdownCommits,
+    },
+    pressure: {
+      overflows: counters.overflows,
+      deferred: counters.pressureDeferred,
+      synchronousFallbacks: counters.pressureSynchronousFallbacks,
+      queueHighWaterEntries: counters.highWaterPendingCount,
+      queueHighWaterBytes: counters.highWaterPendingBytes,
+    },
+    receiptToPaintMs: {
+      samples: paintMs.length,
+      p95: percentileNearestRank(paintMs, 0.95),
+      max: paintMs.length ? Math.max(...paintMs) : null,
+    },
+    longestMs: {
+      batchDrain: counters.batchDrainMaxMs,
+      markdownCommit: counters.markdownCommitMaxMs,
+      longTask: longTaskMs.length ? Math.max(...longTaskMs) : null,
+      longAnimationFrame: longFrameMs.length ? Math.max(...longFrameMs) : null,
+    },
+    continuity: {
+      focusLossNearStreamBatch: counters.focusLossNearStreamBatch,
+      detachedScrollMoves: counters.detachedScrollMoves,
+    },
+  })}`);
+
+  await waitForSettlement(page, tabId);
+  await assertFixtureContract(runId, "normal", "paced-pressure");
+});
+
+test("Chromium streaming baseline: long transcript plus active fenced stream", async ({ page, browser }) => {
+  test.setTimeout(120_000);
+  await serverApi("/api/webui-output-mode", { method: "PUT", data: { outputModeDefault: "normal" } });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(`${baseURL}/?streamIsolationDebug=1`);
+  await expect(page.locator("#promptInput")).toBeVisible();
+  const initialTabId = await activeTabId(page);
+  const populated = await serverApi(`/api/prompt?tab=${encodeURIComponent(initialTabId)}`, {
+    method: "POST",
+    data: { message: "fixture stream isolation populate long transcript", requestId: `stream-isolation-populate-${Date.now()}` },
+  });
+  assert.equal(populated.data?.retainedMessageCount, 1000);
+
+  // Load the deterministic retained transcript before the active stream starts.
+  await page.reload();
+  await expect(page.locator("#promptInput")).toBeVisible();
+  const retained = page.locator("#chat .message", { hasText: /LONG-TRANSCRIPT-\d{4}/ });
+  await expect(retained).toHaveCount(1000);
+  await expect(retained.first()).toContainText("LONG-TRANSCRIPT-0000");
+  await expect(retained.last()).toContainText("LONG-TRANSCRIPT-0999");
+  const { tabId, runId, finalText, retainedMessageCount } = await startFixture(page, "normal", "long-transcript");
+  assert.equal(retainedMessageCount, 1000);
+
+  const pausedTop = await page.locator("#chat").evaluate((node) => {
+    node.style.scrollBehavior = "auto";
+    node.scrollTop = Math.max(1, Math.floor((node.scrollHeight - node.clientHeight) / 3));
+    node.dispatchEvent(new WheelEvent("wheel", { deltaY: -160, bubbles: true }));
+    node.dispatchEvent(new Event("scroll", { bubbles: true }));
+    node.style.removeProperty("scroll-behavior");
+    return node.scrollTop;
+  });
+  assert.ok(pausedTop > 0, "long-transcript baseline requires a detached reader position");
+  await page.locator("#promptInput").focus();
+  const expectedSelection = await selectPreservedText(page);
+  const releaseIndependentPolls = await holdIndependentPollResponses(page);
+  const networkRequests = [];
+  const onRequest = (request) => networkRequests.push(`${request.method()} ${request.url()}`);
+  page.on("request", onRequest);
+  await installIsolationInstrumentation(page, { pauseChat: true });
+  await continueFixture(tabId, runId);
+  await waitForPhase(runId, "raw-start");
+  await waitForPhase(runId, "text-complete");
+  await expect.poll(() => page.evaluate(() => window.__piStreamIsolationDebug?.appliedIndexes?.length || 0)).toBe(deltaCount);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  // The Markdown renderer intentionally omits the delimiter-adjacent trailing
+  // newline from the code text node; every source character before it remains
+  // exact and the authoritative raw-output hash below covers the full string.
+  const expectedCode = finalText.slice("```js\n".length, finalText.lastIndexOf("```\n")).replace(/\n$/, "");
+  const liveMarkdown = page.locator(".message.assistant.streaming .streaming-markdown").last();
+  await expect(liveMarkdown).toContainText("LONG-STREAM-TAIL");
+  assert.equal(await liveMarkdown.locator("code").textContent(), expectedCode, "live fenced source must remain exact");
+
+  const metrics = await finishIsolationInstrumentation(page);
+  page.off("request", onRequest);
+  await releaseIndependentPolls();
+  assertIsolationMetrics(metrics, networkRequests, "long-transcript-active-stream", expectedSelection);
+  assert.equal(metrics.debug.counters.focusLossNearStreamBatch, 0);
+  assert.equal(metrics.debug.counters.detachedScrollMoves, 0);
+  assert.ok(metrics.debug.counters.transcriptNodeMax >= 1000, "node ledger must observe the retained transcript");
+  assert.ok(metrics.debug.counters.currentMessageNodeMax > 0, "node ledger must observe the active stream");
+  assert.ok(metrics.debug.counters.deriveCalls > 0, "derived-text diagnostics must be exercised");
+  assert.ok(metrics.debug.counters.markdownCommits > 0, "Markdown diagnostics must be exercised");
+  assert.equal(metrics.debug.counters.tokenizeCalls, 1, "the live open fence must skip accumulated syntax tokenization and highlight authoritatively once");
+
+  const records = metrics.debug.records;
+  const markdownRecords = records.filter((record) => record.type === "markdown-commit");
+  const tokenizeRecords = records.filter((record) => record.type === "tokenize");
+  const boundaryScannedChars = markdownRecords.reduce((sum, record) => sum + (Number(record.boundaryScannedChars) || 0), 0);
+  assert.equal(tokenizeRecords.length, 1, "only the authoritative fence close/completion may invoke the tokenizer");
+  assert.ok(boundaryScannedChars <= finalText.length, "incremental boundary work must not rescan the committed prefix");
+  const paintMs = records.filter((record) => record.type === "paint-opportunity").map((record) => Number(record.ms)).filter(Number.isFinite);
+  const markdownMs = markdownRecords.map((record) => Number(record.ms)).filter(Number.isFinite);
+  const tokenizeMs = tokenizeRecords.map((record) => Number(record.ms)).filter(Number.isFinite);
+  const longTaskMs = records.filter((record) => record.type === "longtask").map((record) => Number(record.ms)).filter(Number.isFinite);
+  const longFrameMs = records.filter((record) => record.type === "long-animation-frame").map((record) => Number(record.ms)).filter(Number.isFinite);
+  const environment = await page.evaluate(() => ({
+    userAgent: navigator.userAgent,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    deviceMemoryGiB: navigator.deviceMemory ?? null,
+    viewport: { width: innerWidth, height: innerHeight, devicePixelRatio },
+  }));
+  const counters = metrics.debug.counters;
+  const baseline = {
+    scenario: { retainedMessages: retainedMessageCount, sourceDeltaEvents: deltaCount, finalTextBytesUtf8: Buffer.byteLength(finalText), finalTextSha256: createHash("sha256").update(finalText).digest("hex") },
+    eventAndBatchCounts: { receivedEvents: counters.receivedEvents, appliedEvents: counters.appliedEvents, sinkCalls: counters.sinkCalls, batches: counters.batches, barriers: counters.barriers, overflows: counters.overflows },
+    receiptToPaintMs: { samples: paintMs.length, p50: percentileNearestRank(paintMs, 0.50), p95: percentileNearestRank(paintMs, 0.95), max: paintMs.length ? Math.max(...paintMs) : null },
+    longestCostsMs: { batchReceiptAge: counters.batchLatencyMaxMs, batchDrain: counters.batchDrainMaxMs, derive: counters.deriveMaxMs, tokenize: counters.tokenizeMaxMs, markdownCommit: counters.markdownCommitMaxMs, longTask: longTaskMs.length ? Math.max(...longTaskMs) : null, longAnimationFrame: longFrameMs.length ? Math.max(...longFrameMs) : null },
+    costInputs: { deriveCalls: counters.deriveCalls, deriveMaxBytes: counters.deriveMaxBytes, tokenizeCalls: counters.tokenizeCalls, tokenizeMaxBytes: counters.tokenizeMaxBytes, markdownCommits: counters.markdownCommits, tailMaxBytes: counters.tailMaxBytes },
+    queueHighWater: { entries: counters.highWaterPendingCount, bytes: counters.highWaterPendingBytes },
+    nodeMax: { transcript: counters.transcriptNodeMax, currentMessage: counters.currentMessageNodeMax },
+    continuity: { focusLossNearStreamBatch: counters.focusLossNearStreamBatch, detachedScrollMoves: counters.detachedScrollMoves },
+    environment: {
+      browserName: "chromium",
+      browserVersion: browser.version(),
+      ...environment,
+      node: process.version,
+      platform: process.platform,
+      architecture: process.arch,
+      hostname: hostname(),
+      kernelRelease: release(),
+      cpuModel: cpus()[0]?.model || "unknown",
+      logicalCpuCount: cpus().length,
+      totalMemoryBytes: totalmem(),
+    },
+  };
+  console.log(`WS0_STREAMING_BASELINE ${JSON.stringify(baseline)}`);
+  console.log(`WS2_STREAMING_CANDIDATE ${JSON.stringify({
+    ...baseline,
+    incrementalMarkdown: {
+      boundaryScannedChars,
+      tokenizeCalls: tokenizeRecords.length,
+      authoritativeCommits: markdownRecords.filter((record) => record.authoritative).length,
+      reusedTailCommits: markdownRecords.filter((record) => record.reusedTail).length,
+      markdownTotalMs: markdownMs.reduce((sum, value) => sum + value, 0),
+      tokenizeTotalMs: tokenizeMs.reduce((sum, value) => sum + value, 0),
+    },
+  })}`);
+
+  await expect.poll(
+    async () => (await serverApi(`/api/state?tab=${encodeURIComponent(tabId)}`)).data?.isStreaming,
+    { timeout: 30_000 },
+  ).toBe(false);
+  const settled = page.locator(".message.assistant:not(.streaming) .markdown-body", { hasText: "LONG-STREAM-TAIL" }).last();
+  await expect(settled).toContainText("LONG-STREAM-TAIL");
+  assert.equal(await settled.locator("code").textContent(), expectedCode, "settled fenced source must remain exact");
+  await assertFixtureContract(runId, "normal", "long-transcript");
 });
