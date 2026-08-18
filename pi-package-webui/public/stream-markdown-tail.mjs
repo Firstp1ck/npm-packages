@@ -24,6 +24,7 @@ function initialState() {
     inFence: false,
     fenceContentOffset: -1,
     fenceLanguage: "",
+    fenceTicks: 0,
     scannedChars: 0,
     fallback: false,
     ...initialLineState(),
@@ -76,11 +77,12 @@ function advanceLineCharacter(state, character) {
   }
 
   if (state.lineStage === LINE_TICKS) {
-    if (character === "`" && state.lineTicks < 3) {
+    // CommonMark fences are three OR MORE backticks (```` ````md ```` wraps nested ``` blocks).
+    if (character === "`") {
       state.lineTicks += 1;
       return;
     }
-    if (state.lineTicks !== 3) {
+    if (state.lineTicks < 3) {
       invalidateLineFence(state);
       return;
     }
@@ -95,8 +97,9 @@ function advanceLineCharacter(state, character) {
 }
 
 function lineIsFenceDelimiter(state) {
-  if (state.lineTicks !== 3 || state.lineStage === LINE_INVALID) return false;
-  if (state.inFence) return state.lineStage === LINE_TICKS || state.lineStage === LINE_AFTER_TICKS;
+  if (state.lineTicks < 3 || state.lineStage === LINE_INVALID) return false;
+  // A closing fence needs at least as many backticks as the opening one.
+  if (state.inFence) return state.lineTicks >= (state.fenceTicks || 3) && (state.lineStage === LINE_TICKS || state.lineStage === LINE_AFTER_TICKS);
   return [LINE_TICKS, LINE_AFTER_TICKS, LINE_LANGUAGE, LINE_TRAILING].includes(state.lineStage);
 }
 
@@ -108,6 +111,7 @@ function finishLine(state, nextOffset) {
       state.inFence = false;
       state.fenceContentOffset = -1;
       state.fenceLanguage = "";
+      state.fenceTicks = 0;
       // A closed fence is an independently stable block. Committing it here
       // prevents later prose from causing the completed code to tokenize again.
       state.boundary = nextOffset;
@@ -116,6 +120,7 @@ function finishLine(state, nextOffset) {
     state.inFence = true;
     state.fenceContentOffset = nextOffset;
     state.fenceLanguage = state.lineLanguage;
+    state.fenceTicks = state.lineTicks;
   }
   if (!state.inFence && blank) state.boundary = nextOffset;
   Object.assign(state, initialLineState());

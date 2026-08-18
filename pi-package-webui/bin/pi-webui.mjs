@@ -10,7 +10,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { brotliCompress, constants as zlibConstants, gzip } from "node:zlib";
+import { brotliCompress, brotliCompressSync, constants as zlibConstants, gzip, gzipSync } from "node:zlib";
 import { SessionManager, SettingsManager, DefaultPackageManager } from "@earendil-works/pi-coding-agent";
 import {
   ThemeContractError,
@@ -1143,14 +1143,37 @@ class PiRpcProcess {
   }
 }
 
+// JSON responses are compact and, when the client accepts it, compressed. Boot alone fetches
+// ~1.5 MB of JSON (models, commands, tools, subagent config); over remote access or a phone the
+// pretty-printed uncompressed payloads were seconds of transfer per reload.
+const JSON_COMPRESSION_MIN_BYTES = 2048;
+
 function sendJson(res, statusCode, payload, headers = {}) {
-  const body = JSON.stringify(payload, null, 2);
-  res.writeHead(statusCode, {
+  const raw = Buffer.from(JSON.stringify(payload));
+  const responseHeaders = {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
     ...headers,
-  });
+  };
+  let body = raw;
+  const encoding = raw.length >= JSON_COMPRESSION_MIN_BYTES ? res.piAcceptedEncoding || "" : "";
+  if (encoding === "br") {
+    body = brotliCompressSync(raw, {
+      params: {
+        [zlibConstants.BROTLI_PARAM_QUALITY]: 4,
+        [zlibConstants.BROTLI_PARAM_SIZE_HINT]: raw.length,
+      },
+    });
+    responseHeaders["content-encoding"] = "br";
+    responseHeaders.vary = "Accept-Encoding";
+  } else if (encoding === "gzip") {
+    body = gzipSync(raw, { level: 5 });
+    responseHeaders["content-encoding"] = "gzip";
+    responseHeaders.vary = "Accept-Encoding";
+  }
+  responseHeaders["content-length"] = body.length;
+  res.writeHead(statusCode, responseHeaders);
   res.end(body);
 }
 
@@ -14173,6 +14196,32 @@ async function deleteFileSystemEntryData(tab, body = {}) {
   };
 }
 
+// Create an empty file or a directory inside the tab's working directory (Files panel
+// "New file…" / "New folder…"). Never overwrites; parents must already exist.
+async function createFileSystemEntryData(tab, body = {}) {
+  const kind = body.type === "directory" ? "directory" : "file";
+  const resolved = await resolveWorkspacePath(tab, body.path || body.filePath || "", { mustExist: false });
+  if (resolved.targetPath === resolved.root) throw makeHttpError(400, "A name is required");
+  if (resolved.info) throw makeHttpError(409, `Already exists: ${resolved.relative}`);
+  const parentPath = path.dirname(resolved.targetPath);
+  const parentInfo = await stat(parentPath).catch(() => null);
+  if (!parentInfo?.isDirectory?.()) throw makeHttpError(404, `Parent folder not found: ${workspaceRelativePath(resolved.root, parentPath) || "."}`);
+  const realParent = await realpath(parentPath).catch(() => parentPath);
+  if (realParent !== resolved.realRoot && !pathInside(resolved.realRoot, realParent)) throw makeHttpError(403, "Parent folder escapes the active tab working directory");
+  if (kind === "directory") await mkdir(resolved.targetPath);
+  else await writeFile(resolved.targetPath, "", { encoding: "utf8", flag: "wx" });
+  const nextStats = await stat(resolved.targetPath);
+  return {
+    path: resolved.relative,
+    name: path.basename(resolved.targetPath),
+    type: kind,
+    parentPath: workspaceRelativePath(resolved.root, parentPath),
+    created: true,
+    size: nextStats.size,
+    mtimeMs: nextStats.mtimeMs,
+  };
+}
+
 async function moveFileSystemEntryData(tab, body = {}) {
   if (body.confirmed !== true) throw makeHttpError(409, "Moving files or directories requires confirmed: true");
   const source = await resolveWorkspacePath(tab, body.path || body.filePath || body.sourcePath || "");
@@ -15695,6 +15744,7 @@ async function handlePromptRequest(tab, body, req) {
 
 const server = createServer(async (req, res) => {
   try {
+    res.piAcceptedEncoding = acceptedStaticEncoding(req);
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     if (url.pathname === "/remote-auth" && req.method === "GET") {
@@ -15988,6 +16038,25 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const closed = await closeTabs(body.ids || body.tabIds || [], { allowEmpty: body.allowEmpty === true });
       sendJson(res, 200, { ok: true, data: { closedIds: closed.map((tab) => tab.id), tabs: listTabs(), activeTabId: firstTab()?.id || null } });
+      return;
+    }
+
+    // Reopen a recently closed tab (same cwd, title, and persisted session) — the server-side
+    // record is used so clients cannot point Pi at arbitrary session files.
+    if (url.pathname === "/api/tabs/reopen" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const wanted = String(body.id || "").trim();
+      const index = closedRestorableTabs.findIndex((item) => item.id === wanted);
+      if (!wanted || index === -1) throw makeHttpError(404, "That closed tab can no longer be reopened");
+      const [descriptor] = closedRestorableTabs.splice(index, 1);
+      const tab = await createTab({
+        title: descriptor.titleSource === "explicit" || descriptor.titleSource === "auto" ? descriptor.title : undefined,
+        titleSource: descriptor.titleSource,
+        conversationStarted: descriptor.conversationStarted,
+        cwd: descriptor.cwd,
+        sessionFile: descriptor.sessionFile,
+      });
+      sendJson(res, 201, { ok: true, data: { tab: tabMeta(tab), tabs: listTabs() } });
       return;
     }
 
@@ -16464,6 +16533,15 @@ const server = createServer(async (req, res) => {
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "file deletion is blocked");
       sendJson(res, 200, { ok: true, data: await deleteFileSystemEntryData(tab, body) });
+      return;
+    }
+
+    if (url.pathname === "/api/files/create" && req.method === "POST") {
+      requireLocalhostRoute(req, url.pathname);
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      ensureNaturalConversationRouteAllowed(tab, "file creation is blocked");
+      sendJson(res, 201, { ok: true, data: await createFileSystemEntryData(tab, body) });
       return;
     }
 

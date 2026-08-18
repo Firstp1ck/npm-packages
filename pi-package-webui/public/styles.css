@@ -352,7 +352,8 @@ body.terminal-split-open.file-viewer-open .workspace-column { grid-template-colu
 .layout > .side-panel-right { min-width: 0; min-height: 0; }
 .layout > .side-panel-left[hidden],
 .layout > .side-panel-right[hidden] { display: none !important; }
-body:not(.control-deck-left):not(.control-deck-both) .layout { grid-template-columns: minmax(0, 1fr) minmax(20rem, var(--side-panel-right-width, var(--side-panel-width))); }
+/* :where() keeps this default at (0,1,1) so the collapsed/overlay rules below always win. */
+body:where(:not(.control-deck-left):not(.control-deck-both)) .layout { grid-template-columns: minmax(0, 1fr) minmax(20rem, var(--side-panel-right-width, var(--side-panel-width))); }
 body.control-deck-left .layout { grid-template-columns: minmax(20rem, var(--side-panel-left-width, 384px)) minmax(0, 1fr); }
 body.control-deck-both .layout { grid-template-columns: minmax(20rem, var(--side-panel-left-width, 384px)) minmax(0, 1fr) minmax(20rem, var(--side-panel-right-width, var(--side-panel-width))); }
 body.side-panel-right-collapsed.control-deck-right .layout,
@@ -1861,9 +1862,29 @@ body.control-deck-section-dragging .side-panel-empty-drop-target {
   padding-left: 0.3rem;
   border-left: 1px solid rgba(180, 190, 254, 0.14);
 }
+.git-side-panel-repository-header {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+.git-side-panel-repository-header > .git-side-panel-repository-toggle { flex: 1 1 auto; min-width: 0; }
+.git-side-panel-repository-header > .git-side-panel-overflow-button {
+  align-self: center;
+  margin-right: 0.3rem;
+  color: var(--ctp-subtext);
+}
+.git-side-panel-file > .git-side-panel-overflow-button {
+  width: 1.7rem;
+  min-width: 1.7rem;
+  min-height: 1.7rem;
+  color: var(--ctp-subtext);
+  opacity: 0.75;
+}
+.git-side-panel-file:hover > .git-side-panel-overflow-button,
+.git-side-panel-file:focus-within > .git-side-panel-overflow-button { opacity: 1; }
 .git-side-panel-file {
   display: grid;
-  grid-template-columns: 1.3rem minmax(5rem, 1fr) auto;
+  grid-template-columns: 1.3rem minmax(5rem, 1fr) auto auto;
   align-items: center;
   gap: 0.26rem;
   min-width: 0;
@@ -1948,10 +1969,12 @@ body.control-deck-section-dragging .side-panel-empty-drop-target {
 }
 .file-tree-toolbar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 0.55rem;
   align-items: start;
 }
+.text-prompt-dialog { width: min(34rem, calc(100vw - 2rem)); }
+.text-prompt-dialog .dialog-input { width: 100%; margin: 0.6rem 0 0.4rem; }
 .file-tree-toolbar strong {
   display: block;
   color: var(--ctp-text);
@@ -2421,6 +2444,12 @@ body.control-deck-section-dragging .side-panel-empty-drop-target {
   border-color: rgba(148, 226, 213, 0.28);
   font-weight: 800;
 }
+.control-action-row .control-apply-button.pending {
+  border-color: rgba(249, 226, 175, 0.75);
+  box-shadow: 0 0 0 1px rgba(249, 226, 175, 0.35), 0 0 0.9rem rgba(249, 226, 175, 0.25);
+  color: var(--ctp-yellow);
+}
+.control-action-row .control-apply-button.pending::after { content: " •"; }
 .control-action-row .control-apply-button:hover,
 .control-action-row .control-apply-button:focus-visible {
   color: #11111b;
@@ -3718,7 +3747,7 @@ body.control-deck-section-dragging .side-panel-empty-drop-target {
   border-radius: 999px;
   color: var(--ctp-blue);
   background: rgba(137, 180, 250, 0.08);
-  font-size: 0.58rem;
+  font-size: var(--text-xs);
   font-weight: 850;
   line-height: 1.2;
   text-overflow: ellipsis;
@@ -8466,7 +8495,12 @@ button.git-workflow-step:hover:not(:disabled) {
 }
 .message.streaming {
   outline: 1px solid rgba(148, 226, 213, 0.72);
-  box-shadow: 0 0 1.7rem var(--glow-teal), 0 0.8rem 2rem rgba(var(--ctp-crust-rgb), 0.4);
+  /* Streaming cards repaint on every token; keep the glow cheap (small blur, single layer). */
+  box-shadow: 0 0 0.6rem var(--glow-teal);
+}
+@media (max-width: 720px), (pointer: coarse) and (hover: none) {
+  .message { box-shadow: none; }
+  .message::before { box-shadow: none; }
 }
 .message.run-indicator-message {
   margin-bottom: 0.5rem;
@@ -8519,6 +8553,13 @@ button.git-workflow-step:hover:not(:disabled) {
   color: rgba(var(--ctp-text-rgb), 0.72);
   font-size: var(--text-xs);
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.run-indicator-elapsed {
+  flex: 0 0 auto;
+  color: rgba(var(--ctp-text-rgb), 0.62);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 @keyframes run-indicator-pulse {
@@ -8606,6 +8647,18 @@ button.git-workflow-step:hover:not(:disabled) {
   transition: transform 140ms ease;
 }
 .message-collapse[open] > summary.message-header::after { transform: rotate(90deg); }
+.thinking-disclosure > .message-header { cursor: pointer; flex-wrap: wrap; }
+.thinking-disclosure-preview {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-style: italic;
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thinking-disclosure[open] > .message-header > .thinking-disclosure-preview { display: none; }
 .message-collapse > .message-body {
   padding: 0 0.9rem 0.85rem;
   border-top: 1px solid rgba(249, 226, 175, 0.12);
@@ -10070,6 +10123,16 @@ button.composer-skill-tag:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
+.command-suggest-hint {
+  position: sticky;
+  bottom: 0;
+  padding: 0.32rem 0.75rem;
+  border-top: 1px solid rgba(180, 190, 254, 0.12);
+  background: rgba(var(--ctp-crust-rgb), 0.96);
+  color: rgba(var(--ctp-subtext-rgb), 0.78);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+}
 .command-suggest-empty {
   padding: 0.7rem 0.8rem;
   color: var(--muted);
@@ -10200,10 +10263,19 @@ body.composer-action-grid-enabled .composer-row [data-composer-action-id].compos
   background: linear-gradient(90deg, rgba(255,255,255,0.28), rgba(255,255,255,0.08));
   transform: scaleX(0);
   transform-origin: left center;
-  animation: abort-long-press-fill var(--abort-long-press-duration, 3000ms) linear forwards;
+  animation: abort-long-press-fill var(--abort-long-press-duration, 1200ms) linear forwards;
 }
 @keyframes abort-long-press-fill {
   to { transform: scaleX(1); }
+}
+.composer-abort-button.tap-hint {
+  animation: abort-tap-hint 0.36s ease-in-out;
+  border-color: rgba(249, 226, 175, 0.75);
+}
+@keyframes abort-tap-hint {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
 }
 .composer-row label {
   display: flex;
@@ -10507,6 +10579,9 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
 .composer-publish-menu.open .composer-publish-menu-panel {
   display: flex;
 }
+/* After Escape (or choosing an item) the menu stays closed even though the pointer still hovers
+   the trigger or the trigger keeps focus; hovering away and back (or clicking) reopens it. */
+.composer-publish-menu.menu-dismissed:not(.open) .composer-publish-menu-panel { display: none; }
 .composer-auto-height-menu-panel {
   height: auto;
   max-height: none;
@@ -13871,6 +13946,23 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   border-color: rgba(148, 226, 213, 0.45);
   background: linear-gradient(90deg, rgba(148, 226, 213, 0.16), rgba(137, 180, 250, 0.10));
 }
+.native-selector-group {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-top: 0.3rem;
+  padding: 0.2rem 0.4rem;
+  color: var(--ctp-subtext);
+  background: rgba(var(--ctp-base-rgb), 0.96);
+  font-size: var(--text-xs);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.native-selector-item.keyboard-active {
+  border-color: rgba(148, 226, 213, 0.72);
+  box-shadow: inset 3px 0 0 var(--ctp-teal), 0 0 0 1px rgba(148, 226, 213, 0.28);
+}
 .native-selector-item:disabled {
   cursor: default;
   opacity: 0.62;
@@ -16803,10 +16895,13 @@ button.workspace-dashboard-chip {
 .command-palette-item {
   display: grid;
   grid-template-columns: 4.8rem minmax(0, 1fr);
+  /* Chromium sizes <button> grid tracks against the button's own line box, which squeezed the
+     title row below its text height (clipped ascenders). Force content-sized rows instead. */
+  grid-template-rows: minmax(min-content, auto) minmax(min-content, auto);
   gap: 0.1rem 0.7rem;
   width: 100%;
   min-width: 0;
-  min-height: 3.4rem;
+  min-height: 3.9rem;
   padding: 0.62rem 0.74rem;
   overflow: hidden;
   text-align: left;
@@ -16833,10 +16928,12 @@ button.workspace-dashboard-chip {
   white-space: nowrap;
 }
 .command-palette-item-label {
+  display: block;
   min-width: 0;
   overflow: hidden;
   color: var(--ctp-text);
   font-weight: 900;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -17001,7 +17098,7 @@ button.workspace-dashboard-chip {
   .command-palette-item {
     grid-template-columns: minmax(3.4rem, 0.26fr) minmax(0, 1fr);
     gap: 0.04rem 0.46rem;
-    min-height: 2.72rem;
+    min-height: 3rem;
     padding: 0.42rem 0.5rem;
     border-radius: 0.68rem;
     line-height: 1.18;
@@ -18138,6 +18235,126 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
 
 .native-settings-remote-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
 .native-settings-note.warning { border-color: rgba(249, 226, 175, 0.46); background: rgba(249, 226, 175, 0.10); }
+.image-block-button {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  box-shadow: none;
+  cursor: zoom-in;
+}
+.image-block-button > img { display: block; }
+.attachment-pill-thumb-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2.2rem;
+  min-width: 2.2rem;
+  height: 2.2rem;
+  min-height: 2.2rem;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 0.45rem;
+  background: rgba(var(--ctp-crust-rgb), 0.6);
+  cursor: zoom-in;
+}
+.attachment-pill-thumb { width: 100%; height: 100%; object-fit: cover; }
+.image-lightbox {
+  width: min(96vw, 1400px);
+  max-width: 96vw;
+  max-height: 96vh;
+  padding: 0.5rem;
+  border: 1px solid rgba(180, 190, 254, 0.28);
+  border-radius: 0.8rem;
+  color: var(--ctp-text);
+  background: rgba(var(--ctp-crust-rgb), 0.98);
+}
+.image-lightbox::backdrop { background: rgba(0, 0, 0, 0.72); }
+.image-lightbox figure { display: grid; justify-items: center; gap: 0.4rem; margin: 0; }
+.image-lightbox img { max-width: 94vw; max-height: 86vh; object-fit: contain; border-radius: 0.5rem; }
+.image-lightbox figcaption { color: var(--ctp-subtext); font-size: var(--text-sm); }
+.image-lightbox-close {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  width: 2.4rem;
+  min-width: 2.4rem;
+  min-height: 2.4rem;
+  padding: 0;
+}
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.4rem 0.75rem 0.7rem;
+}
+.message-action-button {
+  min-height: 2.1rem;
+  padding: 0.25rem 0.75rem;
+  font-size: var(--text-sm);
+}
+.message-action-button.primary {
+  color: var(--ctp-crust);
+  border-color: transparent;
+  background: var(--neon-gradient);
+  font-weight: 800;
+}
+.footer-model-option.unsupported { opacity: 0.55; }
+/* Non-blocking warn/error notices (P0-5): errors used to reach only the collapsed Events log. */
+.notice-toast-stack {
+  position: fixed;
+  z-index: 129;
+  left: 50%;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  display: grid;
+  gap: 0.45rem;
+  width: min(40rem, calc(100vw - 2rem));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+body:has(#undoToast:not([hidden])) .notice-toast-stack { bottom: calc(max(1rem, env(safe-area-inset-bottom)) + 5.4rem); }
+.notice-toast {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.2rem 0.6rem;
+  padding: 0.62rem 0.7rem;
+  color: var(--ctp-text);
+  border: 1px solid rgba(249, 226, 175, 0.55);
+  border-radius: 0.8rem;
+  background: rgba(var(--ctp-mantle-rgb), 0.98);
+  box-shadow: 0 1rem 2.5rem rgba(var(--ctp-crust-rgb), 0.48);
+  pointer-events: auto;
+}
+.notice-toast.error { border-color: rgba(243, 139, 168, 0.66); }
+.notice-toast.info { border-color: rgba(137, 180, 250, 0.55); }
+.notice-toast.success { border-color: rgba(166, 227, 161, 0.55); }
+.notice-toast.info .notice-toast-message::before { content: "ℹ"; color: var(--ctp-blue); }
+.notice-toast.success .notice-toast-message::before { content: "✓"; color: var(--ctp-green); }
+.notice-toast-message { min-width: 0; font-weight: 700; overflow-wrap: anywhere; }
+.notice-toast-message::before {
+  content: "⚠";
+  margin-right: 0.45rem;
+  color: var(--ctp-yellow);
+}
+.notice-toast.error .notice-toast-message::before { content: "✖"; color: var(--ctp-red); }
+.notice-toast-count {
+  margin-left: 0.4rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: rgba(var(--ctp-surface-rgb), 0.9);
+  color: var(--ctp-subtext);
+  font-size: var(--text-xs);
+  font-weight: 900;
+}
+.notice-toast-events,
+.notice-toast-dismiss { min-height: 2rem; padding: 0.2rem 0.6rem; font-size: var(--text-sm); }
+.notice-toast-dismiss { width: 2.25rem; min-width: 2.25rem; padding-inline: 0; color: var(--ctp-subtext); }
+.events-unread-badge { border-color: rgba(243, 139, 168, 0.55); color: var(--ctp-red); }
 .undo-toast {
   --undo-timeout: 10000ms;
   position: fixed;
@@ -18622,7 +18839,7 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
     min-width: 0;
     grid-column: auto;
     padding-inline: 0.28rem;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
   }
   body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > #abortButton { order: 1; }
   body.mobile-composer-disclosure.pi-run-active:not(.mobile-keyboard-open) .composer-row > #steerButton { order: 2; }
@@ -18818,14 +19035,14 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
   .terminal-tab-close { flex-basis: var(--mobile-control-size); min-width: var(--mobile-control-size); }
   .terminal-tabs { gap: 0.28rem; padding: 0.42rem; }
   .terminal-tab-button { padding: 0.26rem 0.44rem; }
-  .terminal-tab-title { font-size: 0.74rem; }
+  .terminal-tab-title { font-size: var(--text-xs); }
   .terminal-new-tab-button,
   .terminal-new-tab-menu-item { padding: 0.3rem 0.48rem; }
 
   .widget-area { padding: 0.28rem 0.46rem; }
   .release-npm-widget { gap: 0.36rem; padding: 0.46rem; }
   .release-npm-stream-header { padding: 0.24rem 0.34rem; }
-  .release-npm-terminal { padding: 0.44rem 0.36rem; font-size: 0.72rem; }
+  .release-npm-terminal { padding: 0.44rem 0.36rem; font-size: var(--text-xs); }
   .todo-widget { padding: 0.3rem 0.36rem; }
   .todo-widget[open] { gap: 0.22rem; padding-bottom: 0.34rem; }
   .todo-widget-body { gap: 0.2rem; }
@@ -18840,7 +19057,11 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
   .message.has-copy-action:not(.toolResult):not(.bashExecution):not(.compactionSummary) > .message-header,
   .message.has-copy-action:not(.toolResult):not(.bashExecution):not(.compactionSummary) > .message-body,
   .message.has-copy-action > .message-collapse > summary.message-header { padding-right: 2.2rem; }
-  .code-block { padding: 0.48rem; font-size: 0.74rem; }
+  /* Copy + edit/retry side by side need room; otherwise the timestamp sits under the buttons. */
+  .message-edit-retry-button { top: 0.28rem; right: 2.3rem; width: 1.8rem; min-width: 1.8rem; min-height: 1.8rem; }
+  .message.has-edit-retry-action:not(.toolResult):not(.bashExecution):not(.compactionSummary) > .message-header,
+  .message.has-edit-retry-action:not(.toolResult):not(.bashExecution):not(.compactionSummary) > .message-body { padding-right: 4.3rem; }
+  .code-block { padding: 0.48rem; font-size: var(--text-xs); }
   details { padding: 0.42rem; }
   .statusbar { padding: 0.22rem 0.34rem; font-size: var(--mobile-label-text); }
   .footer-metric,
@@ -18864,7 +19085,7 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
     grid-column: 1 / -1;
     padding: 0.08rem 0.12rem 0.02rem;
     color: rgba(var(--ctp-subtext-rgb), 0.68);
-    font-size: 0.66rem;
+    font-size: var(--text-xs);
     font-weight: 900;
     letter-spacing: 0.11em;
     text-transform: uppercase;
@@ -18885,7 +19106,7 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
   html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-metric-label { grid-area: label; }
   html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-metric-value { grid-area: value; }
   html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-metric-label,
-  html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-meta-label { font-size: 0.66rem; letter-spacing: 0.08em; }
+  html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-meta-label { font-size: var(--text-xs); letter-spacing: 0.08em; }
   html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-metric-value,
   html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-meta-value { font-size: 0.76rem; line-height: 1.2; }
   html:not([data-mobile-shell="v2"]):not([data-tablet-shell="v2"]) body.footer-details-expanded .footer-line-meta .footer-meta {
@@ -18913,7 +19134,7 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
     line-height: 1.3;
   }
   .composer-row { gap: 0.24rem; margin-top: 0.3rem; }
-  .composer-row button { padding: 0.28rem 0.36rem; font-size: 0.74rem; }
+  .composer-row button { padding: 0.28rem 0.36rem; font-size: var(--text-xs); }
   .composer-row button.primary { font-size: 0.8rem; }
   .composer-actions-panel { gap: 0.34rem; padding: 0.56rem; }
   .composer-actions-panel label { gap: 0.42rem; font-size: var(--mobile-label-text); }
@@ -19034,4 +19255,13 @@ html[data-density="compact"] .composer { padding-block: 0.5rem; }
     display: none !important;
     opacity: 0 !important;
   }
+}
+
+/* Windows High Contrast / forced colors: keep controls, cards, and the active choice visible. */
+@media (forced-colors: active) {
+  button, select, input, textarea { border: 1px solid ButtonText; }
+  .message, .side-panel-section, .footer-meta, .notice-toast, .undo-toast, .command-palette-item, .native-selector-item { border: 1px solid CanvasText; }
+  .command-palette-item.active, .native-selector-item.keyboard-active, .footer-model-option.active, .terminal-tab.active > button { outline: 2px solid Highlight; outline-offset: 1px; }
+  .run-indicator-pulse, .subagent-state-dot { background: Highlight; forced-color-adjust: none; }
+  .message::before { background: CanvasText; box-shadow: none; }
 }

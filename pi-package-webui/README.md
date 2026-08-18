@@ -69,7 +69,7 @@ When session history is still loading, the main window shows **Loading agent out
 
 Tracked skills appear as compact tags above the composer. Select a named tag to open its skill file; when space is limited, select the **+X** tag to expand the remaining selectable tags upward.
 
-To simplify the interface, right-click a supported button and choose **Hide**, or right-click empty space in a marked toolbar, Control Deck header/footer, or composer area to choose every visible control and input-tag type. Use **Show all** or **Reset defaults** to recover hidden items. This preference is global across Web UI workspaces and browsers; **Send** always remains available.
+To simplify the interface, right-click a supported button and choose **Hide** (an Undo notice appears), or right-click empty space in a marked toolbar, Control Deck header/footer, or composer area to choose every visible control and input-tag type. Use **Show all** or **Reset defaults** there, or the **Show all controls** / **Reset control visibility** actions in the command palette, to recover hidden items. This preference is global across Web UI workspaces and browsers; **Send** always remains available.
 
 Open **Subagents** to follow agent runs launched by managed extensions or registered SDK, RPC, JSON, print, interactive, tmux, workflow, schedule, gate, and custom integrations. Runs linked to an open WebUI terminal stay in that terminal’s group; other registered runs appear under **External agents**. Each agent row shows its launch source and lifecycle, and only offers output or controls that its owner supports. A `pi-subagents` workflow appears as a collapsible **Workflow** header with its model-powered agents nested inside, rather than as another agent row. Starting or restarting the server reconnects active runs without reopening stale, lost, or already-finished rows from an earlier server run.
 
@@ -83,7 +83,9 @@ Useful shortcuts:
 - `Ctrl/Cmd+L` opens the model selector.
 - `Ctrl/Cmd+F` searches the active file, transcript, or subagent output and highlights every match.
 - `Alt+Enter` queues the composer as a follow-up.
-- Hold `Esc` to abort active work.
+- Hold `Esc` (or the Abort button) for about a second to abort active work; a quick tap shows the hint instead.
+- In the composer, `Enter` accepts a highlighted `/`, `@`, or `!` suggestion; once the token is complete, `Enter` sends. `Ctrl/Cmd+P`, `Ctrl/Cmd+T`, `Ctrl/Cmd+O`, and `Shift+Tab` (model cycle, thinking output, tool output, thinking level) act only while the composer has focus.
+- Warnings and errors appear as short-lived notices at the bottom of the window and count up on the **Events** section header; the Events log keeps the full history.
 - In the Control Deck, use `Alt+Up` / `Alt+Down` to reorder a section. In **Both**, use `Alt+Left` / `Alt+Right` to move it between sides.
 
 ## Feature gallery

@@ -8,7 +8,7 @@ const app = await readFile(join(root, "public", "app.js"), "utf8");
 
 assert.match(
   app,
-  /function surfaceRuntimeDiagnostic\(title, content, level = "error"\)[\s\S]*?addEvent\(message, level\);[\s\S]*?addTransientMessage\(\{ role: level === "error" \? "error" : "warn", title, content: message, level \}\);/,
+  /function surfaceRuntimeDiagnostic\(title, content, level = "error", \{ actions = null \} = \{\}\)[\s\S]*?addEvent\(message, level, \{ notify: false \}\);[\s\S]*?addTransientMessage\(\{ role: level === "error" \? "error" : "warn", title, content: message, level, \.\.\.\(actions \? \{ actions \} : \{\}\) \}\);/,
   "runtime diagnostics should be written to both the event log and the visible transcript",
 );
 assert.match(
@@ -23,7 +23,7 @@ assert.match(
 );
 assert.match(
   app,
-  /case "message_end":[\s\S]*?event\.message\.stopReason === "error"[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", message\)[\s\S]*?assistantErrorSurfacedThisRun = true/,
+  /case "message_end":[\s\S]*?event\.message\.stopReason === "error"[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", describeAssistantFailure\(message\), "error", \{ actions: assistantFailureActions\([\s\S]*?assistantErrorSurfacedThisRun = true/,
   "final assistant errors should remain visible after transcript reconciliation",
 );
 assert.match(
@@ -33,7 +33,7 @@ assert.match(
 );
 assert.match(
   app,
-  /case "agent_end":[\s\S]*?!assistantErrorSurfacedThisRun && event\.willRetry !== true[\s\S]*?assistantErrorFromAgentEnd\(event\)[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", message\)/,
+  /case "agent_end":[\s\S]*?!assistantErrorSurfacedThisRun && event\.willRetry !== true[\s\S]*?assistantErrorFromAgentEnd\(event\)[\s\S]*?surfaceRuntimeDiagnostic\("Assistant error", describeAssistantFailure\(message\)/,
   "agent_end should visibly surface a non-retrying provider error when message_end was absent",
 );
 assert.match(

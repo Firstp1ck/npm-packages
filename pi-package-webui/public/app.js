@@ -296,6 +296,8 @@ const elements = {
   agentDoneNotificationsStatus: $("#agentDoneNotificationsStatus"),
   optionalFeaturesBox: $("#optionalFeaturesBox"),
   optionalFeatureMigrationSurface: $("#optionalFeatureMigrationSurface"),
+  noticeToastStack: $("#noticeToastStack"),
+  eventsUnreadBadge: $("#eventsUnreadBadge"),
   optionalFeatureMigrationDialog: $("#optionalFeatureMigrationDialog"),
   optionalFeatureMigrationDialogTitle: $("#optionalFeatureMigrationDialogTitle"),
   optionalFeatureMigrationDialogMessage: $("#optionalFeatureMigrationDialogMessage"),
@@ -317,6 +319,7 @@ const elements = {
   fileTreeRoot: $("#fileTreeRoot"),
   fileTreeStatus: $("#fileTreeStatus"),
   fileTreeRefreshButton: $("#fileTreeRefreshButton"),
+  fileTreeNewFileButton: $("#fileTreeNewFileButton"),
   fileTreeSearchInput: $("#fileTreeSearchInput"),
   fileTreeSearchClearButton: $("#fileTreeSearchClearButton"),
   gitPanelGroups: $("#gitPanelGroups"),
@@ -462,6 +465,13 @@ const elements = {
   undoToastButton: $("#undoToastButton"),
   undoToastDismissButton: $("#undoToastDismissButton"),
   confirmationDialog: $("#confirmationDialog"),
+  textPromptDialog: $("#textPromptDialog"),
+  textPromptTitle: $("#textPromptTitle"),
+  textPromptSummary: $("#textPromptSummary"),
+  textPromptInput: $("#textPromptInput"),
+  textPromptError: $("#textPromptError"),
+  textPromptCancelButton: $("#textPromptCancelButton"),
+  textPromptConfirmButton: $("#textPromptConfirmButton"),
   confirmationTitle: $("#confirmationTitle"),
   confirmationSummary: $("#confirmationSummary"),
   confirmationAffected: $("#confirmationAffected"),
@@ -640,6 +650,15 @@ const promptRoutingTabs = new Set();
 let tabSeenCompletionSerials = new Map();
 let streamBubble = null;
 let streamText = null;
+// Controls-panel Model / Thinking selections the user has made but not applied yet. While set,
+// status refreshes must not snap the selects back to the live value.
+let controlsPendingModelValue = "";
+let controlsPendingThinkingValue = "";
+const PATH_SUGGEST_DEBOUNCE_MS = 120;
+const NOTICE_TOAST_LIMIT = 3;
+const NOTICE_TOAST_TIMEOUT_MS = { info: 5000, success: 5000, warn: 6000, error: 10000 };
+const noticeToasts = [];
+let eventsUnreadCount = 0;
 let streamRawText = "";
 let streamThinkingRawText = "";
 let streamDerivedOutputState = null;
@@ -962,6 +981,7 @@ let assistantErrorSurfacedThisRun = false;
 let runIndicatorBubble = null;
 let runIndicatorText = null;
 let runIndicatorMeta = null;
+let runIndicatorElapsed = null;
 let runIndicatorTimer = null;
 let runIndicatorRenderFrame = null;
 let runIndicatorRenderScroll = false;
@@ -1512,7 +1532,9 @@ const UPDATE_STATUS_INITIAL_DELAY_MS = 1800;
 const RUN_INDICATOR_TICK_MS = 1000;
 const RUN_INDICATOR_START_GRACE_MS = 2500;
 const RUN_INDICATOR_STATE_RECHECK_MS = 5000;
-const ABORT_LONG_PRESS_MS = 3000;
+const ABORT_LONG_PRESS_MS = 1200;
+const ABORT_TAP_HINT_MS = 1800;
+let abortTapHintTimer = null;
 const ABORT_LONG_PRESS_TICK_MS = 100;
 const ABORT_LONG_PRESS_RELEASE_GRACE_MS = 350;
 const EMPTY_PROMPT_ESCAPE_AFTER_ABORT_GRACE_MS = 1000;
@@ -1685,6 +1707,55 @@ function persistMobileContinuityState() {
 function scheduleMobileContinuityPersist() {
   clearTimeout(mobileContinuityPersistTimer);
   mobileContinuityPersistTimer = setTimeout(persistMobileContinuityState, MOBILE_CONTINUITY_PERSIST_DEBOUNCE_MS);
+  scheduleDesktopDraftPersist();
+}
+
+// Desktop draft continuity: composer text per tab survives reloads and browser restarts (the
+// mobile v2 shell has its own richer continuity store; this covers everything else).
+const DESKTOP_DRAFT_STORAGE_KEY = "pi-webui-composer-drafts-v1";
+const DESKTOP_DRAFT_PERSIST_DEBOUNCE_MS = 500;
+const DESKTOP_DRAFT_MAX_TABS = 24;
+let desktopDraftPersistTimer = null;
+
+function persistDesktopDrafts() {
+  clearTimeout(desktopDraftPersistTimer);
+  desktopDraftPersistTimer = null;
+  if (isMobileShellV2Active()) return;
+  if (activeTabId && elements.promptInput) tabDrafts.set(activeTabId, elements.promptInput.value || "");
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  const drafts = {};
+  let count = 0;
+  for (const [tabId, draft] of tabDrafts) {
+    if (!liveIds.has(tabId) || !draft || count >= DESKTOP_DRAFT_MAX_TABS) continue;
+    drafts[tabId] = String(draft).slice(0, 200_000);
+    count += 1;
+  }
+  try {
+    if (count === 0) localStorage.removeItem(DESKTOP_DRAFT_STORAGE_KEY);
+    else localStorage.setItem(DESKTOP_DRAFT_STORAGE_KEY, JSON.stringify({ v: 1, drafts, savedAt: Date.now() }));
+  } catch {
+    // Storage may be unavailable (private mode / quota); drafts then live for this page only.
+  }
+}
+
+function scheduleDesktopDraftPersist() {
+  clearTimeout(desktopDraftPersistTimer);
+  desktopDraftPersistTimer = setTimeout(persistDesktopDrafts, DESKTOP_DRAFT_PERSIST_DEBOUNCE_MS);
+}
+
+function restoreDesktopDrafts() {
+  if (isMobileShellV2Active()) return;
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(DESKTOP_DRAFT_STORAGE_KEY) || "null");
+  } catch {
+    stored = null;
+  }
+  if (!stored || stored.v !== 1 || !stored.drafts || typeof stored.drafts !== "object") return;
+  const liveIds = new Set(tabs.map((tab) => tab.id));
+  for (const [tabId, draft] of Object.entries(stored.drafts)) {
+    if (liveIds.has(tabId) && !tabDrafts.get(tabId) && typeof draft === "string" && draft) tabDrafts.set(tabId, draft);
+  }
 }
 
 function restoreMobileContinuityState() {
@@ -4238,7 +4309,6 @@ function moveSidePanelSectionRelative(fromId, targetRecord, insertBefore, target
 
 function completeControlDeckSectionSideMove(record, side) {
   if (!record) return;
-  if (!record.section.classList.contains("collapsed")) setOnlySidePanelSectionExpanded(record);
   const sideRecords = sidePanelSectionRecords()
     .filter(({ id, section }) => !section.hidden && controlDeckSectionSide(id) === side)
     .sort((a, b) => controlDeckLayout.sectionLayout.order.indexOf(a.id) - controlDeckLayout.sectionLayout.order.indexOf(b.id));
@@ -4430,6 +4500,8 @@ function setSidePanelSectionCollapsed(record, collapsed, { persist = true } = {}
   record.content.hidden = collapsed;
   record.button.setAttribute("aria-expanded", collapsed ? "false" : "true");
   updateSidePanelSectionEditAffordance(record);
+  if (!collapsed && record.id === "events") clearUnreadEvents();
+  if (!collapsed && record.id === "subagents") queueMicrotask(() => revealSubagentLaunchSlotConfigIfDeferred());
   if (!collapsed && record.id === "git" && !record.section.hidden) {
     queueMicrotask(() => {
       renderGitPanel();
@@ -4452,18 +4524,13 @@ function setOnlySidePanelSectionExpanded(targetRecord, { persist = true } = {}) 
   if (persist) persistSidePanelSectionState();
 }
 
+// Sections open and close independently (any number may be expanded at once); the persisted
+// collapsed set is honored as-is. With no stored state every section starts collapsed.
 function restoreSidePanelSectionState() {
   const records = sidePanelSectionRecords();
   const collapsedIds = readStoredSidePanelSectionCollapsedIds();
-  const expandedBySide = new Map();
-  if (collapsedIds) {
-    for (const record of records) {
-      const side = controlDeckSectionSide(record.id);
-      if (!collapsedIds.has(record.id) && !expandedBySide.has(side)) expandedBySide.set(side, record.id);
-    }
-  }
   for (const record of records) {
-    setSidePanelSectionCollapsed(record, expandedBySide.get(controlDeckSectionSide(record.id)) !== record.id, { persist: false });
+    setSidePanelSectionCollapsed(record, collapsedIds ? collapsedIds.has(record.id) : true, { persist: false });
   }
 }
 
@@ -4526,11 +4593,7 @@ function bindSidePanelSectionToggles() {
         event.preventDefault();
         return;
       }
-      if (record.section.classList.contains("collapsed")) {
-        setOnlySidePanelSectionExpanded(record);
-      } else {
-        setSidePanelSectionCollapsed(record, true);
-      }
+      setSidePanelSectionCollapsed(record, !record.section.classList.contains("collapsed"));
     });
     record.button.addEventListener("keydown", (event) => {
       if (!isSidePanelSectionReorderingEnabled() || !event.altKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
@@ -5595,7 +5658,7 @@ async function hydrateLoadedWorkspaceActiveTab(requestedTabId) {
 
 async function saveWebuiWorkspace({ triggerButton = elements.workspaceSaveButton } = {}) {
   if (!tabs.length) return;
-  const promptedName = window.prompt("Save workspace as:", workspaceDefaultName());
+  const promptedName = await appPromptText({ title: "Save workspace", summary: "Captures all open tabs, sessions, groups, and the active tab.", defaultValue: workspaceDefaultName(), confirmLabel: "Save workspace" });
   if (promptedName === null) return;
   const body = {
     name: promptedName.trim() || workspaceDefaultName(),
@@ -7091,7 +7154,11 @@ function setSkillEditorStatus(message = "", level = "muted") {
   status.hidden = !message;
 }
 
-function closeSkillEditor() {
+async function closeSkillEditor({ force = false } = {}) {
+  if (!force && activeSkillEditor?.dirty && elements.skillEditorDialog?.open) {
+    if (!(await confirmDiscardEdits({ what: "unsaved skill edits", target: activeSkillEditor.path || activeSkillEditor.name || "SKILL.md" }))) return;
+    activeSkillEditor.dirty = false;
+  }
   if (elements.skillEditorDialog?.open) elements.skillEditorDialog.close();
   else activeSkillEditor = null;
 }
@@ -7395,8 +7462,27 @@ function updateComposerModeButtons() {
     if (elements.abortButton.getAttribute("aria-label") !== abortTitle) elements.abortButton.setAttribute("aria-label", abortTitle);
   }
   renderBusyPromptBehaviorTag();
+  renderSendButtonMode(runActive);
   document.body.classList.toggle("pi-run-active", runActive || abortAvailable);
   scheduleComposerActionSlotLayoutRestore();
+}
+
+// While Pi is running, Send does not start a new turn: it queues a follow-up or steers the active
+// run (per the busy-behavior tag). Say so on the button instead of silently acting differently.
+function renderSendButtonMode(runActive = isRunActive()) {
+  const button = elements.sendButton;
+  if (!button) return;
+  const behavior = normalizeBusyPromptBehavior(busyPromptBehavior);
+  const label = !runActive ? "Send" : behavior === "steer" ? "Steer" : "Queue";
+  const title = !runActive
+    ? "Send prompt — Shift+F10 opens visibility options"
+    : behavior === "steer"
+      ? "Pi is running: Enter steers the active run with this text. Change the behavior via the tag above the prompt."
+      : "Pi is running: Enter queues this text as a follow-up. Change the behavior via the tag above the prompt.";
+  if (button.textContent !== label) button.textContent = label;
+  if (button.title !== title) button.title = title;
+  button.setAttribute("aria-label", runActive ? `${label} (Send while Pi is running)` : "Send");
+  button.classList.toggle("send-busy-mode", runActive);
 }
 
 function scheduleComposerModeButtonsUpdate() {
@@ -7650,6 +7736,72 @@ function appConfirm({ title = "Confirm action", summary = "Continue?", affected 
     elements.confirmationDialog.showModal();
     queueMicrotask(() => elements.confirmationCancelButton?.focus());
   });
+}
+
+// Ask before an action would throw away unsaved edits. Resolves true when it is fine to proceed.
+function confirmDiscardEdits({ what = "unsaved edits", target = "" } = {}) {
+  return appConfirm({
+    title: `Discard ${what}?`,
+    summary: target ? `${target} has changes that have not been saved.` : "There are changes that have not been saved.",
+    affected: target || "The current editor contents",
+    undoable: false,
+    confirmLabel: "Discard changes",
+  });
+}
+
+// Application text prompt (replaces blocking window.prompt): resolves with the entered string,
+// or null when cancelled. `validate` may return an error message to keep the dialog open.
+let activeTextPromptResolve = null;
+
+function appPromptText({ title = "Enter a value", summary = "", defaultValue = "", placeholder = "", confirmLabel = "OK", validate = null, selectRange = null } = {}) {
+  const dialog = elements.textPromptDialog;
+  if (!dialog?.showModal) {
+    const value = window.prompt([title, summary].filter(Boolean).join("\n\n"), defaultValue);
+    return Promise.resolve(value === null ? null : String(value));
+  }
+  if (activeTextPromptResolve) finishTextPrompt(null);
+  elements.textPromptTitle.textContent = title;
+  elements.textPromptSummary.textContent = summary;
+  elements.textPromptSummary.hidden = !summary;
+  elements.textPromptInput.value = defaultValue;
+  elements.textPromptInput.placeholder = placeholder;
+  elements.textPromptError.hidden = true;
+  elements.textPromptError.textContent = "";
+  elements.textPromptConfirmButton.textContent = confirmLabel;
+  dialog.dataset.validate = validate ? "1" : "";
+  textPromptValidator = typeof validate === "function" ? validate : null;
+  return new Promise((resolve) => {
+    activeTextPromptResolve = resolve;
+    dialog.showModal();
+    queueMicrotask(() => {
+      const input = elements.textPromptInput;
+      input.focus();
+      if (Array.isArray(selectRange)) input.setSelectionRange(selectRange[0], selectRange[1]);
+      else input.select();
+    });
+  });
+}
+
+let textPromptValidator = null;
+
+function finishTextPrompt(value) {
+  const resolve = activeTextPromptResolve;
+  activeTextPromptResolve = null;
+  textPromptValidator = null;
+  if (elements.textPromptDialog?.open) elements.textPromptDialog.close();
+  resolve?.(value);
+}
+
+function submitTextPrompt() {
+  const value = String(elements.textPromptInput?.value ?? "");
+  const problem = textPromptValidator ? textPromptValidator(value) : "";
+  if (problem) {
+    elements.textPromptError.textContent = String(problem);
+    elements.textPromptError.hidden = false;
+    elements.textPromptInput?.focus();
+    return;
+  }
+  finishTextPrompt(value);
 }
 
 function appConfirmText(message, options = {}) {
@@ -8481,10 +8633,28 @@ function scopedApiPath(path, tabId = activeTabId) {
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
+// Identical GET requests that overlap in time (boot fans out several refresh paths that ask for
+// the same catalogs) share one in-flight fetch. Callers still get their own resolved value.
+const inFlightGetRequests = new Map();
+
 async function api(path, { method = "GET", body, tabId = activeTabId, scoped = true, signal } = {}) {
+  const url = scoped ? scopedApiPath(path, tabId) : path;
+  if (method === "GET" && !signal) {
+    const pending = inFlightGetRequests.get(url);
+    if (pending) return pending;
+    const request = apiUncached(url, { method, body, signal }).finally(() => {
+      if (inFlightGetRequests.get(url) === request) inFlightGetRequests.delete(url);
+    });
+    inFlightGetRequests.set(url, request);
+    return request;
+  }
+  return apiUncached(url, { method, body, signal });
+}
+
+async function apiUncached(url, { method = "GET", body, signal } = {}) {
   let response;
   try {
-    response = await fetch(scoped ? scopedApiPath(path, tabId) : path, {
+    response = await fetch(url, {
       method,
       headers: body === undefined ? undefined : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -9228,7 +9398,22 @@ function renderAttachmentTray() {
     const pill = make("span", "attachment-pill");
     pill.title = attachment.requiresReselect ? `${attachment.name}\nReselect required; only metadata was restored.` : `${attachment.name}\n${attachment.mimeType}\n${formatBytes(attachment.size)}`;
     pill.classList.toggle("requires-reselect", attachment.requiresReselect === true);
-    const icon = make("span", "attachment-pill-icon", attachmentIcon(attachment.kind));
+    let icon = make("span", "attachment-pill-icon", attachmentIcon(attachment.kind));
+    if (attachment.kind === "image" && attachment.previewUrl) {
+      // Show the actual picture so a pasted screenshot can be checked at a glance.
+      const thumb = make("img", "attachment-pill-thumb");
+      thumb.src = attachment.previewUrl;
+      thumb.alt = "";
+      thumb.decoding = "async";
+      thumb.loading = "lazy";
+      const thumbButton = make("button", "attachment-pill-thumb-button");
+      thumbButton.type = "button";
+      thumbButton.title = `Preview ${attachment.name}`;
+      thumbButton.setAttribute("aria-label", `Preview ${attachment.name}`);
+      thumbButton.append(thumb);
+      thumbButton.addEventListener("click", () => openImageLightbox(attachment.previewUrl, attachment.name));
+      icon = thumbButton;
+    }
     const name = make("span", "attachment-pill-name", attachment.name);
     const meta = make("span", "attachment-pill-meta", attachment.requiresReselect ? `${attachment.kind} · ${formatBytes(attachment.size)} · Reselect required` : `${attachment.kind} · ${formatBytes(attachment.size)}`);
     const edit = !attachment.requiresReselect && isEditableTextAttachment(attachment) ? make("button", "attachment-edit-button", "Edit") : null;
@@ -9261,7 +9446,7 @@ function removeAttachment(id, tabId = activeTabId) {
   if (index === -1) return;
   const [removed] = attachments.splice(index, 1);
   if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-  if (activeTextAttachmentEditor?.tabId === tabId && activeTextAttachmentEditor?.attachmentId === id) closeTextAttachmentEditor();
+  if (activeTextAttachmentEditor?.tabId === tabId && activeTextAttachmentEditor?.attachmentId === id) closeTextAttachmentEditor({ force: true });
   if (attachments.length === 0) tabAttachments.delete(tabId);
   if (tabId === activeTabId) renderAttachmentTray();
   persistMobileContinuityState();
@@ -9272,7 +9457,7 @@ function clearAttachments(tabId = activeTabId) {
   for (const attachment of attachments) {
     if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
   }
-  if (activeTextAttachmentEditor?.tabId === tabId) closeTextAttachmentEditor();
+  if (activeTextAttachmentEditor?.tabId === tabId) closeTextAttachmentEditor({ force: true });
   if (tabId) tabAttachments.delete(tabId);
   if (tabId === activeTabId) renderAttachmentTray();
   persistMobileContinuityState();
@@ -9335,20 +9520,15 @@ function attachLongTextAsFile(text, source = "input text") {
   return result.added > 0;
 }
 
-function moveLongPromptInputToAttachment() {
-  const text = elements.promptInput.value || "";
-  if (!attachLongTextAsFile(text, "input text")) return false;
-  elements.promptInput.value = "";
-  resizePromptInput();
-  hideCommandSuggestions();
-  return true;
-}
-
 function attachmentById(tabId, id) {
   return attachmentsForTab(tabId).find((attachment) => attachment.id === id) || null;
 }
 
-function closeTextAttachmentEditor() {
+async function closeTextAttachmentEditor({ force = false } = {}) {
+  if (!force && activeTextAttachmentEditor?.dirty && elements.attachmentTextDialog?.open) {
+    if (!(await confirmDiscardEdits({ what: "unsaved attachment edits", target: "The attachment text" }))) return;
+    activeTextAttachmentEditor.dirty = false;
+  }
   if (elements.attachmentTextDialog?.open) elements.attachmentTextDialog.close();
   else activeTextAttachmentEditor = null;
 }
@@ -9446,7 +9626,7 @@ function saveTextAttachmentEdit() {
   attachment.previewUrl = undefined;
   if (tabId === activeTabId) renderAttachmentTray();
   addEvent(`updated text attachment ${attachment.name} (${formatBytes(attachment.size)})`, "info");
-  closeTextAttachmentEditor();
+  closeTextAttachmentEditor({ force: true });
 }
 
 function clipboardFiles(dataTransfer) {
@@ -13017,6 +13197,37 @@ async function moveFileTreeEntryToDestination(entry = {}, destinationPath = "", 
   }
 }
 
+// "New file… / New folder…" for the Files panel. `entry` is the folder (or a file, whose parent
+// folder is used) the action was invoked on; the workspace root when invoked from the toolbar.
+async function createFileTreeEntry(entry = null, kind = "file") {
+  const entryPath = normalizeFileTreePath(entry?.path || "");
+  const parentPath = !entryPath ? "" : entry?.type === "directory" ? entryPath : entryPath.split("/").slice(0, -1).join("/");
+  const label = kind === "directory" ? "folder" : "file";
+  const name = await appPromptText({
+    title: `New ${label}`,
+    summary: `Created inside ${parentPath || "the workspace root"}. Use "/" to create it deeper (existing folders only).`,
+    placeholder: kind === "directory" ? "folder-name" : "notes.md",
+    confirmLabel: "Create",
+    validate: (value) => {
+      const text = String(value || "").trim();
+      if (!text) return "A name is required.";
+      if (text === "." || text === ".." || text.includes("\0")) return "That name is not allowed.";
+      if (text.startsWith("/") || text.startsWith("..")) return "Use a path relative to this folder.";
+      return "";
+    },
+  });
+  if (name === null) return;
+  const relative = normalizeFileTreePath([parentPath, String(name).trim()].filter(Boolean).join("/"));
+  const tabContext = activeTabContext();
+  const response = await api("/api/files/create", { method: "POST", body: { path: relative, type: kind }, tabId: tabContext.tabId });
+  if (!isCurrentTabContext(tabContext)) return;
+  const created = response.data || {};
+  addEvent(`Created ${label} ${created.path || relative}.`, "success");
+  if (parentPath) fileTreeState.expanded.add(parentPath);
+  await refreshFileTreeLive(tabContext).catch(() => {});
+  if (kind === "file") await openFileInViewer(created.path || relative);
+}
+
 async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
   if (!entry) return;
   const sourcePath = normalizeFileTreePath(entry.path || "");
@@ -13025,12 +13236,18 @@ async function moveFileTreeEntry(entry = fileContextMenuState?.entry) {
     return;
   }
   const typeLabel = fileOperationTypeLabel(entry);
-  const destinationInput = window.prompt([
-    `Move/rename ${typeLabel} ${sourcePath}`,
-    "",
-    "Enter a destination path inside the current workspace.",
-    `Existing directories receive the ${typeLabel} as a child.`,
-  ].join("\n"), sourcePath);
+  const baseName = sourcePath.split("/").pop() || sourcePath;
+  const nameStart = sourcePath.length - baseName.length;
+  const dotIndex = baseName.lastIndexOf(".");
+  const destinationInput = await appPromptText({
+    title: `Move or rename ${typeLabel}`,
+    summary: `${sourcePath} — enter a new name or a destination path inside the workspace. An existing folder receives the ${typeLabel} as a child.`,
+    defaultValue: sourcePath,
+    confirmLabel: "Move",
+    // Pre-select the file name (without extension) so a plain rename is one keystroke away.
+    selectRange: [nameStart, entry.type === "directory" || dotIndex <= 0 ? sourcePath.length : nameStart + dotIndex],
+    validate: (value) => (String(value || "").trim() ? "" : "Destination path is required."),
+  });
   if (destinationInput === null) return;
   const destinationPath = String(destinationInput || "").trim();
   if (!destinationPath) {
@@ -15045,6 +15262,9 @@ async function applyGitFileChangesSnapshot(request, tabContext, viewerPath, requ
 async function openFileInViewer(path = "", { gitCategory = "", gitPath = "" } = {}) {
   const normalized = normalizeFileTreePath(path);
   if (!normalized) return;
+  if (activeFileViewer?.dirty && activeFileViewer.path !== normalized) {
+    if (!(await confirmDiscardEdits({ what: "unsaved file edits", target: activeFileViewer.path }))) return;
+  }
   const openRequestSerial = ++fileViewerOpenRequestSerial;
   const tabContext = activeTabContext();
   fileTreeState.selectedPath = normalized;
@@ -15541,6 +15761,7 @@ function updateDocumentTitle() {
 function saveActiveDraft() {
   if (activeTabId) tabDrafts.set(activeTabId, elements.promptInput.value || "");
   persistMobileContinuityState();
+  persistDesktopDrafts();
 }
 
 function restoreActiveDraft() {
@@ -15701,6 +15922,8 @@ function resetActiveTabUi() {
   clearRefreshTimers();
   eventSource?.close();
   eventSource = null;
+  setControlsPendingModel("");
+  setControlsPendingThinking("");
   currentState = cachedStateForTabSwitch(activeTabId);
   latestStats = activeTabId ? tabStatsCache.get(activeTabId) || null : null;
   latestStatsOverlayPayload = null;
@@ -16140,6 +16363,30 @@ function showGitPanelContextMenu(event, context) {
   menu.querySelector('[role="menuitem"]:not([disabled])')?.focus({ preventScroll: true });
 }
 
+// Touch- and keyboard-discoverable entry to the same actions as the right-click menu.
+function gitPanelOverflowButton(context, label) {
+  const button = make("button", "git-side-panel-overflow-button file-tree-overflow-button", "⋯");
+  button.type = "button";
+  button.setAttribute("aria-label", `Git actions for ${label}`);
+  button.setAttribute("aria-haspopup", "menu");
+  button.title = "Git actions";
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const rect = button.getBoundingClientRect();
+    showGitPanelContextMenu({
+      preventDefault: () => event.preventDefault(),
+      stopPropagation: () => event.stopPropagation(),
+      clientX: rect.right,
+      clientY: rect.bottom,
+      currentTarget: button,
+    }, context);
+  });
+  button.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+  });
+  return button;
+}
+
 function bindGitPanelContextMenu(trigger, context) {
   trigger.setAttribute("aria-haspopup", "menu");
   trigger.addEventListener("contextmenu", (event) => showGitPanelContextMenu(event, context));
@@ -16247,7 +16494,7 @@ function renderGitPanelFile(entry, card, category) {
   const row = make("div", `git-side-panel-file ${category}`);
   row.dataset.gitPanelContinuityKey = `file:${card.root}:${category}:${entry.path}`;
   const fullPath = entry.oldPath ? `${entry.oldPath} → ${entry.path}` : entry.path;
-  row.title = `${fullPath} · Open in WebUI · Right-click for Git actions`;
+  row.title = `${fullPath} · Open in WebUI · ⋯ or right-click for Git actions`;
   row.tabIndex = 0;
   row.setAttribute("role", "button");
   row.setAttribute("aria-label", `Open ${entry.name || entry.path} in WebUI, ${gitPanelStatsText(entry, category) || "no line statistics"}`);
@@ -16264,8 +16511,9 @@ function renderGitPanelFile(entry, card, category) {
   const statsText = gitPanelStatsText(entry, category);
   const stats = make("span", "git-side-panel-file-stats", statsText);
   stats.hidden = !statsText;
-  bindGitPanelContextMenu(row, { card, category, kind: "file", path: entry.path });
-  row.append(status, name, stats);
+  const context = { card, category, kind: "file", path: entry.path };
+  bindGitPanelContextMenu(row, context);
+  row.append(status, name, stats, gitPanelOverflowButton(context, entry.name || entry.path));
   return row;
 }
 
@@ -16434,7 +16682,7 @@ function renderGitPanelRepositoryCard(card) {
   button.type = "button";
   button.dataset.gitPanelContinuityKey = `repository:${card.root}`;
   button.setAttribute("aria-expanded", expanded ? "true" : "false");
-  button.title = `${expanded ? "Collapse" : "Expand"} ${card.root} · Right-click for repository actions`;
+  button.title = `${expanded ? "Collapse" : "Expand"} ${card.root} · ⋯ or right-click for repository actions`;
   const count = gitPanelChangeCount(snapshot?.data);
   button.append(
     make("span", "git-side-panel-repository-chevron", "›"),
@@ -16444,8 +16692,11 @@ function renderGitPanelRepositoryCard(card) {
   const copy = button.querySelector(".git-side-panel-repository-copy");
   copy.append(make("strong", undefined, gitPanelRootLabel(card.root)), make("span", undefined, card.root));
   button.addEventListener("click", () => toggleGitPanelRepository(card));
-  bindGitPanelContextMenu(button, { card, kind: "repository", path: card.root });
-  section.append(button);
+  const repositoryContext = { card, kind: "repository", path: card.root };
+  bindGitPanelContextMenu(button, repositoryContext);
+  const header = make("div", "git-side-panel-repository-header");
+  header.append(button, gitPanelOverflowButton(repositoryContext, gitPanelRootLabel(card.root)));
+  section.append(header);
   if (expanded) section.append(renderGitPanelRepositoryContent(card, snapshot));
   return section;
 }
@@ -16508,7 +16759,7 @@ function renderGitPanel() {
       ? "No terminal tabs are open."
       : discovering
         ? "Discovering repositories…"
-        : `${repositoryCount} Git ${repositoryCount === 1 ? "repository" : "repositories"} · Right-click for actions`;
+        : `${repositoryCount} Git ${repositoryCount === 1 ? "repository" : "repositories"} · ⋯ or right-click for actions`;
   }
   ensureGitPanelRepositoriesDiscovered();
   ensureGitPanelVisibleRepositoriesFresh(cards);
@@ -17175,10 +17426,11 @@ async function switchTab(tabId) {
   focusPromptInput({ defer: true });
   connectEvents(tabContext);
   await refreshAll(tabContext);
+  noteRecentFullRefresh();
   if (isCurrentTabContext(tabContext)) markTabOutputSeen();
   await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
   if (!subagentLaunchSlotDraftIsDirty()) {
-    loadSubagentLaunchSlotConfig({ tabId }).catch(() => {});
+    loadSubagentLaunchSlotConfigWhenVisible({ tabId }).catch(() => {});
   } else {
     renderSubagentLaunchSlots();
   }
@@ -17383,11 +17635,21 @@ async function confirmCloseTerminalTabs(targetTabs, label) {
   });
 }
 
+async function reopenClosedTerminalTab(tabId) {
+  const response = await api("/api/tabs/reopen", { method: "POST", body: { id: tabId }, scoped: false });
+  await refreshTabs();
+  const reopened = response.data?.tab?.id;
+  if (reopened) await switchTab(reopened);
+}
+
 async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", allowEmpty = false } = {}) {
   const targetIds = [...new Set(tabIds.filter(Boolean))];
   const targetTabs = targetIds.map((id) => tabs.find((item) => item.id === id)).filter(Boolean);
   if (!targetTabs.length) return;
-  if (!(await confirmCloseTerminalTabs(targetTabs, label))) return;
+  // Closing one idle tab is routine and reversible (its session stays resumable), so it closes at
+  // once with an Undo instead of a confirmation. Anything with running work still asks first.
+  const quickClose = targetTabs.length === 1 && !tabHasActiveAgent(targetTabs[0]) && !allowEmpty;
+  if (!quickClose && !(await confirmCloseTerminalTabs(targetTabs, label))) return;
 
   const closedActiveTab = targetTabs.some((tab) => tab.id === activeTabId);
   const fallbackTabId = tabs.find((item) => !targetIds.includes(item.id))?.id || null;
@@ -17413,6 +17675,14 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
     syncTerminalCustomGroupsWithTabs(tabs);
     clearOpenTerminalTabGroup(null, { force: true });
     if (!tabs.length) setWorkspaceDashboardCollapsed(false, { persist: false });
+    if (quickClose && closedIds.length === 1) {
+      const closedTitle = targetTabs[0].title || "tab";
+      offerUndo({
+        message: `Closed ${closedTitle}.`,
+        undo: () => reopenClosedTerminalTab(closedIds[0]),
+        successMessage: `${closedTitle} reopened.`,
+      });
+    }
 
     const activeTabNeedsFallback = closedIds.includes(activeTabId) || !tabs.some((item) => item.id === activeTabId);
     if (activeTabNeedsFallback) {
@@ -17459,6 +17729,7 @@ async function initializeTabs() {
   restoreTerminalCustomGroups();
   syncTerminalCustomGroupsWithTabs(tabs, { persist: false });
   restoreMobileContinuityState();
+  restoreDesktopDrafts();
   resetActiveTabUi();
   renderTabs();
   restoreActiveDraft();
@@ -17477,9 +17748,10 @@ async function initializeTabs() {
   connectEvents(tabContext);
   if (activeTabId) {
     await refreshAll(tabContext);
+    noteRecentFullRefresh();
     if (isCurrentTabContext(tabContext)) markTabOutputSeen();
     if (!subagentLaunchSlotDraftIsDirty() || subagentLaunchSlotConfigTabId !== activeTabId) {
-      loadSubagentLaunchSlotConfig().catch(() => {});
+      loadSubagentLaunchSlotConfigWhenVisible().catch(() => {});
     }
     refreshSamplingParametersForTabContext(tabContext);
     await refreshThemeCatalog(tabContext).catch((error) => addEvent(`Custom theme catalog refresh failed: ${error.message || String(error)}`, "warn"));
@@ -17537,7 +17809,7 @@ function jumpToChatEvent(line) {
   }
 }
 
-function addEvent(message, level = "info", { toolCallId = "" } = {}) {
+function addEvent(message, level = "info", { toolCallId = "", notify = true } = {}) {
   const occurredAt = Date.now();
   const line = make("button", `event ${level}`.trim());
   line.type = "button";
@@ -17549,6 +17821,122 @@ function addEvent(message, level = "info", { toolCallId = "" } = {}) {
   line.addEventListener("click", () => jumpToChatEvent(line));
   elements.eventLog.prepend(line);
   while (elements.eventLog.children.length > 120) elements.eventLog.lastElementChild?.remove();
+  if (notify && (level === "error" || level === "warn")) {
+    showNoticeToast(message, level);
+    noteUnreadEvent();
+  }
+}
+
+// --- Non-blocking warn/error notices -------------------------------------------------------
+// The Events log lives in a collapsed Control Deck section, so on its own it makes failures look
+// like "nothing happened". Warnings and errors additionally surface as a short-lived toast (max 3,
+// deduplicated) with a shortcut to the Events log, and the Events header shows an unread count.
+function noticeToastTimeout(level) {
+  return NOTICE_TOAST_TIMEOUT_MS[level] || (level === "error" ? NOTICE_TOAST_TIMEOUT_MS.error : NOTICE_TOAST_TIMEOUT_MS.warn);
+}
+
+function removeNoticeToast(entry) {
+  const index = noticeToasts.indexOf(entry);
+  if (index >= 0) noticeToasts.splice(index, 1);
+  clearTimeout(entry.timer);
+  entry.node.remove();
+}
+
+function armNoticeToastTimer(entry) {
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => removeNoticeToast(entry), noticeToastTimeout(entry.level));
+}
+
+function showNoticeToast(message, level = "warn") {
+  const stack = elements.noticeToastStack;
+  const text = String(message || "").trim();
+  if (!stack || !text) return null;
+  const existing = noticeToasts.find((entry) => entry.level === level && entry.text === text);
+  if (existing) {
+    existing.count += 1;
+    existing.countNode.textContent = `×${existing.count}`;
+    existing.countNode.hidden = false;
+    armNoticeToastTimer(existing);
+    return existing;
+  }
+  const node = make("div", `notice-toast ${level}`);
+  node.setAttribute("role", level === "error" ? "alert" : "status");
+  const messageNode = make("span", "notice-toast-message", text);
+  const countNode = make("span", "notice-toast-count", "");
+  countNode.hidden = true;
+  messageNode.append(countNode);
+  const eventsButton = make("button", "notice-toast-events", "Events");
+  eventsButton.type = "button";
+  eventsButton.title = "Open the Events log in the Control Deck";
+  const dismissButton = make("button", "notice-toast-dismiss", "×");
+  dismissButton.type = "button";
+  dismissButton.setAttribute("aria-label", "Dismiss notification");
+  node.append(messageNode, eventsButton, dismissButton);
+  const entry = { node, level, text, count: 1, countNode, timer: null };
+  eventsButton.addEventListener("click", () => {
+    removeNoticeToast(entry);
+    revealEventsSection();
+  });
+  dismissButton.addEventListener("click", () => removeNoticeToast(entry));
+  node.addEventListener("pointerenter", () => clearTimeout(entry.timer));
+  node.addEventListener("pointerleave", () => armNoticeToastTimer(entry));
+  noticeToasts.push(entry);
+  stack.append(node);
+  while (noticeToasts.length > NOTICE_TOAST_LIMIT) removeNoticeToast(noticeToasts[0]);
+  armNoticeToastTimer(entry);
+  return entry;
+}
+
+function eventsSectionRecord() {
+  return sidePanelSectionRecords().find((record) => record.id === "events") || null;
+}
+
+function eventsSectionIsVisibleAndExpanded() {
+  const record = eventsSectionRecord();
+  if (!record || record.section.hidden || record.section.classList.contains("collapsed")) return false;
+  return !document.body.classList.contains("side-panel-collapsed") || document.body.classList.contains("control-deck-left");
+}
+
+function renderEventsUnreadBadge() {
+  const badge = elements.eventsUnreadBadge;
+  if (!badge) return;
+  badge.textContent = eventsUnreadCount > 99 ? "99+" : String(eventsUnreadCount);
+  badge.hidden = eventsUnreadCount === 0;
+  badge.setAttribute("aria-label", `${eventsUnreadCount} unread warning${eventsUnreadCount === 1 ? "" : "s"} or errors`);
+}
+
+function noteUnreadEvent() {
+  if (eventsSectionIsVisibleAndExpanded()) return;
+  eventsUnreadCount += 1;
+  renderEventsUnreadBadge();
+}
+
+function clearUnreadEvents() {
+  if (!eventsUnreadCount) return;
+  eventsUnreadCount = 0;
+  renderEventsUnreadBadge();
+}
+
+function revealSidePanelSectionById(id) {
+  const record = sidePanelSectionRecords().find((entry) => entry.id === id);
+  if (!record) return;
+  if (record.section.hidden) setSidePanelSectionVisible(record, true);
+  if (document.body.classList.contains("side-panel-collapsed") && !document.body.classList.contains("control-deck-left")) setSidePanelCollapsed(false, { focusPanel: true });
+  if (record.section.classList.contains("collapsed")) setSidePanelSectionCollapsed(record, false);
+  queueMicrotask(() => {
+    record.section.scrollIntoView?.({ block: "nearest" });
+    record.button?.focus?.({ preventScroll: true });
+  });
+}
+
+function revealEventsSection() {
+  const record = eventsSectionRecord();
+  if (!record) return;
+  if (record.section.hidden) setSidePanelSectionVisible(record, true);
+  if (document.body.classList.contains("side-panel-collapsed") && !document.body.classList.contains("control-deck-left")) setSidePanelCollapsed(false);
+  if (record.section.classList.contains("collapsed")) setSidePanelSectionCollapsed(record, false);
+  clearUnreadEvents();
+  queueMicrotask(() => record.section.scrollIntoView?.({ block: "nearest" }));
 }
 
 function browserNotificationSupported() {
@@ -17843,6 +18231,24 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }
 
+// "3 min ago", "yesterday 14:05", "Aug 3, 09:12" — for lists where raw ISO stamps were shown.
+function formatRelativeDate(value, now = Date.now()) {
+  if (!value) return "";
+  const date = typeof value === "number" ? new Date(value) : new Date(String(value));
+  const time = date.getTime();
+  if (Number.isNaN(time)) return String(value);
+  const diff = Math.max(0, now - time);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return "just now";
+  if (diff < hour) return `${Math.round(diff / minute)} min ago`;
+  if (diff < day && new Date(now).getDate() === date.getDate()) return `today ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  if (diff < 2 * day) return `yesterday ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  if (diff < 7 * day) return `${Math.round(diff / day)} days ago`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric", ...(new Date(now).getFullYear() === date.getFullYear() ? {} : { year: "numeric" }) });
+}
+
 function stripAnsi(text) {
   return String(text ?? "").replace(/(?:\x1B|\u241B)(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
 }
@@ -17993,7 +18399,9 @@ function formatStatusEntry(key, value) {
 
 function shortModelLabel(model) {
   if (!model) return "unknown";
-  return `(${model.provider}) ${model.id}`;
+  // Model id first: when a narrow footer chip truncates from the end, the useful part survives
+  // ("qwen3.6-35b-a3b · lmstu…" instead of "(lmstu…").
+  return `${model.id} · ${model.provider}`;
 }
 
 function footerThinkingLevelLabel(level) {
@@ -18044,6 +18452,37 @@ function applyOptimisticThinkingSelection(data, tabContext = activeTabContext())
 function footerThinkingLevels() {
   const levels = Array.from(elements.thinkingSelect?.options || []).map((option) => option.value).filter(Boolean);
   return levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+}
+
+// Which thinking levels the active model actually honors (mirrors the server-side rule used for
+// launch slots): non-reasoning models only "off"; xhigh/max only when the model maps them.
+function activeModelSupportedThinkingLevels(model = currentState?.model) {
+  const catalogModel = model && Array.isArray(availableModels)
+    ? availableModels.find((candidate) => candidate?.provider === model.provider && candidate?.id === model.id) || model
+    : model;
+  if (!catalogModel || typeof catalogModel.reasoning !== "boolean") return null; // unknown → don't restrict
+  if (!catalogModel.reasoning) return ["off"];
+  const mapping = catalogModel.thinkingLevelMap && typeof catalogModel.thinkingLevelMap === "object" ? catalogModel.thinkingLevelMap : {};
+  return footerThinkingLevels().filter((level) => {
+    if (mapping[level] === null) return false;
+    if (["xhigh", "max"].includes(level)) return typeof mapping[level] === "string" || !Object.keys(mapping).length;
+    return true;
+  });
+}
+
+function thinkingLevelSupportedByActiveModel(level) {
+  const supported = activeModelSupportedThinkingLevels();
+  return !supported || supported.includes(level);
+}
+
+function syncThinkingSelectSupport() {
+  const supported = activeModelSupportedThinkingLevels();
+  for (const option of elements.thinkingSelect?.options || []) {
+    const ok = !supported || supported.includes(option.value);
+    option.disabled = !ok && option.value !== elements.thinkingSelect.value;
+    const base = option.dataset.baseLabel || (option.dataset.baseLabel = option.textContent);
+    option.textContent = ok ? base : `${base} (not supported by this model)`;
+  }
 }
 
 function formatFooterTokenCount(value) {
@@ -20102,9 +20541,15 @@ function gitFileActionButtons(actions) {
     const button = make("button", `git-file-action ${action.className || ""}`.trim(), action.label);
     button.type = "button";
     button.title = action.title || action.label;
+    if (action.path) button.dataset.gitFileActionPath = action.path;
+    if (action.path && gitChangesState.busyPath === action.path) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+    }
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (button.disabled) return;
       action.onClick();
     });
     wrap.append(button);
@@ -20188,14 +20633,14 @@ function gitChangesFileActionsFor(sectionKey, path) {
   if (!path || gitChangesState.loading || gitChangesState.pulling || gitChangesState.fetching) return [];
   if (sectionKey === "unstaged") {
     return [
-      { label: "Stage", title: `git add -- ${path}`, onClick: () => runGitFileAction("stage", path) },
+      { label: "Stage", path, title: `git add -- ${path}`, onClick: () => runGitFileAction("stage", path) },
       ...gitChangesCommonFileActions(path),
-      { label: "Discard", className: "danger", title: `git restore -- ${path} (destructive)`, onClick: () => runGitFileAction("discard", path) },
+      { label: "Discard", path, className: "danger", title: `git restore -- ${path} (destructive)`, onClick: () => runGitFileAction("discard", path) },
     ];
   }
   if (sectionKey === "staged") {
     return [
-      { label: "Unstage", title: `git restore --staged -- ${path}`, onClick: () => runGitFileAction("unstage", path) },
+      { label: "Unstage", path, title: `git restore --staged -- ${path}`, onClick: () => runGitFileAction("unstage", path) },
       ...gitChangesCommonFileActions(path),
     ];
   }
@@ -20203,9 +20648,18 @@ function gitChangesFileActionsFor(sectionKey, path) {
   return [];
 }
 
+// Per-file fold state for the Git Changes dialog survives the full re-render that follows every
+// stage/unstage/discard, so files the user collapsed stay collapsed.
+const gitChangesCollapsedFiles = new Set();
+
 function renderGitDiffFile(file, actions = []) {
   const details = make("details", `git-diff-file ${file.className || ""}`.trim());
-  details.open = true;
+  const fileKey = file.path || "diff";
+  details.open = !gitChangesCollapsedFiles.has(fileKey);
+  details.addEventListener("toggle", () => {
+    if (details.open) gitChangesCollapsedFiles.delete(fileKey);
+    else gitChangesCollapsedFiles.add(fileKey);
+  });
   details.dataset.gitDiffFile = file.path || "diff";
   const summary = make("summary", "git-diff-file-summary");
   summary.append(
@@ -20326,9 +20780,9 @@ function renderGitUntrackedFile(entry) {
   if (!gitChangesState.loading && !gitChangesState.pulling && !gitChangesState.fetching) {
     const summary = node.querySelector("summary");
     const actions = gitFileActionButtons([
-      { label: "Stage", title: `git add -- ${entry.path}`, onClick: () => runGitFileAction("stage", entry.path) },
+      { label: "Stage", path: entry.path, title: `git add -- ${entry.path}`, onClick: () => runGitFileAction("stage", entry.path) },
       ...gitChangesCommonFileActions(entry.path),
-      { label: "Delete", className: "danger", title: "Delete this untracked file from disk (destructive)", onClick: () => runGitFileAction("delete-untracked", entry.path) },
+      { label: "Delete", path: entry.path, className: "danger", title: "Delete this untracked file from disk (destructive)", onClick: () => runGitFileAction("delete-untracked", entry.path) },
     ]);
     if (summary && actions) summary.append(actions);
   }
@@ -20637,7 +21091,7 @@ function renderGitChangesDialog() {
     return;
   }
   if (!data) {
-    body.append(make("div", "git-changes-empty", "Open from the footer CHANGES chip to load the current git diff."));
+    body.append(make("div", "git-changes-empty", "No diff loaded yet. Open this from the CHANGES chip in the footer, or expand a repository in the Git panel."));
     return;
   }
 
@@ -20679,7 +21133,8 @@ function renderGitChangesDialog() {
 async function loadGitChangesDialog(tabContext = activeTabContext()) {
   const requestSerial = ++gitChangesRequestSerial;
   gitChangesUntrackedContentRequests.clear();
-  gitChangesState = { ...gitChangesState, loading: true, error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId, mode: "changes", commit: null };
+  if (gitChangesState.tabId !== (tabContext.tabId || activeTabId)) gitChangesCollapsedFiles.clear();
+  gitChangesState = { ...gitChangesState, loading: true, busyPath: "", error: "", errorCode: "", errorHint: "", message: "", pullResult: null, tabId: tabContext.tabId || activeTabId, mode: "changes", commit: null };
   renderGitChangesDialog();
   try {
     const [response, operationResponse] = await Promise.all([
@@ -20921,16 +21376,30 @@ async function runGitFileAction(action, path) {
   }[action];
   if (!config) return;
   if (config.confirm && !(await appConfirmText(config.confirm, { affected: path, confirmLabel: action }))) return;
+  if (gitChangesState.busyPath) return; // one file action at a time; ignore double clicks
+  // Remember which control had focus so it can be restored after the dialog re-renders.
+  const focusedActionLabel = document.activeElement?.classList?.contains("git-file-action") ? document.activeElement.textContent : "";
+  const restoreFocus = () => {
+    if (!focusedActionLabel) return;
+    const candidates = [...(elements.gitChangesBody?.querySelectorAll(`.git-file-action[data-git-file-action-path="${CSS.escape(path)}"]`) || [])];
+    const target = candidates.find((node) => node.textContent === focusedActionLabel) || candidates[0]
+      || elements.gitChangesBody?.querySelector(".git-file-action") || elements.gitChangesDialog?.querySelector("button");
+    target?.focus?.({ preventScroll: true });
+  };
+  gitChangesState = { ...gitChangesState, busyPath: path };
+  renderGitChangesDialog();
   try {
     const response = await api(config.url, { method: "POST", body: config.body, tabId });
     if (!response.ok) throw new Error([response.error, response.hint].filter(Boolean).join("\n") || `git ${action} failed`);
-    gitChangesState = { ...gitChangesState, data: response.data?.changes || gitChangesState.data, message: config.label, error: "", errorCode: "", errorHint: "" };
+    gitChangesState = { ...gitChangesState, busyPath: "", data: response.data?.changes || gitChangesState.data, message: config.label, error: "", errorCode: "", errorHint: "" };
     addEvent(config.label, "success");
     renderGitChangesDialog();
+    restoreFocus();
     requestGitFooterWebuiPayload(activeTabContext(tabId), { force: true });
   } catch (error) {
-    gitChangesState = { ...gitChangesState, error: error.message || String(error) };
+    gitChangesState = { ...gitChangesState, busyPath: "", error: error.message || String(error) };
     renderGitChangesDialog();
+    restoreFocus();
     addEvent(error.message || String(error), "error");
   }
 }
@@ -21327,8 +21796,8 @@ function renderGitUndoTools(body, data, busy) {
   row.append(gitToolsButton(
     "Amend last commit message",
     { disabled: busy || !data.canAmendMessage, title: data.canAmendMessage ? "git commit --amend -m <message>" : "Requires an unpushed commit and an empty staging area." },
-    () => {
-      const message = window.prompt("New commit message:", last?.subject || "");
+    async () => {
+      const message = await appPromptText({ title: "Amend last commit message", summary: `git commit --amend -m <message> · current: ${last?.subject || ""}`, defaultValue: last?.subject || "", confirmLabel: "Amend", validate: (value) => (String(value || "").trim() ? "" : "A commit message is required.") });
       if (!message || !message.trim()) return;
       runGitToolAction("undo", {
         url: "/api/git-undo/amend-message",
@@ -21473,10 +21942,10 @@ function renderGitTagTools(body, data, busy) {
     body.append(item);
   }
   const row = make("div", "git-operation-actions");
-  row.append(gitToolsButton("Create annotated tag…", { disabled: busy, title: "git tag -a <name> -m <message> (never pushed automatically)" }, () => {
-    const name = window.prompt("Tag name (annotated tag at HEAD):", "");
+  row.append(gitToolsButton("Create annotated tag…", { disabled: busy, title: "git tag -a <name> -m <message> (never pushed automatically)" }, async () => {
+    const name = await appPromptText({ title: "Create annotated tag", summary: "git tag -a <name> -m <message> at HEAD. Tags are never pushed automatically.", placeholder: "v1.2.3", confirmLabel: "Next", validate: (value) => (String(value || "").trim() ? "" : "A tag name is required.") });
     if (!name || !name.trim()) return;
-    const message = window.prompt("Tag message:", name.trim());
+    const message = await appPromptText({ title: `Tag message for ${name.trim()}`, defaultValue: name.trim(), confirmLabel: "Create tag" });
     if (message === null) return;
     runGitToolAction("tags", {
       url: "/api/git-tags/create",
@@ -23138,7 +23607,8 @@ async function applyFooterThinking(level) {
     } else if (response.data?.level) {
       const requested = response.data.requestedLevel;
       const effective = response.data.level;
-      addEvent(requested && requested !== effective ? `Thinking effort set to ${effective} (requested ${requested}).` : `Thinking effort set to ${effective}.`, "info");
+      if (requested && requested !== effective) addEvent(`Thinking effort set to ${effective}: the active model does not support ${requested}.`, "warn");
+      else addEvent(`Thinking effort set to ${effective}.`, "info");
     }
     await refreshState(tabContext);
   } catch (error) {
@@ -23160,12 +23630,14 @@ function renderFooterThinkingPicker() {
   const current = currentState?.pendingThinkingLevel || currentState?.thinkingLevel || "off";
   for (const level of footerThinkingLevels()) {
     const selected = current === level;
-    const button = make("button", `footer-model-option${selected ? " active" : ""}`);
+    const supported = thinkingLevelSupportedByActiveModel(level);
+    const button = make("button", `footer-model-option${selected ? " active" : ""}${supported ? "" : " unsupported"}`);
     button.type = "button";
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", selected ? "true" : "false");
-    button.title = `Set thinking effort to ${level}`;
-    button.append(make("span", "footer-model-option-main", footerThinkingLevelLabel(level)));
+    button.title = supported ? `Set thinking effort to ${level}` : `${level} is not supported by the active model`;
+    button.disabled = !supported && !selected;
+    button.append(make("span", "footer-model-option-main", supported ? footerThinkingLevelLabel(level) : `${footerThinkingLevelLabel(level)} · not supported`));
     button.addEventListener("click", () => applyFooterThinking(level));
     picker.append(button);
   }
@@ -23354,25 +23826,25 @@ function currentFastPick() {
 function updateAddFastPickButton() {
   if (!pathFastPicksReady) {
     elements.pathPickerAddFastPickButton.disabled = true;
-    elements.pathPickerAddFastPickButton.textContent = "Loading fast picks…";
+    elements.pathPickerAddFastPickButton.textContent = "Loading pinned folders…";
     return;
   }
   const pick = currentFastPick();
   const exists = !!pick && loadFastPicks().some((item) => item.cwd === pick.cwd);
   elements.pathPickerAddFastPickButton.disabled = !pick || exists;
-  elements.pathPickerAddFastPickButton.textContent = exists ? "Fast pick added" : "Add fast pick";
+  elements.pathPickerAddFastPickButton.textContent = exists ? "Pinned" : "Pin this folder";
 }
 
 function renderFastPicks() {
   const picks = loadFastPicks();
   elements.pathPickerFastPicks.replaceChildren();
   if (!pathFastPicksReady) {
-    elements.pathPickerFastPicks.append(make("div", "path-picker-fast-picks-empty muted", "Loading fast picks…"));
+    elements.pathPickerFastPicks.append(make("div", "path-picker-fast-picks-empty muted", "Loading pinned folders…"));
     updateAddFastPickButton();
     return;
   }
   if (picks.length === 0) {
-    elements.pathPickerFastPicks.append(make("div", "path-picker-fast-picks-empty muted", "No fast picks yet."));
+    elements.pathPickerFastPicks.append(make("div", "path-picker-fast-picks-empty muted", "No pinned folders yet. Pin the folders you switch to often."));
     updateAddFastPickButton();
     return;
   }
@@ -23380,7 +23852,7 @@ function renderFastPicks() {
   for (const pick of picks) {
     const item = make("span", "path-picker-fast-pick");
     const jump = pathPickerButton(fastPickLabel(pick), pick.cwd, () => loadPathPickerDirectory(pick.cwd), "path-picker-fast-pick-button");
-    const remove = pathPickerButton("×", `Remove fast pick ${pick.cwd}`, async () => {
+    const remove = pathPickerButton("×", `Unpin ${pick.cwd}`, async () => {
       await saveFastPicks(loadFastPicks().filter((item) => item.cwd !== pick.cwd));
     }, "path-picker-fast-pick-remove");
     item.append(jump, remove);
@@ -23538,6 +24010,7 @@ async function changeActiveTabCwd() {
   }
 
   if (!(await appConfirmText(`Restart ${tab.title} in:\n${cwd}\n\nCurrent in-flight work in this tab will be stopped. The conversation continues in the new directory.`, { affected: tab.title, confirmLabel: "Change working folder" }))) return;
+  if (activeFileViewer?.dirty && !(await confirmDiscardEdits({ what: "unsaved file edits", target: activeFileViewer.path }))) return;
 
   saveActiveDraft();
   if (isCurrentTabContext(tabContext)) {
@@ -26323,9 +26796,38 @@ async function reloadActiveTabForSubagentLaunchSlots() {
   }
 }
 
+// The launch-slot editor lives in a collapsed <details> inside the (usually collapsed) Subagents
+// section, yet its config payload is one of the largest boot requests (~290 KB uncompressed).
+// Load it lazily: only when the editor is actually visible, otherwise on first reveal.
+let subagentLaunchSlotConfigDeferred = false;
+
+function subagentLaunchSlotsVisible() {
+  const details = elements.subagentLaunchSlots;
+  if (!details || !details.open) return false;
+  const section = details.closest?.("[data-side-panel-section]");
+  return !section || (!section.hidden && !section.classList.contains("collapsed"));
+}
+
+function loadSubagentLaunchSlotConfigWhenVisible(options = {}) {
+  if (subagentLaunchSlotsVisible()) {
+    subagentLaunchSlotConfigDeferred = false;
+    return loadSubagentLaunchSlotConfig(options);
+  }
+  subagentLaunchSlotConfigDeferred = true;
+  renderSubagentLaunchSlots();
+  return Promise.resolve();
+}
+
+function revealSubagentLaunchSlotConfigIfDeferred() {
+  if (!subagentLaunchSlotConfigDeferred || !subagentLaunchSlotsVisible()) return;
+  subagentLaunchSlotConfigDeferred = false;
+  loadSubagentLaunchSlotConfig().catch(() => {});
+}
+
 function initializeSubagentLaunchSlots() {
   renderSubagentLaunchSlots();
-  if (activeTabId) loadSubagentLaunchSlotConfig().catch(() => {});
+  if (activeTabId) loadSubagentLaunchSlotConfigWhenVisible().catch(() => {});
+  elements.subagentLaunchSlots?.addEventListener("toggle", () => revealSubagentLaunchSlotConfigIfDeferred());
 }
 
 function samplingParametersPath(tabId) {
@@ -26922,7 +27424,9 @@ function renderStatus() {
   );
   elements.stateDetails.append(overview, infoGrid);
 
-  if (shownThinkingLevel) elements.thinkingSelect.value = shownThinkingLevel;
+  if (controlsPendingThinkingValue && shownThinkingLevel === controlsPendingThinkingValue) setControlsPendingThinking("");
+  if (shownThinkingLevel && !controlsPendingThinkingValue) elements.thinkingSelect.value = shownThinkingLevel;
+  syncThinkingSelectSupport();
   elements.compactButton.disabled = !!state?.isCompacting;
   elements.compactButton.textContent = state?.isCompacting ? "Compacting…" : "Compact";
   syncModelSelectToState();
@@ -29124,6 +29628,47 @@ function renderAppRunnerInputForm(run) {
   });
   form.append(input, send, eof);
   return form;
+}
+
+// Fast path for streaming app-runner output: same run, same lifecycle state, output only grew.
+function patchAppRunnerWidgetInPlace(tabId, previousRun, nextRun) {
+  if (tabId !== activeTabId) return true; // not the visible tab; nothing to repaint here
+  if (!previousRun || !nextRun || previousRun.id !== nextRun.id) return false;
+  if (appRunnerIsRunning(previousRun) !== appRunnerIsRunning(nextRun)) return false;
+  if ((previousRun.status || "") !== (nextRun.status || "") || Boolean(previousRun.truncated) !== Boolean(nextRun.truncated)) return false;
+  const widget = elements.widgetArea?.querySelector(".app-runner-widget");
+  const terminal = widget?.querySelector(".release-npm-terminal");
+  if (!widget || !terminal) return false;
+  const previousLines = appRunnerOutputLines(previousRun);
+  const nextLines = appRunnerOutputLines(nextRun);
+  if (nextLines.length < previousLines.length) return false;
+  // The server keeps a bounded window; when it starts dropping the head, prefixes diverge.
+  const sample = Math.min(previousLines.length, 3);
+  for (let index = 0; index < sample; index += 1) {
+    if (previousLines[previousLines.length - 1 - index] !== nextLines[previousLines.length - 1 - index]) return false;
+  }
+  const renderedCount = previousLines.length ? terminal.childElementCount : 0;
+  if (renderedCount !== previousLines.length) return false;
+  // A partial pending line is re-rendered as it grows: replace the last row when it changed.
+  const pendingIndex = previousRun.pendingLine ? previousLines.length - 1 : -1;
+  if (pendingIndex >= 0 && nextLines[pendingIndex] !== previousLines[pendingIndex]) {
+    terminal.children[pendingIndex]?.remove();
+    const rest = nextLines.slice(pendingIndex);
+    if (!previousLines.length) terminal.replaceChildren();
+    for (const line of rest) appendReleaseNpmTerminalLine(terminal, line);
+  } else {
+    if (!previousLines.length) terminal.replaceChildren();
+    for (const line of nextLines.slice(previousLines.length)) appendReleaseNpmTerminalLine(terminal, line);
+  }
+  const count = widget.querySelector(".release-npm-stream-count");
+  const lineCount = Math.max(nextRun.lineCount || 0, nextLines.length);
+  if (count) count.textContent = `${lineCount} line${lineCount === 1 ? "" : "s"}`;
+  const elapsedPill = widget.querySelector(".release-npm-pill.elapsed");
+  const elapsed = appRunnerElapsedLabel(nextRun);
+  if (elapsedPill && elapsed && elapsedPill.textContent !== elapsed) elapsedPill.textContent = elapsed;
+  // Keep the terminal pinned to the bottom when it was already there.
+  if (terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40) terminal.scrollTop = terminal.scrollHeight;
+  return true;
 }
 
 function renderAppRunnerWidget() {
@@ -31825,7 +32370,7 @@ function renderGitWorkflow() {
     }
   } else if (gitWorkflow.step === "generate") {
     const commitInputButton = renderGitWorkflowManualCommitInput({ appendCommitButton: false });
-    addGitWorkflowAction("Run /git-staged-msg", () => runGitMessagePrompt(), "primary", false);
+    addGitWorkflowAction("Generate commit message", () => runGitMessagePrompt(), "primary", false);
     addGitWorkflowAction("Preview current message files", () => loadGitWorkflowMessage({ requireFresh: false }), "", false);
     elements.gitWorkflowActions.append(commitInputButton);
   } else if (gitWorkflow.step === "generating") {
@@ -31859,7 +32404,7 @@ function renderGitWorkflow() {
     addGitWorkflowAction("Refresh PR description", () => loadGitWorkflowPr({ requireFresh: true }), "", false);
   } else if (gitWorkflow.step === "prReview") {
     addGitWorkflowAction("Create PR", () => createGitPrFromReview(), "primary", false);
-    addGitWorkflowAction("Regenerate /pr", () => runGitPrPrompt(), "", false);
+    addGitWorkflowAction("Regenerate PR text", () => runGitPrPrompt(), "", false);
   } else if (gitWorkflow.step === "prCreating") {
     addGitWorkflowAction("Creating PR…", () => {}, "primary", true);
   } else if (gitWorkflow.step === "done") {
@@ -32320,7 +32865,7 @@ async function promptGitInitReadme(status, { runId, tabId }) {
   try {
     await api("/api/prompt", { method: "POST", body: { message: gitInitReadmePromptMessage({ stack, status, repoName }) }, tabId });
     if (!isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput("README.md request accepted. Waiting for agent_end, then README.md/.gitignore will be checked and staged. If Pi does not create README.md, Web UI will use a minimal fallback README.", { tabId });
+    appendGitWorkflowOutput("README.md request accepted. Waiting for Pi to finish, then README.md/.gitignore will be checked and staged. If Pi does not create README.md, Web UI will use a minimal fallback README.", { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -32362,7 +32907,7 @@ async function promptGitInitGitignore(status, { runId, tabId }) {
   try {
     await api("/api/prompt", { method: "POST", body: { message: gitInitGitignorePromptMessage({ stack, status, repoName }) }, tabId });
     if (!isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput(".gitignore request accepted. Waiting for agent_end, then README.md/.gitignore will be staged. If Pi does not create .gitignore, Web UI will use sane fallback patterns.", { tabId });
+    appendGitWorkflowOutput(".gitignore request accepted. Waiting for Pi to finish, then README.md/.gitignore will be staged. If Pi does not create .gitignore, Web UI will use sane fallback patterns.", { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -32616,16 +33161,16 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
     error: "",
     messageRequestedAt: requestedAt,
     messageGenerationId: "",
-    output: "Sending /git-staged-msg to Pi.\n\nCancel will request Pi abort.",
+    output: "Asking Pi to write the commit message…\n\nCancel stops the request.",
   }, { tabId });
-  if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending /git-staged-msg to Pi…");
+  if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Generating commit message…");
   try {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "commit", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
     const generationId = String(generation.generationId || "").trim();
     if (!generationId) throw new Error("The WebUI server did not return a commit-message generation ID. Restart Pi Web UI and regenerate.");
     setGitWorkflow({ messageGenerationId: generationId }, { tabId });
-    appendGitWorkflowOutput(`/git-staged-msg accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then both correlated message files will be loaded.`, { tabId });
+    appendGitWorkflowOutput(`Commit message generation started with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for Pi to finish, then the short and long messages will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -32787,7 +33332,7 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
   try {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "branch", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput(`Branch-name request accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the branch name will be loaded.`, { tabId });
+    appendGitWorkflowOutput(`Branch-name request accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for Pi to finish, then the branch name will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -32859,7 +33404,7 @@ async function createGitPrBranchWithSuggestion(suggestion, tabId = gitWorkflowAc
   const workflow = gitWorkflowForTab(tabId, { create: false });
   if (!workflow) return;
   const sourceWorkflow = { ...workflow, actionsDone: createGitWorkflowActionsDone(workflow.actionsDone) };
-  const proposedBranch = prompt("New PR branch worktree name (example: type/feature-name)", suggestion || defaultGitPrBranchName(workflow.message));
+  const proposedBranch = await appPromptText({ title: "New PR branch worktree", summary: "Branch name for the pull-request worktree (example: type/feature-name).", defaultValue: suggestion || defaultGitPrBranchName(workflow.message), confirmLabel: "Create worktree" });
   if (expectedRunId !== undefined && !isCurrentGitWorkflowRun(expectedRunId, tabId)) return;
   if (proposedBranch === null) {
     setGitWorkflow({ step: "message", busy: false, output: `${formatCommitMessagePreview(sourceWorkflow.message)}\n\nPR branch worktree creation cancelled. Use Create PR worktree to generate a branch name again or Manual worktree to type one.` }, { tabId });
@@ -33130,7 +33675,7 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
   try {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "pr" }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput(`/pr accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for agent_end, then the PR description will be loaded.`, { tabId });
+    appendGitWorkflowOutput(`PR text generation started with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for Pi to finish, then the PR description will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -34248,9 +34793,22 @@ function appendInlineMarkdown(parent, text, depth = 0) {
         continue;
       }
     }
+    if (value[index] === "h" && (value.startsWith("http://", index) || value.startsWith("https://", index)) && !isMarkdownWordCharacter(value[index - 1])) {
+      const match = value.slice(index).match(MARKDOWN_BARE_URL_REGEX);
+      const href = match ? trimBareUrl(match[0]) : "";
+      const safeHref = href ? safeMarkdownLinkHref(href) : "";
+      if (safeHref) {
+        const link = make("a");
+        configureMarkdownLink(link, safeHref);
+        link.textContent = href;
+        parent.append(link);
+        index += href.length;
+        continue;
+      }
+    }
     const strongMarker = value.startsWith("**", index) ? "**" : value.startsWith("__", index) ? "__" : "";
-    if (strongMarker) {
-      const end = value.indexOf(strongMarker, index + 2);
+    if (strongMarker && markdownCanOpenEmphasis(value, index, strongMarker)) {
+      const end = findMarkdownEmphasisClose(value, index + 2, strongMarker);
       if (end > index + 2) {
         const strong = make("strong");
         appendInlineMarkdown(strong, value.slice(index + 2, end), depth + 1);
@@ -34270,8 +34828,8 @@ function appendInlineMarkdown(parent, text, depth = 0) {
       }
     }
     const emphasisMarker = value[index] === "*" || value[index] === "_" ? value[index] : "";
-    if (emphasisMarker && value[index + 1] !== emphasisMarker) {
-      const end = value.indexOf(emphasisMarker, index + 1);
+    if (emphasisMarker && value[index + 1] !== emphasisMarker && markdownCanOpenEmphasis(value, index, emphasisMarker)) {
+      const end = findMarkdownEmphasisClose(value, index + 1, emphasisMarker);
       if (end > index + 1) {
         const em = make("em");
         appendInlineMarkdown(em, value.slice(index + 1, end), depth + 1);
@@ -34280,11 +34838,57 @@ function appendInlineMarkdown(parent, text, depth = 0) {
         continue;
       }
     }
-    const nextSpecials = ["`", "[", "**", "__", "~~", "*", "_"]
+    const nextSpecials = ["`", "[", "**", "__", "~~", "*", "_", "http://", "https://"]
       .map((marker) => value.indexOf(marker, index + 1))
       .filter((pos) => pos !== -1);
     appendPlain(nextSpecials.length ? Math.min(...nextSpecials) : value.length);
   }
+}
+
+// CommonMark-ish flanking rules so identifiers such as snake_case_name, MAX_RETRY_COUNT or
+// 2*3*4 stop turning into emphasis. `_` never opens/closes inside a word; `*` may not open
+// before whitespace or close after whitespace.
+const MARKDOWN_BARE_URL_REGEX = /^https?:\/\/[^\s<>"'`]+/;
+
+function isMarkdownWordCharacter(character) {
+  return Boolean(character) && /[\p{L}\p{N}_]/u.test(character);
+}
+
+function markdownCanOpenEmphasis(value, index, marker) {
+  const after = value[index + marker.length];
+  if (!after || /\s/.test(after)) return false;
+  if (marker[0] === "_" && isMarkdownWordCharacter(value[index - 1])) return false;
+  return true;
+}
+
+function markdownCanCloseEmphasis(value, index, marker) {
+  const before = value[index - 1];
+  if (!before || /\s/.test(before)) return false;
+  if (marker[0] === "_" && isMarkdownWordCharacter(value[index + marker.length])) return false;
+  return true;
+}
+
+function findMarkdownEmphasisClose(value, from, marker) {
+  let cursor = from;
+  while (cursor < value.length) {
+    const candidate = value.indexOf(marker, cursor);
+    if (candidate === -1) return -1;
+    // Skip runs longer than the marker (e.g. "***" when looking for "*") — they are not a clean close.
+    const runEnd = candidate + marker.length;
+    const overlong = marker.length === 1 && value[runEnd] === marker;
+    if (!overlong && markdownCanCloseEmphasis(value, candidate, marker)) return candidate;
+    cursor = overlong ? runEnd + 1 : candidate + 1;
+  }
+  return -1;
+}
+
+function trimBareUrl(url) {
+  let text = String(url || "");
+  // Trailing punctuation usually belongs to the sentence, not the link.
+  while (/[.,;:!?'"]$/.test(text)) text = text.slice(0, -1);
+  // Balance closing parentheses (Wikipedia-style links keep their own parens).
+  while (text.endsWith(")") && (text.match(/\(/g) || []).length < (text.match(/\)/g) || []).length) text = text.slice(0, -1);
+  return text;
 }
 
 function appendMarkdownParagraph(parent, lines) {
@@ -34569,11 +35173,82 @@ function appendMarkdownTable(parent, rows) {
 }
 
 function markdownListMatch(line) {
-  const unordered = line.match(/^\s{0,3}[-*+]\s+(.+)$/);
-  if (unordered) return { ordered: false, text: unordered[1] };
-  const ordered = line.match(/^\s{0,3}(\d+)[.)]\s+(.+)$/);
-  if (ordered) return { ordered: true, start: Number(ordered[1]), text: ordered[2] };
+  const unordered = line.match(/^(\s*)[-*+]\s+(.+)$/);
+  if (unordered) return { ordered: false, text: unordered[2], indent: unordered[1].replace(/\t/g, "  ").length, markerWidth: 2 };
+  const ordered = line.match(/^(\s*)(\d+)[.)]\s+(.+)$/);
+  if (ordered) return { ordered: true, start: Number(ordered[2]), text: ordered[3], indent: ordered[1].replace(/\t/g, "  ").length, markerWidth: ordered[2].length + 2 };
   return null;
+}
+
+// Builds nested lists from a block of list lines using indentation: a marker line indented at
+// least two columns deeper than the current list starts a child list of the previous item;
+// indented non-marker lines continue the previous item's text.
+function parseMarkdownListTree(blockLines) {
+  const lists = [];
+  const stack = [];
+  let lastItem = null;
+  const newList = (match) => ({ ordered: match.ordered, start: match.ordered ? match.start : null, items: [], indent: match.indent });
+  for (const line of blockLines) {
+    const match = markdownListMatch(line);
+    if (!match) {
+      if (lastItem && line.trim()) lastItem.text += `\n${line.trim()}`;
+      continue;
+    }
+    while (stack.length && match.indent < stack[stack.length - 1].indent) stack.pop();
+    let top = stack[stack.length - 1];
+    if (!top) {
+      top = newList(match);
+      lists.push(top);
+      stack.push(top);
+    } else if (match.indent >= top.indent + 2 && lastItem && lastItem.list === top) {
+      top = newList(match);
+      lastItem.children.push(top);
+      stack.push(top);
+    } else if (top.ordered !== match.ordered) {
+      stack.pop();
+      top = newList(match);
+      const parentList = stack[stack.length - 1];
+      const owner = parentList?.items[parentList.items.length - 1];
+      if (owner) owner.children.push(top);
+      else lists.push(top);
+      stack.push(top);
+    }
+    const item = { text: match.text, children: [], list: top };
+    top.items.push(item);
+    lastItem = item;
+  }
+  return lists;
+}
+
+function appendMarkdownListTree(parent, tree) {
+  const build = (list) => {
+    const element = make(list.ordered ? "ol" : "ul", "markdown-list");
+    if (list.ordered && Number.isFinite(list.start) && list.start > 1) element.start = list.start;
+    for (const item of list.items) {
+      const li = make("li");
+      const [firstLine, ...moreLines] = String(item.text).split("\n");
+      const task = firstLine.match(/^\[( |x|X|-)\]\s+(.+)$/);
+      if (task) {
+        li.classList.add("markdown-task-item");
+        const checkbox = make("input", "markdown-task-checkbox");
+        checkbox.type = "checkbox";
+        checkbox.disabled = true;
+        checkbox.checked = task[1].toLowerCase() === "x";
+        li.append(checkbox);
+        appendInlineMarkdown(li, task[2]);
+      } else {
+        appendInlineMarkdown(li, firstLine);
+      }
+      for (const extra of moreLines) {
+        li.append(make("br"));
+        appendInlineMarkdown(li, extra);
+      }
+      for (const child of item.children) li.append(build(child));
+      element.append(li);
+    }
+    return element;
+  };
+  for (const list of tree) parent.append(build(list));
 }
 
 function appendMarkdownList(parent, items, ordered = false, start = null) {
@@ -34615,13 +35290,15 @@ function renderMarkdownInto(parent, text) {
       index += 1;
       continue;
     }
-    const fence = line.match(/^\s*```\s*([\w.+-]*)\s*$/);
+    const fence = line.match(/^\s*(`{3,}|~{3,})\s*([\w.+-]*)\s*$/);
     if (fence) {
       flushParagraph();
-      const language = fence[1] || "";
+      const delimiter = fence[1];
+      const language = fence[2] || "";
+      const closingFence = new RegExp(`^\\s*${delimiter[0] === "~" ? "~" : "\`"}{${delimiter.length},}\\s*$`);
       const codeLines = [];
       index += 1;
-      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+      while (index < lines.length && !closingFence.test(lines[index])) {
         codeLines.push(lines[index]);
         index += 1;
       }
@@ -34672,16 +35349,25 @@ function renderMarkdownInto(parent, text) {
     const listMatch = markdownListMatch(line);
     if (listMatch) {
       flushParagraph();
-      const ordered = listMatch.ordered;
-      const start = listMatch.start || null;
-      const items = [];
+      // Collect the whole list block: marker lines plus indented continuation lines. A blank line
+      // followed by an indented line stays in the list (loose list); anything else ends it.
+      const blockLines = [];
       while (index < lines.length) {
-        const item = markdownListMatch(lines[index]);
-        if (!item || item.ordered !== ordered) break;
-        items.push(item.text);
-        index += 1;
+        const current = lines[index];
+        if (markdownListMatch(current) || (blockLines.length && /^\s{2,}\S/.test(current))) {
+          blockLines.push(current);
+          index += 1;
+          continue;
+        }
+        if (!current.trim() && blockLines.length && index + 1 < lines.length && /^\s{2,}\S/.test(lines[index + 1]) && (markdownListMatch(lines[index + 1]) || true)) {
+          blockLines.push("");
+          index += 1;
+          continue;
+        }
+        break;
       }
-      appendMarkdownList(parent, items, ordered, start);
+      while (blockLines.length && !blockLines[blockLines.length - 1].trim()) blockLines.pop();
+      appendMarkdownListTree(parent, parseMarkdownListTree(blockLines));
       continue;
     }
     paragraph.push(line);
@@ -34793,6 +35479,39 @@ function renderStreamingMarkdown(block, text, { complete = false } = {}) {
   }
 }
 
+// Minimal lightbox: click an inline/transcript image (or attachment thumbnail) to view it large.
+let imageLightbox = null;
+function openImageLightbox(src, alt = "") {
+  if (!src) return;
+  if (!imageLightbox) {
+    imageLightbox = document.createElement("dialog");
+    imageLightbox.className = "image-lightbox";
+    imageLightbox.setAttribute("aria-label", "Image preview");
+    const figure = document.createElement("figure");
+    const image = document.createElement("img");
+    const caption = document.createElement("figcaption");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "image-lightbox-close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "Close image preview");
+    close.addEventListener("click", () => imageLightbox.close());
+    imageLightbox.addEventListener("click", (event) => {
+      if (event.target === imageLightbox) imageLightbox.close();
+    });
+    figure.append(image, caption);
+    imageLightbox.append(close, figure);
+    document.body.append(imageLightbox);
+  }
+  const image = imageLightbox.querySelector("img");
+  const caption = imageLightbox.querySelector("figcaption");
+  image.src = src;
+  image.alt = alt || "";
+  caption.textContent = alt || "";
+  caption.hidden = !alt;
+  if (!imageLightbox.open) imageLightbox.showModal();
+}
+
 function appendImage(parent, part) {
   const wrapper = make("div", "image-block");
   const img = document.createElement("img");
@@ -34801,7 +35520,14 @@ function appendImage(parent, part) {
   img.style.maxWidth = "100%";
   img.style.borderRadius = "0.6rem";
   img.src = `data:${part.mimeType || "image/png"};base64,${part.data || part.content || ""}`;
-  wrapper.append(img);
+  // Click/Enter opens the image at full size (transcript images used to be view-only thumbnails).
+  const button = make("button", "image-block-button");
+  button.type = "button";
+  button.title = "Open image at full size";
+  button.setAttribute("aria-label", "Open image at full size");
+  button.append(img);
+  button.addEventListener("click", () => openImageLightbox(img.src, "attached image"));
+  wrapper.append(button);
   parent.append(wrapper);
 }
 
@@ -34879,7 +35605,7 @@ async function sendLiveActionFeedback(item) {
   if (isCurrentTabContext(tabContext)) addEvent(`sent ${ACTION_FEEDBACK_REACTIONS[item.reaction]?.icon || "feedback"} action feedback as live steering`);
 }
 
-function setActionFeedback(message, messageIndex, reaction) {
+async function setActionFeedback(message, messageIndex, reaction) {
   const tabId = activeTabId;
   if (!tabId || !ACTION_FEEDBACK_REACTIONS[reaction]) return;
   const key = actionFeedbackKey(message, messageIndex);
@@ -34887,7 +35613,7 @@ function setActionFeedback(message, messageIndex, reaction) {
   const existing = map.get(key);
   let comment = existing?.comment || "";
   if (reaction === "down") {
-    const nextComment = window.prompt("Optional comment for Pi about what to avoid:", comment);
+    const nextComment = await appPromptText({ title: "What should Pi avoid?", summary: "Optional note sent with the thumbs-down feedback.", defaultValue: comment, confirmLabel: "Send feedback" });
     if (nextComment === null) return;
     comment = nextComment.trim();
   }
@@ -34984,7 +35710,7 @@ function renderActionFeedbackControls(bubble, message, messageIndex) {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      setActionFeedback(message, messageIndex, reaction);
+      setActionFeedback(message, messageIndex, reaction).catch((error) => addEvent(error.message || String(error), "error"));
     });
     controls.append(button);
   }
@@ -35090,7 +35816,7 @@ function renderContent(parent, content, { markdown = false } = {}) {
 
 function messageTitle(message) {
   if (message.role === "assistant") return message.title || "final output";
-  if (message.title) return message.title;
+  if (message.title) return message.repeatCount > 1 ? `${message.title} (×${message.repeatCount})` : message.title;
   if (message.role === "thinking") return "thinking";
   if (message.role === "toolCall") return `tool call: ${message.toolName || "unknown"}`;
   if (message.role === "toolExecution") return toolExecutionTitle(message);
@@ -35341,8 +36067,44 @@ function assistantFinalOutputPart(part) {
   return null;
 }
 
+function latestPersistedAssistantFailureTimestamp(messages = latestMessages) {
+  const lastUserIndex = (messages || []).findLastIndex((message) => message?.role === "user");
+  for (let index = (messages || []).length - 1; index > lastUserIndex; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "assistant" && message.stopReason === "error") return messageTimestampMs(message) || Date.now();
+  }
+  return 0;
+}
+
+function assistantFailureDisplayMessage(message, base) {
+  if (message?.stopReason === "error") {
+    return {
+      ...base,
+      role: "error",
+      title: "assistant error",
+      level: "error",
+      content: describeAssistantFailure(String(message.errorMessage || "The assistant request failed without an error message.").trim()),
+      persistedFailure: true,
+      actions: assistantFailureActions(),
+    };
+  }
+  if (message?.stopReason === "aborted") {
+    return { ...base, role: "native", title: "aborted", level: "warn", content: "This turn was aborted before it finished.", persistedFailure: true };
+  }
+  return null;
+}
+
 function assistantDisplayMessages(message) {
   if (message?.role !== "assistant") return [message];
+  const failure = assistantFailureDisplayMessage(message, { timestamp: message.timestamp });
+  if (failure) {
+    const rest = assistantDisplayMessagesWithoutFailure({ ...message, stopReason: undefined });
+    return [...rest, failure];
+  }
+  return assistantDisplayMessagesWithoutFailure(message);
+}
+
+function assistantDisplayMessagesWithoutFailure(message) {
   const base = { timestamp: message.timestamp };
   const content = message.content;
   if (typeof content === "string") {
@@ -36781,7 +37543,8 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
     if (role === "user") bubble.dataset.userPrompt = "true";
   }
   if (itemKey) bubble.dataset.itemKey = itemKey;
-  const isCollapsibleOutput = compactThinkingAggregate || (!streaming && (message.role === "toolResult" || message.role === "bashExecution" || message.role === "compactionSummary"));
+  const collapsibleThinking = !streaming && !compactTranscript && message.role === "thinking" && !compactThinkingAggregate;
+  const isCollapsibleOutput = compactThinkingAggregate || collapsibleThinking || (!streaming && (message.role === "toolResult" || message.role === "bashExecution" || message.role === "compactionSummary"));
 
   const hideMessageHeader = message.role === "assistant" && !isCollapsibleOutput;
   if (hideMessageHeader) bubble.setAttribute("aria-label", messageTitle(message));
@@ -36823,6 +37586,15 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
       const defaultExpanded = message.compactThinkingDefaultExpanded === true;
       details.open = compactThinkingDisclosureExpanded(message.compactThinkingKey, defaultExpanded);
       if (message.compactThinkingKey) details.addEventListener("toggle", () => setCompactThinkingDisclosureExpanded(message.compactThinkingKey, details.open, defaultExpanded));
+    } else if (collapsibleThinking) {
+      // Persisted thinking starts folded (a high-effort model can dominate the transcript with it);
+      // each block remembers its own state per tab, like the compact-mode aggregate does.
+      const thinkingKey = `thinking:${itemKey || messageIndex}:${segmentId}`;
+      details.classList.add("thinking-disclosure");
+      details.open = compactThinkingDisclosureExpanded(thinkingKey, false);
+      details.addEventListener("toggle", () => setCompactThinkingDisclosureExpanded(thinkingKey, details.open, false));
+      const previewText = String(message.thinking || textFromContent(message.content) || "").replace(/\s+/g, " ").trim().slice(0, 140);
+      if (previewText) header.append(make("span", "thinking-disclosure-preview", previewText));
     } else if (shouldOpenMessageCollapseByDefault(message)) details.open = true;
     details.append(header, body);
     bubble.append(details);
@@ -36835,6 +37607,22 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
     bubble.append(body);
   } else {
     bubble.append(header, body);
+  }
+  if (Array.isArray(message.actions) && message.actions.length) {
+    const actions = make("div", "message-actions");
+    for (const action of message.actions) {
+      if (!action?.label) continue;
+      const button = make("button", `message-action-button${action.primary ? " primary" : ""}`, action.label);
+      button.type = "button";
+      if (action.title) button.title = action.title;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        Promise.resolve(action.run?.()).catch((error) => addEvent(error?.message || String(error), "error"));
+      });
+      actions.append(button);
+    }
+    if (actions.childElementCount) (bubble.querySelector(":scope > .message-body") || bubble).after(actions);
   }
   ownTranscriptBubble(bubble, body, message, { itemKey, streaming, transient, segmentId });
   ensureToolInteractionDelegation();
@@ -36931,7 +37719,7 @@ function appendTranscriptMessage(message, { streaming = false, messageIndex = -1
     if (displayMessage.role === "toolCall" && displayMessage.toolCallId) {
       transcriptMessage = toolExecutionMessageFromCall(displayMessage);
     }
-    if (compactTranscript && transcriptMessage.role !== "assistant") return;
+    if (compactTranscript && transcriptMessage.role !== "assistant" && !transcriptMessage.persistedFailure) return;
     if (transcriptMessage.role === "thinking" && !thinkingOutputVisible) return;
     const created = appendMessage(transcriptMessage, {
       streaming: false,
@@ -37066,7 +37854,11 @@ function createRunIndicatorBubble() {
   pulse.setAttribute("aria-hidden", "true");
   runIndicatorText = make("span", "run-indicator-text");
   runIndicatorMeta = make("span", "run-indicator-meta");
-  row.append(pulse, runIndicatorText, runIndicatorMeta);
+  // Elapsed time ticks every second; keep it out of the accessibility tree so the polite live
+  // region only announces real activity changes, not "run time 12s / 13s / …".
+  runIndicatorElapsed = make("span", "run-indicator-elapsed");
+  runIndicatorElapsed.setAttribute("aria-hidden", "true");
+  row.append(pulse, runIndicatorText, runIndicatorMeta, runIndicatorElapsed);
   body.append(row);
   runIndicatorBubble.append(body);
 }
@@ -37083,8 +37875,10 @@ function updateRunIndicatorBubble() {
   const headline = runIndicatorHeadline();
   if (runIndicatorText.textContent !== headline) runIndicatorText.textContent = headline;
   const detail = runIndicatorDetail();
-  const meta = runIndicatorShowsElapsed() ? `${detail} · run time ${formatRunIndicatorElapsed()}` : detail;
+  const meta = detail;
   if (runIndicatorMeta.textContent !== meta) runIndicatorMeta.textContent = meta;
+  const elapsed = runIndicatorShowsElapsed() ? ` · run time ${formatRunIndicatorElapsed()}` : "";
+  if (runIndicatorElapsed && runIndicatorElapsed.textContent !== elapsed) runIndicatorElapsed.textContent = elapsed;
 }
 
 function removeRunIndicatorBubble() {
@@ -37093,6 +37887,7 @@ function removeRunIndicatorBubble() {
   runIndicatorBubble = null;
   runIndicatorText = null;
   runIndicatorMeta = null;
+  runIndicatorElapsed = null;
 }
 
 function renderRunIndicator({ scroll = false } = {}) {
@@ -37377,7 +38172,11 @@ function orderedTranscriptItems() {
     if (resultId && assistantToolCallIds.has(resultId)) return;
     items.push({ message, messageIndex: index, transient: false, timestampMs: messageTimestampMs(message), order: index });
   });
+  const persistedFailureAt = latestPersistedAssistantFailureTimestamp(latestMessages);
   transientMessages.forEach((message, index) => {
+    // Once Pi's authoritative transcript carries the failed assistant turn (stopReason error), the
+    // live "Assistant error" cards for the same failure are redundant.
+    if (persistedFailureAt && message?.role === "error" && message?.title === "Assistant error" && messageTimestampMs(message) <= persistedFailureAt + 5000) return;
     items.push({ message, messageIndex: index, transient: true, timestampMs: messageTimestampMs(message), order: latestMessages.length + index });
   });
   let liveOrder = latestMessages.length + transientMessages.length;
@@ -37808,7 +38607,11 @@ function applyNativeSlashCommandEffects(response, message, tabContext = activeTa
     if (warning) addEvent(String(warning), "warn");
   }
   for (const toast of data.toasts || []) {
-    if (toast?.message) addEvent(String(toast.message), toast.level || "info");
+    if (!toast?.message) continue;
+    const level = toast.level || "info";
+    addEvent(String(toast.message), level);
+    // Extensions asked for a toast explicitly; info/success levels are not auto-surfaced by addEvent.
+    if (level !== "warn" && level !== "error") showNoticeToast(String(toast.message), level);
   }
 
   if (data.copyText) {
@@ -37864,12 +38667,29 @@ function applyNativeSlashCommandEffects(response, message, tabContext = activeTa
   if (refresh.includes("themes")) initializeThemes().catch((error) => addEvent(error.message || String(error), "error"));
 }
 
-function addTransientMessage({ role = "notice", title, content, level = "info", ...details }) {
+function addTransientMessage({ role = "notice", title, content, level = "info", key = "", ...details }) {
+  // `key` upserts (e.g. one live "auto retry" card that counts down instead of one card per
+  // attempt); identical consecutive error/warn cards collapse into one with a repeat counter.
+  const last = transientMessages[transientMessages.length - 1];
+  if (key) {
+    const existing = transientMessages.findLast((message) => message?.key === key);
+    if (existing) {
+      Object.assign(existing, { role, title, level, content, ...details, timestamp: Date.now() });
+      renderAllMessages();
+      return;
+    }
+  } else if (last && (level === "error" || level === "warn") && last.level === level && last.role === role && last.title === title && last.content === content && Date.now() - (last.timestamp || 0) < 120_000) {
+    last.repeatCount = (last.repeatCount || 1) + 1;
+    last.timestamp = Date.now();
+    renderAllMessages();
+    return;
+  }
   transientMessages.push({
     role,
     title,
     level,
     content,
+    key,
     ...details,
     timestamp: Date.now(),
   });
@@ -37877,11 +38697,37 @@ function addTransientMessage({ role = "notice", title, content, level = "info", 
   renderAllMessages();
 }
 
-function surfaceRuntimeDiagnostic(title, content, level = "error") {
+function surfaceRuntimeDiagnostic(title, content, level = "error", { actions = null } = {}) {
   const message = String(content || "").trim();
   if (!message) return;
-  addEvent(message, level);
-  addTransientMessage({ role: level === "error" ? "error" : "warn", title, content: message, level });
+  addEvent(message, level, { notify: false }); // the transcript card below is the visible feedback
+  addTransientMessage({ role: level === "error" ? "error" : "warn", title, content: message, level, ...(actions ? { actions } : {}) });
+}
+
+// Recovery actions for a failed assistant turn: retry the last prompt as-is, or pick another model.
+function assistantFailureActions(tabId = activeTabId) {
+  const entry = tabId ? lastUserPromptByTab.get(tabId) : null;
+  const actions = [];
+  if (entry?.text) {
+    actions.push({
+      label: "Retry",
+      title: "Send the last prompt again",
+      primary: true,
+      run: () => sendPrompt("prompt", entry.text, { targetTabId: tabId }),
+    });
+  }
+  actions.push({ label: "Change model…", title: "Choose another model for this tab (Ctrl/Cmd+L)", run: () => openNativeModelSelector() });
+  return actions;
+}
+
+// Provider errors are terse ("Connection error."). Add the model/provider so the user knows what
+// failed and where to look (LM Studio not running, wrong base URL, expired key, …).
+function describeAssistantFailure(message, state = currentState) {
+  const model = state?.model;
+  const text = String(message || "").trim();
+  if (!model?.provider) return text;
+  const where = `${model.provider}/${model.id || ""}`.replace(/\/$/, "");
+  return text.includes(where) ? text : `${text} (model ${where})`;
 }
 
 function stderrDiagnosticLevel(content) {
@@ -38114,7 +38960,40 @@ async function sendBtwPromptFromButton() {
   await sendBtwQuestion(question, { clearComposerDraft: true });
 }
 
+// Hover/focus-opened composer menus need an explicit "dismissed" state: after Escape or an item
+// choice the pointer usually still rests on the trigger (and the trigger keeps focus), so without
+// this the panel would immediately pop open again and Escape would appear broken.
+function armComposerMenuDismissal(container) {
+  if (!container?.classList) return;
+  const hovering = container.matches(":hover");
+  const clear = () => {
+    container.classList.remove("menu-dismissed");
+    container.removeEventListener("pointerleave", clear);
+    container.removeEventListener("focusout", onFocusOut);
+  };
+  const onFocusOut = () => setTimeout(() => {
+    // Still hovered: keep the dismissal until the pointer leaves as well.
+    if (!container.contains(document.activeElement) && !container.matches(":hover")) clear();
+  }, 0);
+  const focusedInside = container.contains(document.activeElement);
+  if (!hovering && !focusedInside) return; // nothing would reopen it; no need to suppress
+  container.classList.add("menu-dismissed");
+  container.addEventListener("pointerleave", () => {
+    if (!container.contains(document.activeElement)) clear();
+  }, { once: true });
+  container.addEventListener("focusout", onFocusOut);
+}
+
+function composerMenuDismissed(container) {
+  return Boolean(container?.classList?.contains("menu-dismissed"));
+}
+
+function clearComposerMenuDismissal(container) {
+  container?.classList?.remove("menu-dismissed");
+}
+
 function setPublishMenuOpen(open) {
+  if (open && composerMenuDismissed(elements.publishButton?.parentElement)) return;
   if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   publishMenuOpen = !!open;
   elements.publishButton.setAttribute("aria-expanded", publishMenuOpen ? "true" : "false");
@@ -38125,6 +39004,7 @@ function setPublishMenuOpen(open) {
 }
 
 function setNativeCommandMenuOpen(open) {
+  if (open && composerMenuDismissed(elements.nativeCommandMenuButton?.parentElement)) return;
   if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   nativeCommandMenuOpen = !!open;
   elements.nativeCommandMenuButton.setAttribute("aria-expanded", nativeCommandMenuOpen ? "true" : "false");
@@ -38135,6 +39015,7 @@ function setNativeCommandMenuOpen(open) {
 }
 
 function setAppRunnerMenuOpen(open) {
+  if (open && composerMenuDismissed(elements.appRunnerMenuButton?.parentElement)) return;
   if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   appRunnerMenuOpen = !!open;
   elements.appRunnerMenuButton?.setAttribute("aria-expanded", appRunnerMenuOpen ? "true" : "false");
@@ -38145,6 +39026,7 @@ function setAppRunnerMenuOpen(open) {
 }
 
 function setOptionsMenuOpen(open) {
+  if (open && composerMenuDismissed(elements.optionsMenuButton?.parentElement)) return;
   if (open && followUpQueueOpen) setFollowUpQueueOpen(false);
   optionsMenuOpen = !!open;
   elements.optionsMenuButton.setAttribute("aria-expanded", optionsMenuOpen ? "true" : "false");
@@ -38963,6 +39845,16 @@ function renderOptionalFeatureMigrationSurface() {
     ensureOptionalFeatureMigrationRenderTimer();
     return;
   }
+  // A healthy "ready" audit is not actionable: don't cover the header with a banner on every
+  // page load. The summary stays available in Optional features and the Events log; only a
+  // deferred migration (restorable companions) still surfaces here.
+  if (snapshot.phase === "ready" && !optionalFeatureRestartNotice && !(summary.migratable > 0) && !conflicts.length) {
+    clearOptionalFeatureReadyDismissTimer();
+    surface.replaceChildren();
+    surface.hidden = true;
+    ensureOptionalFeatureMigrationRenderTimer();
+    return;
+  }
   if (noticeDismissKey && optionalFeatureMigrationDismissedNoticeKey === noticeDismissKey) {
     surface.replaceChildren();
     surface.hidden = true;
@@ -39752,11 +40644,14 @@ function renderOptionalFeatureControls() {
   }
 
   const hasGitWorkflow = isOptionalFeatureEnabled("gitWorkflow");
-  elements.gitWorkflowButton.hidden = !hasGitWorkflow;
+  // Committing/pushing is a core expectation: keep the entry point visible (disabled, with the
+  // install hint) when the companion package is merely missing; hide it only when the user
+  // explicitly disabled the feature.
+  elements.gitWorkflowButton.hidden = !hasGitWorkflow && isOptionalFeatureDisabled("gitWorkflow");
   setOptionalControlState(
     elements.gitWorkflowButton,
     hasGitWorkflow,
-    optionalFeatureUnavailableMessage("gitWorkflow"),
+    `${optionalFeatureUnavailableMessage("gitWorkflow")} Until then, stage and review changes from the Git panel or the CHANGES footer chip.`,
   );
 
   elements.releaseNpmButton.hidden = !isOptionalFeatureEnabled("releaseNpm");
@@ -40579,18 +41474,120 @@ function nativeSelectorMatches(item, query) {
     .some((value) => String(value).toLowerCase().includes(needle));
 }
 
+// Keyboard navigation for native selector dialogs (/model, /theme, /resume, …):
+// the search box owns focus, ArrowUp/Down move a visible highlight, Enter selects
+// the highlighted choice, Home/End jump. The highlight defaults to the current
+// choice (when unfiltered) so Enter is never destructive by surprise.
+let nativeSelectorHighlightIndex = -1;
+
+function nativeSelectorItemButtons() {
+  return Array.from(elements.nativeCommandBody.querySelectorAll(".native-selector-item:not([disabled])"));
+}
+
+function syncNativeSelectorHighlight({ scroll = true } = {}) {
+  const buttons = nativeSelectorItemButtons();
+  if (!buttons.length) {
+    nativeSelectorHighlightIndex = -1;
+    elements.nativeCommandSearch.removeAttribute("aria-activedescendant");
+    return null;
+  }
+  nativeSelectorHighlightIndex = Math.min(Math.max(nativeSelectorHighlightIndex, 0), buttons.length - 1);
+  let highlighted = null;
+  buttons.forEach((button, index) => {
+    const on = index === nativeSelectorHighlightIndex;
+    button.classList.toggle("keyboard-active", on);
+    button.setAttribute("aria-selected", on ? "true" : "false");
+    if (on) highlighted = button;
+  });
+  if (highlighted) {
+    elements.nativeCommandSearch.setAttribute("aria-activedescendant", highlighted.id);
+    if (scroll) highlighted.scrollIntoView({ block: "nearest" });
+  }
+  return highlighted;
+}
+
+function moveNativeSelectorHighlight(delta, { absolute = false } = {}) {
+  const buttons = nativeSelectorItemButtons();
+  if (!buttons.length) return;
+  const last = buttons.length - 1;
+  let next = absolute ? delta : nativeSelectorHighlightIndex + delta;
+  if (next < 0) next = absolute ? 0 : last;
+  if (next > last) next = absolute ? last : 0;
+  nativeSelectorHighlightIndex = next;
+  syncNativeSelectorHighlight();
+}
+
+function activateNativeSelectorHighlight() {
+  const highlighted = syncNativeSelectorHighlight({ scroll: false });
+  if (!highlighted) return false;
+  highlighted.click();
+  return true;
+}
+
+function handleNativeSelectorSearchKeydown(event) {
+  if (event.isComposing || elements.nativeCommandSearch.hidden) return;
+  if (!nativeSelectorItemButtons().length) return;
+  switch (event.key) {
+    case "ArrowDown":
+      event.preventDefault();
+      moveNativeSelectorHighlight(1);
+      return;
+    case "ArrowUp":
+      event.preventDefault();
+      moveNativeSelectorHighlight(-1);
+      return;
+    case "Home":
+      if (elements.nativeCommandSearch.value) return;
+      event.preventDefault();
+      moveNativeSelectorHighlight(0, { absolute: true });
+      return;
+    case "End":
+      if (elements.nativeCommandSearch.value) return;
+      event.preventDefault();
+      moveNativeSelectorHighlight(Number.MAX_SAFE_INTEGER, { absolute: true });
+      return;
+    case "PageDown":
+      event.preventDefault();
+      moveNativeSelectorHighlight(8);
+      return;
+    case "PageUp":
+      event.preventDefault();
+      moveNativeSelectorHighlight(-8);
+      return;
+    case "Enter":
+      if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
+      event.preventDefault();
+      activateNativeSelectorHighlight();
+      return;
+    default:
+  }
+}
+
 function renderNativeSelectorItems(items, { emptyText = "No choices.", onSelect, activeId, numbered = false } = {}) {
   const query = elements.nativeCommandSearch.value.trim();
   const filtered = items.filter((item) => nativeSelectorMatches(item, query));
   elements.nativeCommandBody.replaceChildren();
+  elements.nativeCommandSearch.removeAttribute("aria-activedescendant");
   if (!filtered.length) {
+    nativeSelectorHighlightIndex = -1;
     elements.nativeCommandBody.append(make("div", "native-command-empty muted", emptyText));
     return;
   }
   const list = make("div", "native-selector-list");
+  list.setAttribute("role", "listbox");
+  list.id = "nativeSelectorList";
+  let lastGroup = null;
   for (const [index, item] of filtered.entries()) {
+    if (item.group && item.group !== lastGroup && !item.badge) {
+      const heading = make("div", "native-selector-group", item.group);
+      heading.setAttribute("role", "presentation");
+      list.append(heading);
+    }
+    if (item.group) lastGroup = item.group;
     const button = make("button", `native-selector-item${item.id === activeId ? " active" : ""}`);
     button.type = "button";
+    button.id = `nativeSelectorItem-${index}`;
+    button.setAttribute("role", "option");
     button.disabled = item.disabled === true;
     if (typeof item.pressed === "boolean") button.setAttribute("aria-pressed", String(item.pressed));
     button.addEventListener("click", () => onSelect?.(item));
@@ -40620,6 +41617,12 @@ function renderNativeSelectorItems(items, { emptyText = "No choices.", onSelect,
     list.append(button);
   }
   elements.nativeCommandBody.append(list);
+  // Unfiltered: highlight (and reveal) the current choice; filtered: the best match on top.
+  const enabled = nativeSelectorItemButtons();
+  const currentIndex = query ? -1 : enabled.findIndex((button) => button.classList.contains("active"));
+  nativeSelectorHighlightIndex = currentIndex >= 0 ? currentIndex : 0;
+  const highlighted = syncNativeSelectorHighlight({ scroll: false });
+  if (highlighted && !query && currentIndex >= 0) queueMicrotask(() => highlighted.scrollIntoView({ block: "center" }));
 }
 
 function setNativeActionBusy(button, busy, label = "Working…") {
@@ -40644,10 +41647,17 @@ async function openNativeModelSelector() {
       id: modelOptionLabel(model),
       label: modelOptionLabel(model),
       description: model.name || model.description || "",
-      meta: model.contextWindow ? `context ${model.contextWindow}` : model.provider,
+      meta: [
+        model.contextWindow ? `context ${formatFooterTokenCount(model.contextWindow)}` : "",
+        model.reasoning ? "reasoning" : "",
+        Array.isArray(model.input) && model.input.includes("image") ? "images" : "",
+      ].filter(Boolean).join(" · ") || model.provider,
+      group: model.provider,
       model,
       badge: modelOptionLabel(model) === activeId ? "current" : "",
     }));
+    // The current model goes first so it is visible without scrolling through hundreds of rows.
+    items.sort((a, b) => (b.badge === "current") - (a.badge === "current"));
     const render = () => renderNativeSelectorItems(items, {
       emptyText: "No models match this filter.",
       activeId,
@@ -42095,8 +43105,9 @@ function openNativeNameDialog() {
   });
 }
 
-async function openNativeResumeSelector(scope = "current") {
-  openNativeCommandDialog({ title: "/resume", message: "Select a session, then resume, rename metadata, or delete it.", searchPlaceholder: "Filter sessions…" });
+async function openNativeResumeSelector(scope = "current", { query = "" } = {}) {
+  openNativeCommandDialog({ title: "Resume a session", message: "Select a session, then resume, rename metadata, or delete it.", searchPlaceholder: "Filter sessions…" });
+  if (query) elements.nativeCommandSearch.value = query;
   renderNativeLoading("Loading sessions…");
   const selectedScope = scope === "all" ? "all" : "current";
   let selectedItem = null;
@@ -42121,13 +43132,13 @@ async function openNativeResumeSelector(scope = "current") {
 
     const renameButton = addNativeCommandAction("Rename", async () => {
       if (!selectedItem) return;
-      const nextName = window.prompt("Session display name", selectedItem.session.name || selectedItem.label || "");
+      const nextName = await appPromptText({ title: "Rename session", summary: "Display name stored in the session metadata.", defaultValue: selectedItem.session.name || selectedItem.label || "", confirmLabel: "Rename" });
       if (nextName === null) return;
       setNativeCommandError("");
       try {
         const result = await nativeCommandApi("/api/session-rename", { method: "POST", body: { sessionPath: selectedItem.session.path, name: nextName } });
         addTransientMessage({ role: "native", title: "/resume", content: result.data?.message || "Renamed session metadata.", level: "info" });
-        await openNativeResumeSelector(selectedScope);
+        await openNativeResumeSelector(selectedScope, { query: elements.nativeCommandSearch.value });
       } catch (error) {
         setNativeCommandError(error.message || String(error));
       }
@@ -42146,7 +43157,7 @@ async function openNativeResumeSelector(scope = "current") {
       try {
         const result = await nativeCommandApi("/api/session-delete", { method: "POST", body: { sessionPath: selectedItem.session.path, confirmed: true } });
         addTransientMessage({ role: "native", title: "/resume", content: result.data?.message || "Session deleted.", level: "warn" });
-        await openNativeResumeSelector(selectedScope);
+        await openNativeResumeSelector(selectedScope, { query: elements.nativeCommandSearch.value });
       } catch (error) {
         setNativeCommandError(error.message || String(error));
         resumeDeleteArmed = false;
@@ -42165,7 +43176,7 @@ async function openNativeResumeSelector(scope = "current") {
       id: session.path,
       label: session.name || session.firstMessage || session.id || session.path,
       description: session.firstMessage || "(no messages)",
-      meta: `${session.cwd || "unknown cwd"} · ${session.messageCount || 0} messages · ${session.modified || "unknown time"}`,
+      meta: `${session.cwd || "unknown cwd"} · ${session.messageCount || 0} messages · ${session.modified ? formatRelativeDate(session.modified) : "unknown time"}`,
       badge: session.current ? "current" : "",
       disabled: session.current,
       session,
@@ -44057,6 +45068,7 @@ function renderModelSearchResults(models = []) {
     );
     button.addEventListener("click", () => {
       if (elements.modelSelect) elements.modelSelect.value = value;
+      setControlsPendingModel(value);
       renderModelSearchResults(models);
     });
     button.addEventListener("dblclick", () => elements.setModelButton?.click());
@@ -44120,9 +45132,23 @@ function hideModelSearchInput() {
   scheduleDeferredUiFlushAfterDropdownClose();
 }
 
+function setControlsPendingModel(value) {
+  controlsPendingModelValue = value || "";
+  elements.setModelButton?.classList.toggle("pending", Boolean(controlsPendingModelValue));
+  if (elements.setModelButton) elements.setModelButton.title = controlsPendingModelValue ? "Apply the selected model (not applied yet)" : "Apply selected model";
+}
+
+function setControlsPendingThinking(value) {
+  controlsPendingThinkingValue = value || "";
+  elements.setThinkingButton?.classList.toggle("pending", Boolean(controlsPendingThinkingValue));
+  if (elements.setThinkingButton) elements.setThinkingButton.title = controlsPendingThinkingValue ? "Apply the selected thinking effort (not applied yet)" : "Apply selected thinking effort";
+}
+
 function syncModelSelectToState() {
   if (!currentState?.model || !elements.modelSelect.options.length) return;
   const value = JSON.stringify({ provider: currentState.model.provider, modelId: currentState.model.id });
+  if (controlsPendingModelValue && controlsPendingModelValue === value) setControlsPendingModel("");
+  if (controlsPendingModelValue) return; // keep the user's unapplied choice visible
   for (const option of elements.modelSelect.options) {
     if (option.value === value) {
       elements.modelSelect.value = value;
@@ -44250,6 +45276,8 @@ function getCommandTrigger() {
   if (!match) return null;
 
   const query = match[2] || "";
+  // "/etc/hosts" or "/tmp/x.txt" mid-sentence is a path, not a slash command.
+  if (query.includes("/")) return null;
   return {
     start: cursor - query.length - 1,
     end: cursor,
@@ -44358,6 +45386,15 @@ function cancelBangSuggestionRequest() {
 function showCommandSuggestionList() {
   elements.commandSuggest.hidden = false;
   elements.promptInput?.setAttribute("aria-expanded", "true");
+  const hasChoices = elements.commandSuggest.querySelector(".command-suggest-item") !== null;
+  let hint = elements.commandSuggest.querySelector(".command-suggest-hint");
+  if (hasChoices && !hint) {
+    hint = make("div", "command-suggest-hint", "↑↓ navigate · Enter or Tab accept · Esc close");
+    hint.setAttribute("aria-hidden", "true");
+    elements.commandSuggest.append(hint);
+  } else if (!hasChoices && hint) {
+    hint.remove();
+  }
 }
 
 function hideCommandSuggestions() {
@@ -44521,6 +45558,9 @@ async function renderPathSuggestions(trigger, { keepIndex = false } = {}) {
   elements.commandSuggest.setAttribute("aria-busy", "true");
 
   try {
+    // Debounce keystrokes: one directory scan per pause instead of one per character.
+    await new Promise((resolve) => setTimeout(resolve, PATH_SUGGEST_DEBOUNCE_MS));
+    if (requestSerial !== pathSuggestRequestSerial || controller.signal.aborted) return;
     const response = await api(`/api/path-suggestions?query=${encodeURIComponent(trigger.query)}`, { signal: controller.signal });
     if (requestSerial !== pathSuggestRequestSerial || document.activeElement !== elements.promptInput) return;
     pathSuggestions = normalizePathSuggestions(response.data?.suggestions || []);
@@ -44810,6 +45850,16 @@ function commandPaletteCoreItems() {
     { kind: "Pi", label: "/scoped-models", description: "Manage model cycling scope", keywords: "models cycle ctrl p", run: () => runNativeCommandMenu("/scoped-models") },
     { kind: "Pi", label: "/tools", description: "Manage active tools", keywords: "capabilities", run: () => runNativeCommandMenu("/tools") },
     { kind: "Pi", label: "/skills", description: "Manage active skills", keywords: "system prompt", run: () => runNativeCommandMenu("/skills") },
+    { kind: "Pi", label: "/theme", description: "Choose the Web UI theme", keywords: "dark light colors appearance", run: () => openNativeThemeSelector() },
+    { kind: "Git", label: "Guided Git workflow", description: "Stage, commit, push, or open a pull request step by step", keywords: "git commit push pr publish", run: () => startGitWorkflow() },
+    { kind: "Git", label: "Git changes", description: "Review and stage local changes with diffs", keywords: "git diff stage unstage discard status", run: () => openGitChangesDialog() },
+    { kind: "Action", label: "Files panel", description: "Open the Files section of the Control Deck", keywords: "tree browse project explorer", run: () => revealSidePanelSectionById("files") },
+    { kind: "Action", label: "Git panel", description: "Open the Git section of the Control Deck", keywords: "repository status history", run: () => revealSidePanelSectionById("git") },
+    { kind: "Action", label: "Events log", description: "Open the Events section of the Control Deck", keywords: "errors warnings log diagnostics", run: () => revealEventsSection() },
+    { kind: "Action", label: thinkingOutputVisible ? "Hide thinking output" : "Show thinking output", description: "Toggle thinking cards in the transcript (Ctrl/Cmd+T in the composer)", keywords: "reasoning thinking toggle", run: () => setThinkingOutputVisible(!thinkingOutputVisible, { announce: true }) },
+    { kind: "Action", label: toolOutputGloballyExpanded ? "Collapse tool output" : "Expand tool output", description: "Toggle tool result cards (Ctrl/Cmd+O in the composer)", keywords: "tools results collapse expand", run: () => setToolOutputGloballyExpanded(!toolOutputGloballyExpanded, { announce: true }) },
+    { kind: "Action", label: "Show all controls", description: "Restore every hidden button and input tag", keywords: "visibility hidden restore controls buttons", run: () => showAllControls() },
+    { kind: "Action", label: "Reset control visibility", description: "Return hidden/visible controls to the defaults", keywords: "visibility defaults controls buttons", run: () => resetControlVisibilityDefaults() },
   ];
   if (tabs.length) {
     items.push({ kind: "Workspace", label: "Workspace: Save", description: "Capture all open tabs, sessions, groups, and the active tab", keywords: "workspace snapshot save sessions groups", run: () => saveWebuiWorkspace({ triggerButton: elements.commandPaletteButton }) });
@@ -44868,10 +45918,32 @@ function buildCommandPaletteItems() {
   ];
 }
 
+// Ranking: label prefix > label word-start > label contains > description/keywords only.
+// Ties keep catalog order (actions, tabs, models, commands), so results stay predictable.
+function paletteItemScore(item, query) {
+  const label = paletteText(item.label);
+  const tokens = query.split(/\s+/).filter(Boolean);
+  let score = 0;
+  for (const token of tokens) {
+    if (label.startsWith(token)) score += 40;
+    else if (label.replace(/^\//, "").startsWith(token)) score += 36;
+    else if (new RegExp(`(^|[\\s/_-])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(label)) score += 24;
+    else if (label.includes(token)) score += 12;
+    else score += 1;
+  }
+  return score;
+}
+
 function filteredCommandPaletteItems() {
   const query = paletteText(elements.commandPaletteInput?.value || "").trim();
   const items = buildCommandPaletteItems();
-  return (query ? items.filter((item) => paletteItemMatches(item, query)) : items).slice(0, 80);
+  if (!query) return items.slice(0, 80);
+  return items
+    .map((item, index) => ({ item, index, score: paletteItemMatches(item, query) ? paletteItemScore(item, query) : -1 }))
+    .filter((entry) => entry.score >= 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 80)
+    .map((entry) => entry.item);
 }
 
 function setCommandPaletteIndex(index) {
@@ -44975,6 +46047,7 @@ function reportRefreshFailures(results, prefix = "") {
 
 async function refreshAll(tabContext = activeTabContext()) {
   if (!tabContext.tabId) return;
+  noteRecentFullRefresh();
   const results = await Promise.allSettled([
     refreshState(tabContext),
     refreshMessages(tabContext),
@@ -45066,7 +46139,16 @@ async function reconcileForegroundState(reason = "resume") {
   renderMobilePhoneExperience();
 }
 
+// A tab activation/boot just ran the full refresh; the immediately following "event stream
+// reconnect" and "page show" signals would otherwise repeat every catalog fetch a second time.
+let recentFullRefreshFreshUntil = 0;
+
+function noteRecentFullRefresh() {
+  recentFullRefreshFreshUntil = performance.now() + 3_000;
+}
+
 function scheduleForegroundReconcile(reason = "resume", delay = FOREGROUND_RECONCILE_DELAY_MS) {
+  if ((reason === "event stream reconnect" || reason === "page show") && performance.now() < recentFullRefreshFreshUntil && !foregroundTranscriptCatchUpRequired) return;
   clearTimeout(foregroundReconcileTimer);
   foregroundReconcileTimer = setTimeout(() => {
     foregroundReconcileTimer = null;
@@ -45321,10 +46403,31 @@ function clearPromptFromShortcut() {
   if (document.activeElement !== input) return false;
   if (input.selectionStart !== input.selectionEnd) return false;
   if (!input.value) return false;
-  input.value = "";
+  const previous = input.value;
+  // Go through the editing command so the browser's own Ctrl+Z can bring the text back.
+  let cleared = false;
+  try {
+    input.select();
+    cleared = document.execCommand("delete");
+  } catch {
+    cleared = false;
+  }
+  if (!cleared || input.value) input.value = "";
   resizePromptInput();
   renderCommandSuggestions();
   addEvent("prompt cleared", "info");
+  offerUndo({
+    message: "Prompt cleared (Ctrl/Cmd+C with nothing selected).",
+    undo: () => {
+      input.value = previous;
+      resizePromptInput();
+      renderCommandSuggestions();
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(previous.length, previous.length);
+    },
+    successMessage: "Prompt restored.",
+    timeoutMs: 8000,
+  });
   return true;
 }
 
@@ -46216,7 +47319,7 @@ function scheduleSupervisorContinuityRefresh(event, { gap = false } = {}) {
 
   if (gap && !supervisorGapWarnings.has(key)) {
     supervisorGapWarnings.add(key);
-    addEvent("Buffered live output may be incomplete; refreshing tabs, state, and transcript from Pi.", "warn");
+    addEvent("Buffered live output may be incomplete; refreshing tabs, state, and transcript from Pi.", "info");
   }
   if (supervisorContinuityRefreshes.has(key)) return;
 
@@ -46443,12 +47546,18 @@ function handleEvent(event) {
       }
       break;
     }
-    case "webui_app_runner_update":
-      setAppRunnerData(event.tabId || activeTabId, { cwd: event.cwd, activeRun: event.activeRun });
+    case "webui_app_runner_update": {
+      const runTabId = event.tabId || activeTabId;
+      const previousRun = appRunnerDataByTab.get(runTabId)?.activeRun || null;
+      setAppRunnerData(runTabId, { cwd: event.cwd, activeRun: event.activeRun });
       renderAppRunnerControls();
-      renderWidgets();
-      renderTabs();
+      // A chatty dev server sends several updates per second; append only the new lines to the
+      // existing widget instead of rebuilding every widget and the tab strip each time.
+      if (!patchAppRunnerWidgetInPlace(runTabId, previousRun, event.activeRun)) renderWidgets();
+      const runningChanged = Boolean(previousRun && appRunnerIsRunning(previousRun)) !== Boolean(event.activeRun && appRunnerIsRunning(event.activeRun));
+      if (!previousRun !== !event.activeRun || runningChanged || previousRun?.id !== event.activeRun?.id) renderTabs();
       break;
+    }
     case "webui_git_changed":
       invalidateGitPanelRepository(event.root);
       break;
@@ -46547,7 +47656,7 @@ function handleEvent(event) {
       if (!assistantErrorSurfacedThisRun && event.willRetry !== true) {
         const message = assistantErrorFromAgentEnd(event);
         if (message) {
-          surfaceRuntimeDiagnostic("Assistant error", message);
+          surfaceRuntimeDiagnostic("Assistant error", describeAssistantFailure(message), "error", { actions: assistantFailureActions(event.tabId || activeTabId) });
           assistantErrorSurfacedThisRun = true;
         }
       }
@@ -46567,7 +47676,7 @@ function handleEvent(event) {
       streamMessageActive = false;
       if (event.message?.role === "assistant" && event.message.stopReason === "error") {
         const message = String(event.message.errorMessage || streamProviderErrorText || "The assistant request failed without an error message.").trim();
-        surfaceRuntimeDiagnostic("Assistant error", message);
+        surfaceRuntimeDiagnostic("Assistant error", describeAssistantFailure(message), "error", { actions: assistantFailureActions(event.tabId || activeTabId) });
         assistantErrorSurfacedThisRun = true;
       }
       streamProviderErrorText = "";
@@ -46670,22 +47779,24 @@ function handleEvent(event) {
       const seconds = Math.max(0, Math.ceil(Number(event.delayMs || 0) / 1000));
       const retryText = `Retrying (${event.attempt || "?"}/${event.maxAttempts || "?"}) in ${seconds}s after: ${event.errorMessage || "model/provider error"}`;
       setRunIndicatorActivity(retryText);
-      addEvent(retryText, "warn");
-      addTransientMessage({ role: "warn", title: "auto retry", content: retryText, level: "warn" });
+      addEvent(retryText, "warn", { notify: false });
+      addTransientMessage({ role: "warn", title: "auto retry", content: retryText, level: "warn", key: "auto-retry" });
       break;
     }
     case "auto_retry_end":
       if (event.success === false) {
         const retryError = `Retry failed after ${event.attempt || "?"} attempt(s): ${event.finalError || "Unknown error"}`;
-        addEvent(retryError, "error");
-        addTransientMessage({ role: "error", title: "auto retry failed", content: retryError, level: "error" });
+        addEvent(retryError, "error", { notify: false });
+        addTransientMessage({ role: "error", title: "auto retry failed", content: describeAssistantFailure(retryError), level: "error", key: "auto-retry", actions: assistantFailureActions(event.tabId || activeTabId) });
       } else {
         addEvent(`retry recovered after ${event.attempt || "?"} attempt(s)`);
+        transientMessages = transientMessages.filter((message) => message?.key !== "auto-retry");
+        renderAllMessages();
       }
       break;
     case "extension_error": {
       const message = `${event.extensionPath || "extension"}${event.event ? ` during ${event.event}` : ""}: ${event.error || "unknown extension error"}`;
-      addEvent(message, "error");
+      addEvent(message, "error", { notify: false });
       addTransientMessage({ role: "error", title: "extension error", content: message, level: "error" });
       break;
     }
@@ -46791,11 +47902,21 @@ elements.promptListSaveButton?.addEventListener("click", saveDisplayedPromptList
 elements.promptListRunListButton?.addEventListener("click", () => runDisplayedPromptList());
 elements.promptListCloseButton?.addEventListener("click", () => elements.promptListDialog?.close());
 elements.promptListDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
-elements.attachmentTextCancelButton?.addEventListener("click", closeTextAttachmentEditor);
+elements.attachmentTextCancelButton?.addEventListener("click", () => closeTextAttachmentEditor());
 elements.attachmentTextSaveButton?.addEventListener("click", saveTextAttachmentEdit);
 elements.attachmentTextEditor?.addEventListener("input", () => {
+  if (activeTextAttachmentEditor) activeTextAttachmentEditor.dirty = true;
   renderTextAttachmentEditorMeta();
   setAttachmentTextStatus("Unsaved attachment edits.", "warn");
+});
+elements.attachmentTextDialog?.addEventListener("cancel", (event) => {
+  if (!activeTextAttachmentEditor?.dirty) return;
+  event.preventDefault();
+  confirmDiscardEdits({ what: "unsaved attachment edits", target: "The attachment text" }).then((confirmed) => {
+    if (!confirmed) return;
+    if (activeTextAttachmentEditor) activeTextAttachmentEditor.dirty = false;
+    elements.attachmentTextDialog.close();
+  });
 });
 elements.attachmentTextDialog?.addEventListener("close", () => {
   activeTextAttachmentEditor = null;
@@ -46808,9 +47929,21 @@ elements.attachmentTextDialog?.addEventListener("keydown", (event) => {
   if (!elements.attachmentTextSaveButton?.disabled) saveTextAttachmentEdit();
 });
 elements.attachmentTextDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
-elements.skillEditorCancelButton?.addEventListener("click", closeSkillEditor);
+elements.skillEditorCancelButton?.addEventListener("click", () => closeSkillEditor());
 elements.skillEditorSaveButton?.addEventListener("click", saveSkillEditor);
-elements.skillEditorText?.addEventListener("input", () => setSkillEditorStatus("Unsaved skill edits.", "warn"));
+elements.skillEditorText?.addEventListener("input", () => {
+  if (activeSkillEditor) activeSkillEditor.dirty = true;
+  setSkillEditorStatus("Unsaved skill edits.", "warn");
+});
+elements.skillEditorDialog?.addEventListener("cancel", (event) => {
+  if (!activeSkillEditor?.dirty) return;
+  event.preventDefault();
+  confirmDiscardEdits({ what: "unsaved skill edits", target: activeSkillEditor?.path || activeSkillEditor?.name || "SKILL.md" }).then((confirmed) => {
+    if (!confirmed) return;
+    if (activeSkillEditor) activeSkillEditor.dirty = false;
+    elements.skillEditorDialog.close();
+  });
+});
 elements.skillEditorDialog?.addEventListener("close", () => {
   activeSkillEditor = null;
   if (elements.skillEditorText) elements.skillEditorText.value = "";
@@ -46902,6 +48035,18 @@ elements.btwButton?.addEventListener("click", () => sendBtwPromptFromButton());
 elements.terminalTabsToggleButton.addEventListener("click", () => {
   setMobileTabsExpanded(!document.body.classList.contains("mobile-tabs-expanded"), { restoreFocus: true });
 });
+// Tablist keyboard semantics: Left/Right/Home/End move focus between terminal tabs.
+elements.tabBar?.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+  const tabsInStrip = [...elements.tabBar.querySelectorAll('[role="tab"]')].filter((node) => !node.disabled && node.offsetParent !== null);
+  const index = tabsInStrip.indexOf(document.activeElement);
+  if (index === -1) return;
+  event.preventDefault();
+  const next = event.key === "Home" ? 0
+    : event.key === "End" ? tabsInStrip.length - 1
+      : (index + (event.key === "ArrowRight" ? 1 : -1) + tabsInStrip.length) % tabsInStrip.length;
+  tabsInStrip[next]?.focus({ preventScroll: false });
+});
 elements.newTabButton.addEventListener("click", (event) => {
   event.stopPropagation();
   openNewTabMenu();
@@ -46955,6 +48100,7 @@ elements.gitWorkflowButton.addEventListener("click", () => {
 });
 const publishMenuContainer = elements.publishButton.parentElement;
 elements.publishButton.addEventListener("click", () => {
+  clearComposerMenuDismissal(elements.publishButton.parentElement);
   setNativeCommandMenuOpen(false);
   setAppRunnerMenuOpen(false);
   setOptionsMenuOpen(false);
@@ -46980,6 +48126,7 @@ publishMenuContainer?.addEventListener("focusout", () => {
 });
 const nativeCommandMenuContainer = elements.nativeCommandMenuButton.parentElement;
 elements.nativeCommandMenuButton.addEventListener("click", () => {
+  clearComposerMenuDismissal(elements.nativeCommandMenuButton.parentElement);
   setPublishMenuOpen(false);
   setAppRunnerMenuOpen(false);
   setOptionsMenuOpen(false);
@@ -47047,6 +48194,7 @@ appRunnerMenuContainer?.addEventListener("focusout", () => {
 });
 const optionsMenuContainer = elements.optionsMenuButton.parentElement;
 elements.optionsMenuButton.addEventListener("click", () => {
+  clearComposerMenuDismissal(elements.optionsMenuButton.parentElement);
   setPublishMenuOpen(false);
   setNativeCommandMenuOpen(false);
   setAppRunnerMenuOpen(false);
@@ -47221,6 +48369,13 @@ elements.nativeCommandDialog.addEventListener("cancel", (event) => {
   event.preventDefault();
   closeNativeCommandDialog();
 });
+// The dialog form uses method="dialog"; without this, Enter inside the filter box (or any
+// settings text field) implicitly submits and closes the dialog without choosing anything.
+elements.nativeCommandDialog.querySelector("form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (document.activeElement === elements.nativeCommandSearch) activateNativeSelectorHighlight();
+});
+elements.nativeCommandSearch.addEventListener("keydown", handleNativeSelectorSearchKeydown);
 elements.nativeCommandDialog.addEventListener("close", () => {
   elements.nativeCommandSearch.oninput = null;
   nativeSettingsDirty = false;
@@ -47228,6 +48383,18 @@ elements.nativeCommandDialog.addEventListener("close", () => {
 });
 elements.undoToastButton?.addEventListener("click", () => runOfferedUndo());
 elements.undoToastDismissButton?.addEventListener("click", dismissUndoToast);
+elements.textPromptDialog?.querySelector("form")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  submitTextPrompt();
+});
+elements.textPromptCancelButton?.addEventListener("click", () => finishTextPrompt(null));
+elements.textPromptDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishTextPrompt(null);
+});
+elements.textPromptDialog?.addEventListener("close", () => {
+  if (activeTextPromptResolve) finishTextPrompt(null);
+});
 elements.confirmationCancelButton?.addEventListener("click", () => finishApplicationConfirmation(false));
 elements.confirmationConfirmButton?.addEventListener("click", () => finishApplicationConfirmation(true));
 elements.gitPullErrorMergeButton?.addEventListener("click", () => integrateGitPullDivergence("merge"));
@@ -47325,7 +48492,21 @@ function abortButtonHoldSeconds() {
 }
 
 function abortButtonReadyTitle() {
-  return `Hold Esc or the Abort button for ${abortButtonHoldSeconds()} seconds to abort the active Pi run`;
+  return `Hold Esc or the Abort button for about ${abortButtonHoldSeconds()} second to abort the active Pi run`;
+}
+
+// A quick tap/click on Abort deliberately does nothing (the hold prevents accidental aborts), but
+// silently doing nothing reads as "broken". Show what to do for a moment instead.
+function showAbortTapHint() {
+  if (!isAbortAvailable() || isAbortLongPressActive() || abortRequestInFlight) return;
+  clearTimeout(abortTapHintTimer);
+  elements.abortButton.classList.add("tap-hint");
+  elements.abortButton.textContent = "Hold to abort";
+  abortTapHintTimer = setTimeout(() => {
+    abortTapHintTimer = null;
+    elements.abortButton.classList.remove("tap-hint");
+    if (!isAbortLongPressActive() && !abortRequestInFlight) elements.abortButton.textContent = "Abort";
+  }, ABORT_TAP_HINT_MS);
 }
 
 function suppressEmptyPromptEscapeAction({ untilKeyup = false, graceMs = EMPTY_PROMPT_ESCAPE_AFTER_ABORT_GRACE_MS } = {}) {
@@ -47433,7 +48614,7 @@ function resetAbortLongPressAffordance() {
   abortLongPressReleasePending = false;
   elements.abortButton.classList.remove("long-pressing");
   elements.abortButton.style.removeProperty("--abort-long-press-duration");
-  if (!abortRequestInFlight) {
+  if (!abortRequestInFlight && !abortTapHintTimer) {
     elements.abortButton.textContent = "Abort";
     elements.abortButton.title = isAbortAvailable() ? abortButtonReadyTitle() : "Abort is available while Pi is running";
     elements.abortButton.setAttribute("aria-label", elements.abortButton.title);
@@ -47514,7 +48695,11 @@ elements.abortButton.addEventListener("keyup", (event) => {
 });
 elements.abortButton.addEventListener("click", (event) => {
   event.preventDefault();
-  if (abortLongPressHandled) abortLongPressHandled = false;
+  if (abortLongPressHandled) {
+    abortLongPressHandled = false;
+    return;
+  }
+  showAbortTapHint();
 });
 elements.newSessionButton.addEventListener("click", async () => {
   setComposerActionsOpen(false);
@@ -47577,6 +48762,8 @@ elements.modelSearchInput?.addEventListener("keydown", (event) => {
     elements.modelSearchInput.focus();
   }
 });
+elements.modelSelect?.addEventListener("change", () => setControlsPendingModel(elements.modelSelect.value));
+elements.thinkingSelect?.addEventListener("change", () => setControlsPendingThinking(elements.thinkingSelect.value));
 elements.setModelButton.addEventListener("click", async () => {
   if (!elements.modelSelect.value) return;
   const tabContext = activeTabContext();
@@ -47584,6 +48771,7 @@ elements.setModelButton.addEventListener("click", async () => {
     const selected = JSON.parse(elements.modelSelect.value);
     const response = await api("/api/model", { method: "POST", body: selected, tabId: tabContext.tabId });
     if (isCurrentTabContext(tabContext)) {
+      setControlsPendingModel("");
       applyOptimisticModelSelection(response.data || selected, tabContext);
       await refreshState(tabContext);
     }
@@ -47596,13 +48784,15 @@ elements.setThinkingButton.addEventListener("click", async () => {
   try {
     const response = await api("/api/thinking", { method: "POST", body: { level: elements.thinkingSelect.value }, tabId: tabContext.tabId });
     if (isCurrentTabContext(tabContext)) {
+      setControlsPendingThinking("");
       applyOptimisticThinkingSelection(response.data, tabContext);
       if (response.data?.pending) {
         addEvent(response.data.message || `Thinking level ${response.data.level} will apply to the next prompt.`, "info");
       } else if (response.data?.level) {
         const requested = response.data.requestedLevel;
         const effective = response.data.level;
-        addEvent(requested && requested !== effective ? `Thinking level set to ${effective} (requested ${requested}).` : `Thinking level set to ${effective}.`, "info");
+        if (requested && requested !== effective) addEvent(`Thinking level set to ${effective}: the active model does not support ${requested}.`, "warn");
+        else addEvent(`Thinking level set to ${effective}.`, "info");
       }
       await refreshState(tabContext);
     }
@@ -47953,6 +49143,13 @@ function shouldHandleNativeAppShortcut(event) {
   return event.target === elements.promptInput || !isTextEntryTarget(event.target);
 }
 
+// TUI-parity chords (Ctrl+P model cycle, Ctrl+T thinking output, Ctrl+O tool output, Ctrl+C
+// clear, Shift+Tab thinking level) only apply while the composer has focus. Elsewhere they must
+// keep their browser meaning (print, reverse Tab navigation, copy, …).
+function isComposerScopedShortcutTarget(event) {
+  return event.target === elements.promptInput;
+}
+
 function handleNativeAppShortcut(event) {
   if (!shouldHandleNativeAppShortcut(event)) return;
   const key = event.key;
@@ -47969,6 +49166,17 @@ function handleNativeAppShortcut(event) {
     openNativeModelSelector();
     return;
   }
+  if (!ctrlOrMeta && !event.metaKey && event.altKey && key === "Enter") {
+    event.preventDefault();
+    if (hasComposerPayload()) sendPrompt("follow-up");
+    return;
+  }
+  if (!ctrlOrMeta && event.altKey && key === "ArrowUp") {
+    event.preventDefault();
+    restoreQueuedMessagesToComposerFromShortcut();
+    return;
+  }
+  if (!isComposerScopedShortcutTarget(event)) return;
   if (ctrlOrMeta && !event.altKey && lowerKey === "p") {
     event.preventDefault();
     cycleModelFromShortcut(event.shiftKey ? "backward" : "forward");
@@ -47991,16 +49199,6 @@ function handleNativeAppShortcut(event) {
   if (!event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && key === "Tab") {
     event.preventDefault();
     cycleThinkingFromShortcut();
-    return;
-  }
-  if (!event.ctrlKey && !event.metaKey && event.altKey && key === "Enter") {
-    event.preventDefault();
-    if (hasComposerPayload()) sendPrompt("follow-up");
-    return;
-  }
-  if (!event.ctrlKey && !event.metaKey && event.altKey && key === "ArrowUp") {
-    event.preventDefault();
-    restoreQueuedMessagesToComposerFromShortcut();
   }
 }
 
@@ -48161,6 +49359,8 @@ elements.chatSearchNextButton?.addEventListener("click", () => stepChatSearch(1)
 elements.chatSearchCloseButton?.addEventListener("click", closeChatSearch);
 window.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "f") {
+    // Inside a modal dialog (settings, palette, pickers) leave the browser's own find alone.
+    if (document.querySelector("dialog[open]")) return;
     event.preventDefault();
     if (activeFileViewer && elements.fileViewerPane?.contains(event.target)) openFileViewerSearch();
     else openChatSearch();
@@ -48272,18 +49472,26 @@ window.addEventListener("keydown", (event) => {
   }
   if (publishMenuOpen) {
     setPublishMenuOpen(false);
+    armComposerMenuDismissal(elements.publishButton?.parentElement);
+    elements.publishButton?.focus({ preventScroll: true });
     return;
   }
   if (nativeCommandMenuOpen) {
     setNativeCommandMenuOpen(false);
+    armComposerMenuDismissal(elements.nativeCommandMenuButton?.parentElement);
+    elements.nativeCommandMenuButton?.focus({ preventScroll: true });
     return;
   }
   if (appRunnerMenuOpen) {
     setAppRunnerMenuOpen(false);
+    armComposerMenuDismissal(elements.appRunnerMenuButton?.parentElement);
+    elements.appRunnerMenuButton?.focus({ preventScroll: true });
     return;
   }
   if (optionsMenuOpen) {
     setOptionsMenuOpen(false);
+    armComposerMenuDismissal(elements.optionsMenuButton?.parentElement);
+    elements.optionsMenuButton?.focus({ preventScroll: true });
     return;
   }
   if (conversationVoiceMenuOpen) {
@@ -48489,8 +49697,16 @@ elements.visibilityContextMenu?.addEventListener("click", (event) => {
   const action = button.dataset.visibilityMenuAction;
   if (action === "hide") {
     const entryId = visibilityContextMenuState?.entryId;
-    if (entryId) setControlVisibilityHidden(entryId, true);
     closeVisibilityContextMenu();
+    if (entryId) {
+      const label = CONTROL_VISIBILITY_REGISTRY.get(entryId)?.label || "control";
+      setControlVisibilityHidden(entryId, true);
+      offerUndo({
+        message: `Hid ${label}. Right-click a toolbar area (or use the command palette) to show hidden controls again.`,
+        undo: () => setControlVisibilityHidden(entryId, false),
+        successMessage: `${label} is visible again.`,
+      });
+    }
   } else if (action === "show-all") {
     closeVisibilityContextMenu();
     showAllControls();
@@ -48523,6 +49739,7 @@ elements.gitFooterContextMenu?.addEventListener("click", (event) => {
   if (action === "disable") void disableGitFooterContextChip(state.key, state.label);
   else if (action === "visibility") openGitFooterVisibilityDialog();
 });
+elements.fileTreeNewFileButton?.addEventListener("click", () => createFileTreeEntry(null, "file").catch((error) => addEvent(error.message || String(error), "error")));
 elements.fileContextMenu?.addEventListener("click", (event) => {
   const button = event.target?.closest?.("[data-file-menu-action]");
   if (!button) return;
@@ -48533,6 +49750,8 @@ elements.fileContextMenu?.addEventListener("click", (event) => {
   if (action === "open-default") openPathInDefaultEditor(entry.path).catch((error) => addEvent(error.message || String(error), "error"));
   else if (action === "open-webui") openFileTreeEntryInWebui(entry).catch((error) => addEvent(error.message || String(error), "error"));
   else if (action === "move") moveFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
+  else if (action === "new-file") createFileTreeEntry(entry, "file").catch((error) => addEvent(error.message || String(error), "error"));
+  else if (action === "new-folder") createFileTreeEntry(entry, "directory").catch((error) => addEvent(error.message || String(error), "error"));
   else if (action === "delete") deleteFileTreeEntry(entry).catch((error) => addEvent(error.message || String(error), "error"));
 });
 elements.fileViewerOpenDefaultButton?.addEventListener("click", () => openPathInDefaultEditor(currentFileViewerPath()));
@@ -48545,7 +49764,20 @@ elements.terminalTabsResizeHandle?.addEventListener("keydown", handleTerminalTab
 elements.fileViewerResizeHandle?.addEventListener("pointerdown", beginFileViewerResize);
 elements.fileViewerResizeHandle?.addEventListener("keydown", handleFileViewerResizeKeydown);
 elements.fileViewerSaveButton?.addEventListener("click", () => saveActiveFileViewer());
-elements.fileViewerCloseButton?.addEventListener("click", closeFileViewer);
+elements.fileViewerCloseButton?.addEventListener("click", async () => {
+  if (activeFileViewer?.dirty && !(await confirmDiscardEdits({ what: "unsaved file edits", target: activeFileViewer.path }))) return;
+  closeFileViewer();
+});
+// Reload/close with unsaved file edits or a non-empty composer asks first (browser-native prompt).
+window.addEventListener("pagehide", () => persistDesktopDrafts());
+window.addEventListener("beforeunload", (event) => {
+  persistDesktopDrafts();
+  // Text drafts are persisted above; only unsaved file edits and file attachments would be lost.
+  const attachmentsPending = activeTabId ? attachmentsForTab(activeTabId).some((attachment) => attachment?.file) : false;
+  if (!activeFileViewer?.dirty && !attachmentsPending) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 elements.fileViewerChangesModeButton?.addEventListener("click", () => setFileViewerMode("changes"));
 elements.fileViewerSourceModeButton?.addEventListener("click", () => setFileViewerMode("source"));
 elements.fileViewerPreviewModeButton?.addEventListener("click", () => setFileViewerMode("preview"));
@@ -48645,9 +49877,60 @@ elements.promptInput.addEventListener("paste", handleAttachmentPaste);
 elements.composer.addEventListener("dragover", handleComposerDragOver);
 elements.composer.addEventListener("dragleave", handleComposerDragLeave);
 elements.composer.addEventListener("drop", handleComposerDrop);
+// A file dropped anywhere else (transcript, panels, empty chrome) must never navigate the tab
+// away from the app; treat the whole window as an attachment drop zone unless a more specific
+// target (composer, file tree) already handled it.
+window.addEventListener("dragover", (event) => {
+  if (event.defaultPrevented || !isFileDrag(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("drop", (event) => {
+  if (event.defaultPrevented || !isFileDrag(event)) return;
+  event.preventDefault();
+  elements.composer.classList.remove("drag-over");
+  addAttachmentFiles(event.dataTransfer?.files, "drop");
+});
+
+// Enter accepts the highlighted suggestion (like Tab) unless the token already equals it,
+// in which case Enter falls through to send. Ctrl/Cmd+Enter always sends.
+function highlightedSuggestionAlreadyTyped() {
+  const index = commandSuggestIndex;
+  if (suggestionMode === "path") {
+    const suggestion = pathSuggestions[index];
+    const trigger = getPathTrigger();
+    if (!suggestion || !trigger) return true;
+    const typed = String(trigger.query || "").replace(/\\/g, "/");
+    const target = String(suggestion.path || "").replace(/\\/g, "/");
+    return typed === target || typed === target.replace(/\/$/, "");
+  }
+  if (suggestionMode === "bang") {
+    const suggestion = bangSuggestions[index];
+    const trigger = getBangTrigger();
+    if (!suggestion || !trigger) return true;
+    const typed = `${trigger.bangPrefix || ""}${trigger.query || ""}`;
+    return typed === String(suggestion.insertText || "");
+  }
+  const command = commandSuggestions[index];
+  const trigger = getCommandTrigger();
+  if (!command || !trigger) return true;
+  const typed = String(trigger.query || "").toLowerCase();
+  return typed === String(command.name || "").toLowerCase() || typed === String(command.invokeName || "").toLowerCase();
+}
+
+function shouldAcceptSuggestionFromEnter(event) {
+  if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return false;
+  if (elements.commandSuggest.hidden || activeSuggestionCount() === 0) return false;
+  return !highlightedSuggestionAlreadyTyped();
+}
 
 elements.promptInput.addEventListener("keydown", (event) => {
   if (event.defaultPrevented || insertNumpadDecimal(event)) return;
+  if (shouldAcceptSuggestionFromEnter(event)) {
+    event.preventDefault();
+    insertCommandSuggestion();
+    return;
+  }
   if (shouldSendPromptFromEnter(event)) {
     event.preventDefault();
     hideCommandSuggestions();
@@ -48656,12 +49939,12 @@ elements.promptInput.addEventListener("keydown", (event) => {
   }
 
   if (!elements.commandSuggest.hidden) {
-    if (event.key === "ArrowDown") {
+    if (event.key === "ArrowDown" && activeSuggestionCount() > 0) {
       event.preventDefault();
       setActiveCommandSuggestion(commandSuggestIndex + 1);
       return;
     }
-    if (event.key === "ArrowUp") {
+    if (event.key === "ArrowUp" && activeSuggestionCount() > 0) {
       event.preventDefault();
       setActiveCommandSuggestion(commandSuggestIndex - 1);
       return;
@@ -48688,7 +49971,8 @@ elements.promptInput.addEventListener("keydown", (event) => {
 
 elements.promptInput.addEventListener("input", () => {
   resetPromptHistoryNavigation();
-  if (moveLongPromptInputToAttachment()) return;
+  // Typed text always stays editable in the composer; only large pastes become attachments
+  // (handleAttachmentPaste). Ripping a prompt out mid-typing was surprising and lossy.
   resizePromptInput();
   renderCommandSuggestions();
   scheduleMobileContinuityPersist();

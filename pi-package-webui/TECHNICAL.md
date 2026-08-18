@@ -208,7 +208,7 @@ With **Tab placement** set to **Sidebar**, the placement control stays active bu
 
 When the viewport or active split terminal/file viewer cannot fit the selected desktop columns, Web UI uses one combined Control Deck overlay. This does not change side assignments, desktop collapse state, or saved widths. Close the overlay with its backdrop or `Escape`. Mobile **Edit** / **Done** continues to allow vertical section ordering only.
 
-Control Deck placement, side assignment/order, accordion state, visibility, side collapse, side widths, terminal placement, terminal-rail width, and the other durable interface preferences are stored in the private Web UI settings file and mirrored to browser storage for offline startup. The right Control Deck width also maintains the older single-panel compatibility value; the left width never replaces it. Concurrent tabs reconcile named fields so one tab's clean placement change does not erase another tab's pending section move or terminal-rail resize.
+Control Deck placement, side assignment/order, section open/closed state (any number of sections may be open at once), visibility, side collapse, side widths, terminal placement, terminal-rail width, and the other durable interface preferences are stored in the private Web UI settings file and mirrored to browser storage for offline startup. The right Control Deck width also maintains the older single-panel compatibility value; the left width never replaces it. Concurrent tabs reconcile named fields so one tab's clean placement change does not erase another tab's pending section move or terminal-rail resize.
 
 ## Desktop panel sizing
 

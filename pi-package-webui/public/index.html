@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=131" />
+    <link rel="stylesheet" href="/styles.css?v=132" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -982,6 +982,7 @@
                     <strong>Workspace files</strong>
                     <p id="fileTreeCwd" class="file-tree-cwd muted"></p>
                   </div>
+                  <button id="fileTreeNewFileButton" type="button" title="Create a new file in the workspace root (right-click a folder to create inside it)">New file</button>
                   <button id="fileTreeRefreshButton" type="button">Refresh</button>
                 </div>
                 <div class="file-tree-search" role="search">
@@ -1006,7 +1007,7 @@
             <div id="sidePanelSectionGit" class="side-panel-section-content" hidden>
               <div class="git-side-panel">
                 <div class="git-side-panel-intro">
-                  <p>Expand a repository to view local changes and history. Right-click rows for actions.</p>
+                  <p>Expand a repository to view local changes and history. Use the ⋯ button or right-click a row for actions.</p>
                 </div>
                 <p id="gitPanelStatus" class="git-side-panel-status muted" role="status" aria-live="polite"></p>
                 <div id="gitPanelGroups" class="git-side-panel-groups" aria-label="Git repositories"></div>
@@ -1203,7 +1204,10 @@
             <h2>
               <button id="sidePanelSectionToggleEvents" class="side-panel-section-toggle" type="button" aria-expanded="false" aria-controls="sidePanelSectionEvents" aria-label="Expand Events section" title="Expand Events section" data-side-panel-section-toggle="events">
                 <span class="side-panel-section-label">Events</span>
-                <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+                <span class="side-panel-section-trailing">
+                  <span id="eventsUnreadBadge" class="side-panel-section-badge events-unread-badge" hidden>0</span>
+                  <span class="side-panel-section-chevron" aria-hidden="true">›</span>
+                </span>
               </button>
             </h2>
             <div id="sidePanelSectionEvents" class="side-panel-section-content" hidden>
@@ -1220,6 +1224,8 @@
     <div id="fileContextMenu" class="file-context-menu" role="menu" hidden>
       <button type="button" role="menuitem" data-file-menu-action="open-default">Open in Default Editor</button>
       <button type="button" role="menuitem" data-file-menu-action="open-webui">Open in WebUI</button>
+      <button type="button" role="menuitem" data-file-menu-action="new-file">New file…</button>
+      <button type="button" role="menuitem" data-file-menu-action="new-folder">New folder…</button>
       <button type="button" role="menuitem" data-file-menu-action="move">Move/Rename…</button>
       <button type="button" role="menuitem" class="danger" data-file-menu-action="delete">Delete…</button>
     </div>
@@ -1231,6 +1237,7 @@
       <button type="button" role="menuitem" data-git-footer-menu-action="visibility">Open Git-footer Visibility</button>
     </div>
 
+    <div id="noticeToastStack" class="notice-toast-stack" aria-label="Notifications"></div>
     <aside id="undoToast" class="undo-toast" aria-live="polite" aria-atomic="true" hidden>
       <span id="undoToastMessage" class="undo-toast-message"></span>
       <span id="undoToastTime" class="undo-toast-time">Undo available for 10 seconds</span>
@@ -1405,7 +1412,7 @@
       </form>
     </dialog>
 
-    <dialog id="confirmationDialog" class="extension-dialog confirmation-dialog">
+    <dialog id="confirmationDialog" class="extension-dialog confirmation-dialog" aria-labelledby="confirmationTitle">
       <form method="dialog">
         <h2 id="confirmationTitle">Confirm action</h2>
         <p id="confirmationSummary"></p>
@@ -1416,6 +1423,19 @@
         <menu>
           <button id="confirmationCancelButton" type="button">Cancel</button>
           <button id="confirmationConfirmButton" class="danger" type="button">Continue</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="textPromptDialog" class="extension-dialog text-prompt-dialog" aria-labelledby="textPromptTitle">
+      <form method="dialog">
+        <h2 id="textPromptTitle">Enter a value</h2>
+        <p id="textPromptSummary" class="muted"></p>
+        <input id="textPromptInput" class="dialog-input" type="text" autocomplete="off" spellcheck="false" aria-labelledby="textPromptTitle" />
+        <p id="textPromptError" class="path-picker-error" hidden></p>
+        <menu>
+          <button id="textPromptCancelButton" type="button">Cancel</button>
+          <button id="textPromptConfirmButton" class="primary" type="submit">OK</button>
         </menu>
       </form>
     </dialog>
@@ -1482,9 +1502,9 @@
       </form>
     </dialog>
 
-    <dialog id="gitWorktreeBaseDialog" class="extension-dialog git-worktree-base-dialog">
+    <dialog id="gitWorktreeBaseDialog" class="extension-dialog git-worktree-base-dialog" aria-labelledby="gitWorktreeBaseDialogTitle">
       <form method="dialog">
-        <h2>Choose branch starting point</h2>
+        <h2 id="gitWorktreeBaseDialogTitle">Choose branch starting point</h2>
         <p>Create <code id="gitWorktreeBaseBranch"></code> from:</p>
         <fieldset class="git-worktree-base-options">
           <legend class="sr-only">Branch starting point</legend>
@@ -1557,9 +1577,9 @@
       </form>
     </dialog>
 
-    <dialog id="gitPrDialog" class="extension-dialog git-pr-dialog">
+    <dialog id="gitPrDialog" class="extension-dialog git-pr-dialog" aria-labelledby="gitPrDialogTitle">
       <form method="dialog">
-        <h2>Review pull request</h2>
+        <h2 id="gitPrDialogTitle">Review pull request</h2>
         <p class="muted">Confirm or edit the generated /pr description before Web UI runs <code>gh pr create</code>.</p>
         <label class="git-pr-field" for="gitPrTitleInput">
           <span>Title</span>
@@ -1577,7 +1597,7 @@
       </form>
     </dialog>
 
-    <dialog id="gitChangesDialog" class="extension-dialog git-changes-dialog">
+    <dialog id="gitChangesDialog" class="extension-dialog git-changes-dialog" aria-labelledby="gitChangesTitle">
       <form method="dialog">
         <div class="git-changes-header">
           <div>
@@ -1599,12 +1619,12 @@
       </form>
     </dialog>
 
-    <dialog id="statsOverlayDialog" class="extension-dialog stats-overlay-dialog">
+    <dialog id="statsOverlayDialog" class="extension-dialog stats-overlay-dialog" aria-labelledby="statsOverlayDialogTitle">
       <form method="dialog">
         <div class="stats-overlay-header">
           <div>
             <span class="stats-overlay-kicker">Pi stats</span>
-            <h2>Usage dashboard</h2>
+            <h2 id="statsOverlayDialogTitle">Usage dashboard</h2>
             <p id="statsOverlaySubtitle" class="muted">Run stats to load the browser dashboard.</p>
           </div>
           <div class="stats-overlay-controls">
@@ -1627,14 +1647,14 @@
       </form>
     </dialog>
 
-    <dialog id="pathPickerDialog" class="extension-dialog path-picker-dialog">
+    <dialog id="pathPickerDialog" class="extension-dialog path-picker-dialog" aria-labelledby="pathPickerTitle">
       <form method="dialog">
         <h2 id="pathPickerTitle">Choose working directory</h2>
         <div class="path-picker-current-row">
           <p id="pathPickerCurrent" class="path-picker-current"></p>
-          <button id="pathPickerAddFastPickButton" type="button" class="path-picker-add-fast-pick">Add fast pick</button>
+          <button id="pathPickerAddFastPickButton" type="button" class="path-picker-add-fast-pick">Pin this folder</button>
         </div>
-        <div id="pathPickerFastPicks" class="path-picker-fast-picks" aria-label="Fast picks"></div>
+        <div id="pathPickerFastPicks" class="path-picker-fast-picks" aria-label="Pinned folders"></div>
         <div id="pathPickerRoots" class="path-picker-roots"></div>
         <div class="path-picker-create-row" aria-label="Create a new directory in the current directory">
           <input id="pathPickerCreateNameInput" class="path-picker-create-input" type="text" placeholder="New directory name" autocomplete="off" spellcheck="false" maxlength="255" aria-label="New directory name" />
@@ -1654,27 +1674,27 @@
       </form>
     </dialog>
 
-    <dialog id="commandPaletteDialog" class="extension-dialog command-palette-dialog">
+    <dialog id="commandPaletteDialog" class="extension-dialog command-palette-dialog" aria-labelledby="commandPaletteDialogTitle">
       <form method="dialog">
         <div class="command-palette-header">
           <div>
             <span class="command-palette-kicker">Quick launcher</span>
-            <h2>Command palette</h2>
+            <h2 id="commandPaletteDialogTitle">Command palette</h2>
           </div>
           <div class="command-palette-header-actions">
             <span class="command-palette-shortcut">Ctrl/Cmd+K</span>
             <button id="commandPaletteCloseButton" class="command-palette-close-button" type="button" aria-label="Close command palette" title="Close command palette">Close</button>
           </div>
         </div>
-        <input id="commandPaletteInput" class="dialog-input command-palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search commands, tabs, models, sessions…" role="combobox" aria-autocomplete="list" aria-controls="commandPaletteList" aria-expanded="true" aria-label="Search command palette" />
+        <input id="commandPaletteInput" class="dialog-input command-palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Search actions, tabs, models, commands…" role="combobox" aria-autocomplete="list" aria-controls="commandPaletteList" aria-expanded="true" aria-label="Search command palette" />
         <div id="commandPaletteList" class="command-palette-list" role="listbox" aria-label="Command palette results"></div>
         <p id="commandPaletteHint" class="command-palette-hint muted">Use ↑/↓ then Enter. Escape closes.</p>
       </form>
     </dialog>
 
-    <dialog id="editRetryDialog" class="extension-dialog edit-retry-dialog">
+    <dialog id="editRetryDialog" class="extension-dialog edit-retry-dialog" aria-labelledby="editRetryDialogTitle">
       <form method="dialog">
-        <h2>Edit &amp; retry from here</h2>
+        <h2 id="editRetryDialogTitle">Edit &amp; retry from here</h2>
         <p id="editRetryMessage" class="muted">Fork the session from this user message, optionally edit it, then run the new prompt.</p>
         <textarea id="editRetryText" class="dialog-editor edit-retry-text" spellcheck="true" aria-label="Edited prompt"></textarea>
         <p id="editRetryStatus" class="edit-retry-status muted" role="status" aria-live="polite"></p>
@@ -1686,12 +1706,12 @@
       </form>
     </dialog>
 
-    <dialog id="remoteQrDialog" class="extension-dialog remote-qr-dialog">
+    <dialog id="remoteQrDialog" class="extension-dialog remote-qr-dialog" aria-labelledby="remoteQrDialogTitle">
       <form method="dialog">
         <div class="remote-qr-header">
           <div>
             <span class="remote-qr-kicker">/remote</span>
-            <h2>Remote WebUI QR</h2>
+            <h2 id="remoteQrDialogTitle">Remote WebUI QR</h2>
             <p id="remoteQrMessage" class="muted">Scan this QR code from a trusted local-network device.</p>
           </div>
           <button id="remoteQrCloseButton" class="remote-qr-close-button" type="button" aria-label="Close Remote WebUI QR popup">Close</button>
@@ -1705,20 +1725,20 @@
       </form>
     </dialog>
 
-    <dialog id="nativeCommandDialog" class="extension-dialog native-command-dialog">
+    <dialog id="nativeCommandDialog" class="extension-dialog native-command-dialog" aria-labelledby="nativeCommandTitle">
       <form method="dialog">
         <h2 id="nativeCommandTitle">Pi command</h2>
         <p id="nativeCommandMessage" class="muted"></p>
-        <input id="nativeCommandSearch" class="dialog-input native-command-search" type="search" placeholder="Filter choices…" autocomplete="off" hidden />
+        <input id="nativeCommandSearch" class="dialog-input native-command-search" type="search" placeholder="Filter choices…" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="nativeCommandBody" aria-label="Filter choices" hidden />
         <div id="nativeCommandBody" class="native-command-body"></div>
         <p id="nativeCommandError" class="path-picker-error" hidden></p>
         <menu id="nativeCommandActions"></menu>
       </form>
     </dialog>
 
-    <dialog id="appRunnerInfoDialog" class="extension-dialog app-runner-info-dialog">
+    <dialog id="appRunnerInfoDialog" class="extension-dialog app-runner-info-dialog" aria-labelledby="appRunnerInfoDialogTitle">
       <form method="dialog">
-        <h2>App runners</h2>
+        <h2 id="appRunnerInfoDialogTitle">App runners</h2>
         <p class="muted">Run detected project entrypoints directly from the active tab’s working directory, with live output pinned above the chat.</p>
         <div id="appRunnerInfoBody" class="app-runner-info-body"></div>
         <menu>
@@ -1727,9 +1747,9 @@
       </form>
     </dialog>
 
-    <dialog id="gitFooterVisibilityDialog" class="extension-dialog git-footer-visibility-dialog">
+    <dialog id="gitFooterVisibilityDialog" class="extension-dialog git-footer-visibility-dialog" aria-labelledby="gitFooterVisibilityDialogTitle">
       <form method="dialog">
-        <h2>Git-footer Visibility</h2>
+        <h2 id="gitFooterVisibilityDialogTitle">Git-footer Visibility</h2>
         <p class="muted">Select which Git footer cards, buttons, popovers, and modal affordances are visible in the Web UI. Changes are saved globally through <code>/git-footer-visibility</code> and reused by every Pi session.</p>
         <div class="git-footer-visibility-toolbar" aria-label="Git-footer Visibility quick actions">
           <button id="gitFooterVisibilitySelectAllButton" type="button">Select all</button>
@@ -1745,7 +1765,7 @@
       </form>
     </dialog>
 
-    <dialog id="skillEditorDialog" class="extension-dialog skill-editor-dialog">
+    <dialog id="skillEditorDialog" class="extension-dialog skill-editor-dialog" aria-labelledby="skillEditorTitle">
       <form method="dialog">
         <h2 id="skillEditorTitle">Edit skill</h2>
         <p id="skillEditorMeta" class="skill-editor-meta muted"></p>
@@ -1758,7 +1778,7 @@
       </form>
     </dialog>
 
-    <dialog id="promptListDialog" class="extension-dialog prompt-list-dialog">
+    <dialog id="promptListDialog" class="extension-dialog prompt-list-dialog" aria-labelledby="promptListDialogTitle">
       <form method="dialog">
         <h2 id="promptListDialogTitle">Create prompt list</h2>
         <p class="muted">Create one start prompt, then add any number of follow-up prompts to queue behind it.</p>
@@ -1786,7 +1806,7 @@
       </form>
     </dialog>
 
-    <dialog id="attachmentTextDialog" class="extension-dialog attachment-text-dialog">
+    <dialog id="attachmentTextDialog" class="extension-dialog attachment-text-dialog" aria-labelledby="attachmentTextTitle">
       <form method="dialog">
         <h2 id="attachmentTextTitle">Edit text attachment</h2>
         <p id="attachmentTextMeta" class="attachment-text-meta muted"></p>
@@ -1826,7 +1846,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=156">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=157">
       (() => {
         "use strict";
 

@@ -11,26 +11,39 @@ function append(state, text, options = {}) {
 function referenceTail(text, plainTailLimit = STREAMING_MARKDOWN_PLAIN_TAIL_LIMIT) {
   const value = String(text || "");
   const lines = value.split("\n");
+  // CommonMark: an opening fence is 3+ backticks (optionally followed by an info string); the
+  // closing fence must have at least as many backticks and nothing but whitespace after them.
   let inFence = false;
+  let fenceTicks = 0;
   let boundary = 0;
   let offset = 0;
   let fenceContentOffset = -1;
   let fenceLanguage = "";
+  const closingFence = (line) => {
+    const match = line.match(/^\s*(`{3,})\s*$/);
+    return Boolean(match && match[1].length >= fenceTicks);
+  };
+  const openingFence = (line) => {
+    const match = line.match(/^\s*(`{3,})\s*([\w.+-]*)\s*$/);
+    return match ? { ticks: match[1].length, language: match[2] || "" } : null;
+  };
   for (let index = 0; index < lines.length - 1; index += 1) {
     const line = lines[index];
     if (inFence) {
-      if (/^\s*```\s*$/.test(line)) {
+      if (closingFence(line)) {
         inFence = false;
+        fenceTicks = 0;
         fenceContentOffset = -1;
         fenceLanguage = "";
         boundary = offset + line.length + 1;
       }
     } else {
-      const opening = line.match(/^\s*```\s*([\w.+-]*)\s*$/);
+      const opening = openingFence(line);
       if (opening) {
         inFence = true;
+        fenceTicks = opening.ticks;
         fenceContentOffset = offset + line.length + 1;
-        fenceLanguage = opening[1] || "";
+        fenceLanguage = opening.language;
       }
     }
     offset += line.length + 1;
@@ -38,11 +51,11 @@ function referenceTail(text, plainTailLimit = STREAMING_MARKDOWN_PLAIN_TAIL_LIMI
   }
   const pendingRaw = lines.at(-1) || "";
   const pending = pendingRaw.endsWith("\r") ? pendingRaw.slice(0, -1) : pendingRaw;
-  const pendingOpening = !inFence ? pending.match(/^\s*```\s*([\w.+-]*)\s*$/) : null;
-  const pendingClose = inFence && /^\s*```\s*$/.test(pending);
+  const pendingOpening = !inFence ? openingFence(pending) : null;
+  const pendingClose = inFence && closingFence(pending);
   if (pendingClose) return { boundary, liveMode: "authoritative", tailKind: "closed-fence", fenceContentOffset, fenceLanguage };
   if (inFence) return { boundary, liveMode: "open-fence", tailKind: "open-fence", fenceContentOffset, fenceLanguage };
-  if (pendingOpening) return { boundary, liveMode: "open-fence", tailKind: "open-fence", fenceContentOffset: value.length, fenceLanguage: pendingOpening[1] || "" };
+  if (pendingOpening) return { boundary, liveMode: "open-fence", tailKind: "open-fence", fenceContentOffset: value.length, fenceLanguage: pendingOpening.language };
   if (value.length - boundary > plainTailLimit) return { boundary, liveMode: "plain", tailKind: "long-text", fenceContentOffset, fenceLanguage };
   return { boundary, liveMode: "markdown", tailKind: "text", fenceContentOffset, fenceLanguage };
 }
