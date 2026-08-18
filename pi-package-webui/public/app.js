@@ -36642,7 +36642,6 @@ function cleanupLiveToolRunsForMessages(messages = latestMessages) {
   for (const id of liveToolRuns.keys()) {
     if (results.has(id)) {
       liveToolRuns.delete(id);
-      cancelQueuedLiveToolRunRender(id);
     }
   }
 }
