@@ -14383,7 +14383,14 @@ async function getIntercomConversationsData(tab, conversationId = "") {
 
   requireAllowedSessionPath(sessionFile);
   const sessionInfo = await stat(sessionFile).catch(() => null);
-  if (!sessionInfo?.isFile()) throw makeHttpError(404, "Persisted session is unavailable");
+  if (!sessionInfo?.isFile()) {
+    // Fresh/empty session: its file is only created on first persist, so there
+    // cannot be any persisted conversations yet. Return an empty projection
+    // instead of erroring out every intercom poll for the tab.
+    const empty = projectIntercomConversations([], projectionOptions);
+    if (conversationId) throw makeHttpError(404, "Intercom conversation not found");
+    return empty;
+  }
 
   let manager;
   try {

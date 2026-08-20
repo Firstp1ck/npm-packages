@@ -11,14 +11,32 @@ export function normalizeSessionFilePath(value) {
   return text ? path.resolve(text) : "";
 }
 
-/** Resolve symlinks where possible so confinement checks compare canonical paths. */
+/**
+ * Resolve symlinks where possible so confinement checks compare canonical paths.
+ * For paths that do not exist yet (e.g. a brand-new session file), realpath the
+ * nearest existing ancestor and re-append the rest, so a symlinked session
+ * directory (such as ~/.pi pointing into a dotfiles repo) still canonicalizes
+ * instead of silently comparing against the unresolved path.
+ */
 function canonicalSessionPath(value) {
   const resolved = normalizeSessionFilePath(value);
   if (!resolved) return "";
   try {
     return realpathSync(resolved);
   } catch {
-    return resolved;
+    const tail = [];
+    let current = resolved;
+    while (true) {
+      const parent = path.dirname(current);
+      if (parent === current) return resolved;
+      tail.unshift(path.basename(current));
+      current = parent;
+      try {
+        return path.join(realpathSync(current), ...tail);
+      } catch {
+        // keep walking up
+      }
+    }
   }
 }
 

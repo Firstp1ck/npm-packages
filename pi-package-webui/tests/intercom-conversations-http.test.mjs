@@ -244,6 +244,22 @@ try {
   const outsideResponse = await request(server.port, `/api/intercom/conversations?tab=${encodeURIComponent(outsideTabId)}`);
   assert.equal(outsideResponse.status, 403, "server-derived session files outside allowed Pi roots must be rejected");
   assert.equal(JSON.stringify(outsideResponse.body).includes(outsideSessionFile), false, "confinement errors must not expose the rejected path");
+  await stopServer(server.child);
+  server = undefined;
+
+  // Fresh/empty session: the file is only created on first persist, so the
+  // endpoint must answer with an empty projection instead of erroring out
+  // every poll for the tab (regression for "Persisted session is unavailable").
+  const pendingSessionFile = path.join(sessionDir, "not-created-yet.jsonl");
+  server = await startServer(pendingSessionFile);
+  const pendingTabId = await startupTabId(server);
+  const pendingBasePath = `/api/intercom/conversations?tab=${encodeURIComponent(pendingTabId)}`;
+  const pendingSummary = await request(server.port, pendingBasePath);
+  assert.equal(pendingSummary.status, 200, pendingSummary.body?.error);
+  assert.deepEqual(pendingSummary.body?.data?.conversations, [], "a not-yet-persisted session must project zero conversations");
+  const pendingMissingConversation = await request(server.port, `${pendingBasePath}&conversation=conv_${"b".repeat(24)}`);
+  assert.equal(pendingMissingConversation.status, 404, "an explicit unknown conversation on an unpersisted session must still 404");
+  assert.equal(JSON.stringify(pendingMissingConversation.body).includes(pendingSessionFile), false, "the 404 must not expose the pending session path");
 
   console.log("intercom-conversations-http: ok");
 } finally {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -74,6 +74,31 @@ try {
   assert.equal(isSessionPathAllowed(outsidePath, [tempDir]), false);
   assert.equal(isSessionPathAllowed(path.join(tempDir, "..", "escape.jsonl"), [tempDir]), false);
   assert.equal(isSessionPathAllowed(outsidePath, []), true, "empty allowedDirs must mean no confinement");
+
+  // Symlinked session dir (e.g. ~/.pi -> dotfiles): a not-yet-created session
+  // file must still canonicalize through the symlink, otherwise every fresh
+  // session is rejected with "sessionPath must stay inside the Pi session
+  // directory" until its file first exists on disk.
+  const realSessionDir = await mkdtemp(path.join(tmpdir(), "pi-webui-real-sessions-"));
+  const symlinkParent = await mkdtemp(path.join(tmpdir(), "pi-webui-link-parent-"));
+  const symlinkedSessionDir = path.join(symlinkParent, "sessions-link");
+  await symlink(realSessionDir, symlinkedSessionDir, "dir");
+  const pendingSessionFile = path.join(symlinkedSessionDir, "not-created-yet.jsonl");
+  assert.equal(
+    isSessionPathAllowed(pendingSessionFile, [realSessionDir]),
+    true,
+    "non-existent session file under a symlinked session dir must be allowed",
+  );
+  assert.equal(
+    isSessionPathAllowed(path.join(realSessionDir, "not-created-yet.jsonl"), [symlinkedSessionDir]),
+    true,
+    "real path target must be allowed when the configured dir is the symlink",
+  );
+  assert.equal(
+    isSessionPathAllowed(path.join(symlinkedSessionDir, "..", "escape.jsonl"), [realSessionDir]),
+    false,
+    "traversal through a symlinked session dir must stay blocked",
+  );
 
   const blockedOutside = validateSessionDelete(outsidePath, {
     openSessionFiles: new Set(),
