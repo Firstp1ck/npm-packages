@@ -358,6 +358,11 @@ const elements = {
   sidePanelContextMenu: $("#sidePanelContextMenu"),
   visibilityContextMenu: $("#visibilityContextMenu"),
   gitFooterContextMenu: $("#gitFooterContextMenu"),
+  eventTreeContextMenu: $("#eventTreeContextMenu"),
+  eventDisplayDetailedAction: $("#eventDisplayDetailedAction"),
+  eventDisplayCompactAction: $("#eventDisplayCompactAction"),
+  eventTreeContextMenuAction: $("#eventTreeContextMenuAction"),
+  eventTreeContextMenuStatus: $("#eventTreeContextMenuStatus"),
   sidePanelResizeHandle: $("#sidePanelResizeHandle"),
   sidePanelResizeHandleLeft: $("#sidePanelLeftResizeHandle"),
   sidePanelLeftExpandButton: $("#sidePanelLeftExpandButton"),
@@ -593,6 +598,7 @@ const transcriptRenderer = createTranscriptRenderer({
 });
 
 const PI_WEBUI_NPM_URL = "https://www.npmjs.com/package/@firstpick/pi-package-webui";
+const EVENT_DISPLAY_MODE_STORAGE_KEY = "pi-webui-event-display-mode-v1";
 
 let currentState = null;
 let tabStateCache = new Map();
@@ -626,6 +632,9 @@ let fileViewerSearchTimer = null;
 let fileContextMenuState = null;
 let sidePanelContextMenuState = null;
 let gitFooterContextMenuState = null;
+let eventTreeContextMenuState = null;
+let eventDisplayMode = readStoredEventDisplayMode();
+const toolEventStartedAt = new Map();
 let sidePanelSectionEditMode = false;
 let sidePanelSectionPointerDrag = null;
 let sidePanelSectionLastDragOverKey = "";
@@ -1034,6 +1043,7 @@ const supervisorEventCursors = new Map();
 const supervisorRetiredEpochs = new Map();
 const supervisorGapWarnings = new Set();
 const supervisorContinuityRefreshes = new Map();
+const closingTerminalTabIds = new Set();
 const supervisorEnvelopeWarnings = new Set();
 let activeDialog = null;
 let activeDialogCancel = null;
@@ -4553,6 +4563,7 @@ function showSidePanelContextMenu(event) {
   closeFileContextMenu({ returnFocus: false });
   closeGitPanelContextMenu({ returnFocus: false });
   closeSidePanelContextMenu({ returnFocus: false });
+  closeEventTreeContextMenu({ returnFocus: false });
 
   const menu = elements.sidePanelContextMenu;
   const eventTrigger = event.currentTarget;
@@ -12777,6 +12788,7 @@ function showFileContextMenu(event, entry) {
   event.stopPropagation();
   closeGitPanelContextMenu({ returnFocus: false });
   closeSidePanelContextMenu({ returnFocus: false });
+  closeEventTreeContextMenu({ returnFocus: false });
   const path = normalizeFileTreePath(entry?.path || "");
   fileContextMenuState = { entry: { ...entry, path }, trigger: event.currentTarget || document.activeElement };
   const menu = elements.fileContextMenu;
@@ -13620,6 +13632,7 @@ function prepareControlVisibilityMenu(trigger, entryId = null) {
   closeGitPanelContextMenu({ returnFocus: false });
   closeSidePanelContextMenu({ returnFocus: false });
   closeGitFooterContextMenu({ returnFocus: false });
+  closeEventTreeContextMenu({ returnFocus: false });
   closeVisibilityContextMenu({ returnFocus: false });
   // Region hosts are plain non-focusable containers; storing one as the
   // trigger would let Escape focus fall through to <body>. Fall back to the
@@ -15962,6 +15975,8 @@ function resetActiveTabUi() {
   bindGitWorkflowToActiveTab();
   resetChatOutput();
   elements.stateDetails.replaceChildren();
+  closeEventTreeContextMenu({ returnFocus: false });
+  toolEventStartedAt.clear();
   elements.eventLog.replaceChildren();
   const queuedSnapshot = activeTabId ? latestQueuedMessagesByTab.get(activeTabId) : null;
   if (queuedSnapshot) renderQueue({ tabId: activeTabId, ...queuedSnapshot });
@@ -16335,6 +16350,7 @@ function showGitPanelContextMenu(event, context) {
   closeFileContextMenu({ returnFocus: false });
   closeGitPanelContextMenu({ returnFocus: false });
   closeSidePanelContextMenu({ returnFocus: false });
+  closeEventTreeContextMenu({ returnFocus: false });
   const menu = elements.gitPanelContextMenu;
   const items = gitPanelContextMenuItems(context);
   if (!items.length) return;
@@ -17652,7 +17668,9 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
   if (!quickClose && !(await confirmCloseTerminalTabs(targetTabs, label))) return;
 
   const closedActiveTab = targetTabs.some((tab) => tab.id === activeTabId);
+  const closedActiveCwd = closedActiveTab ? tabs.find((tab) => tab.id === activeTabId)?.cwd || "" : "";
   const fallbackTabId = tabs.find((item) => !targetIds.includes(item.id))?.id || null;
+  for (const id of targetIds) closingTerminalTabIds.add(id);
   try {
     if (closedActiveTab) eventSource?.close();
     const response = await api("/api/tabs/close", { method: "POST", body: { ids: targetIds, allowEmpty }, scoped: false });
@@ -17686,9 +17704,14 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
 
     const activeTabNeedsFallback = closedIds.includes(activeTabId) || !tabs.some((item) => item.id === activeTabId);
     if (activeTabNeedsFallback) {
-      const tabContext = setActiveTabId((response.data?.activeTabId && tabs.some((item) => item.id === response.data.activeTabId)
-        ? response.data.activeTabId
-        : (fallbackTabId && tabs.some((item) => item.id === fallbackTabId) ? fallbackTabId : tabs[0]?.id)) || null, { remember: true });
+      const sameCwdFallbackTabId = closedActiveCwd
+        ? tabs.find((item) => !closedIds.includes(item.id) && item.cwd === closedActiveCwd)?.id || null
+        : null;
+      const tabContext = setActiveTabId((sameCwdFallbackTabId && tabs.some((item) => item.id === sameCwdFallbackTabId)
+        ? sameCwdFallbackTabId
+        : response.data?.activeTabId && tabs.some((item) => item.id === response.data.activeTabId)
+          ? response.data.activeTabId
+          : (fallbackTabId && tabs.some((item) => item.id === fallbackTabId) ? fallbackTabId : tabs[0]?.id)) || null, { remember: true });
       resetActiveTabUi();
       renderTabs();
       restoreActiveDraft();
@@ -17704,6 +17727,8 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
     addEvent(`closed ${closedIds.length || targetTabs.length} terminal ${closedIds.length === 1 ? "tab" : "tabs"}`, "warn");
   } catch (error) {
     addEvent(error.message, "error");
+  } finally {
+    for (const id of targetIds) closingTerminalTabIds.delete(id);
   }
 }
 
@@ -17809,21 +17834,268 @@ function jumpToChatEvent(line) {
   }
 }
 
-function addEvent(message, level = "info", { toolCallId = "", notify = true } = {}) {
+const TOOL_EVENT_TARGET_FIELDS = new Map([
+  ["read", "path"],
+  ["write", "path"],
+  ["edit", "path"],
+  ["grep", "path"],
+  ["find", "path"],
+  ["ls", "path"],
+]);
+
+function boundedToolEventTarget(event) {
+  const toolName = String(event?.toolName || "").trim().toLowerCase();
+  const field = TOOL_EVENT_TARGET_FIELDS.get(toolName);
+  if (!field) return "";
+  const args = event?.args ?? event?.arguments ?? event?.invocation?.args;
+  const value = args && typeof args === "object" && !Array.isArray(args) ? args[field] : "";
+  if (typeof value !== "string") return "";
+  const singleLine = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return singleLine.length > 96 ? `${singleLine.slice(0, 93)}…` : singleLine;
+}
+
+function shortenedToolCallId(value) {
+  const id = String(value || "").trim();
+  if (!id) return "";
+  return id.length <= 14 ? id : `${id.slice(0, 7)}…${id.slice(-5)}`;
+}
+
+function toolEventTimerKey(event) {
+  const toolCallId = String(event?.toolCallId || "").trim();
+  return toolCallId ? `${event?.tabId || activeTabId || "tab"}:${toolCallId}` : "";
+}
+
+function toolEventDurationMs(event, phase, occurredAt) {
+  if (phase !== "finish") return null;
+  const reportedDurationMs = Number(event?.durationMs);
+  if (Number.isFinite(reportedDurationMs) && reportedDurationMs >= 0) return reportedDurationMs;
+  const startedAt = toolEventStartedAt.get(toolEventTimerKey(event))?.startedAt;
+  return Number.isFinite(startedAt) ? Math.max(0, occurredAt - startedAt) : null;
+}
+
+function formatToolEventDuration(durationMs) {
+  if (!Number.isFinite(durationMs)) return "";
+  if (durationMs < 1000) return `${Math.round(durationMs)} ms`;
+  if (durationMs < 10_000) return `${(durationMs / 1000).toFixed(1)} s`;
+  return `${Math.round(durationMs / 1000)} s`;
+}
+
+function toolLifecycleEventDetails(event, phase, occurredAt) {
+  const status = phase === "start" ? "started" : event?.isError ? "failed" : "finished";
+  const startRecord = phase === "finish" ? toolEventStartedAt.get(toolEventTimerKey(event)) : null;
+  const target = boundedToolEventTarget(event) || startRecord?.target || "";
+  const duration = formatToolEventDuration(toolEventDurationMs(event, phase, occurredAt));
+  const callId = shortenedToolCallId(event?.toolCallId);
+  return [
+    target ? { label: "target", value: target } : null,
+    { label: "status", value: status, tone: event?.isError ? "error" : phase === "finish" ? "success" : "info" },
+    duration ? { label: "duration", value: duration } : null,
+    callId ? { label: "call", value: callId } : null,
+  ].filter(Boolean);
+}
+
+function toolLifecycleEventArguments(event, phase) {
   const occurredAt = Date.now();
+  const timerKey = toolEventTimerKey(event);
+  if (phase === "start" && timerKey) {
+    toolEventStartedAt.set(timerKey, { startedAt: occurredAt, target: boundedToolEventTarget(event) });
+    while (toolEventStartedAt.size > 240) toolEventStartedAt.delete(toolEventStartedAt.keys().next().value);
+  }
+  const toolName = runIndicatorToolName(event?.toolName || "tool");
+  const status = phase === "start" ? "started" : event?.isError ? "failed" : "finished";
+  const args = [`tool ${toolName} ${status}`, event?.isError ? "error" : "info", {
+    toolCallId: event?.toolCallId,
+    toolEventPhase: phase,
+    details: toolLifecycleEventDetails(event, phase, occurredAt),
+    occurredAt,
+  }];
+  if (phase === "finish" && timerKey) toolEventStartedAt.delete(timerKey);
+  return args;
+}
+
+function normalizeEventDisplayMode(value) {
+  return value === "compact" ? "compact" : "detailed";
+}
+
+function readStoredEventDisplayMode() {
+  try {
+    return normalizeEventDisplayMode(localStorage.getItem(EVENT_DISPLAY_MODE_STORAGE_KEY));
+  } catch {
+    return "detailed";
+  }
+}
+
+function syncEventDisplayModeUi() {
+  if (elements.eventLog) elements.eventLog.dataset.displayMode = eventDisplayMode;
+  elements.eventDisplayDetailedAction?.setAttribute("aria-checked", String(eventDisplayMode === "detailed"));
+  elements.eventDisplayCompactAction?.setAttribute("aria-checked", String(eventDisplayMode === "compact"));
+}
+
+function setEventDisplayMode(value, { persist = true } = {}) {
+  eventDisplayMode = normalizeEventDisplayMode(value);
+  syncEventDisplayModeUi();
+  if (!persist) return;
+  try {
+    localStorage.setItem(EVENT_DISPLAY_MODE_STORAGE_KEY, eventDisplayMode);
+  } catch {
+    // Display mode remains active for this page when storage is unavailable.
+  }
+}
+
+function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "", details = [], notify = true, occurredAt = Date.now() } = {}) {
   const line = make("button", `event ${level}`.trim());
   line.type = "button";
   line.dataset.chatEventTimestamp = String(occurredAt);
-  if (toolCallId) line.dataset.chatToolCallId = String(toolCallId);
-  line.textContent = `[${new Date(occurredAt).toLocaleTimeString()}] ${message}`;
-  line.title = "Jump to this event in the chat";
-  line.setAttribute("aria-label", `${line.textContent}. Jump to this event in the chat.`);
+  const stableToolCallId = String(toolCallId || "").trim();
+  const toolLifecycle = ["start", "finish"].includes(toolEventPhase);
+  const treeEligible = stableToolCallId && toolLifecycle;
+  if (stableToolCallId) line.dataset.chatToolCallId = stableToolCallId;
+  if (toolLifecycle) line.dataset.eventToolPhase = toolEventPhase;
+  line.setAttribute("aria-keyshortcuts", "ContextMenu Shift+F10");
+  const time = make("span", "event-time", `[${new Date(occurredAt).toLocaleTimeString()}]`);
+  const summary = make("span", "event-summary", String(message || ""));
+  const main = make("span", "event-main");
+  main.append(time, summary);
+  line.append(main);
+  if (Array.isArray(details) && details.length) {
+    const meta = make("span", "event-details");
+    for (const detail of details) {
+      if (!detail?.label || !detail?.value) continue;
+      const item = make("span", `event-detail${detail.tone ? ` ${detail.tone}` : ""}`);
+      item.append(make("span", "event-detail-label", `${detail.label}:`), document.createTextNode(` ${detail.value}`));
+      meta.append(item);
+    }
+    if (meta.childElementCount) line.append(meta);
+  }
+  const accessibleText = line.textContent.trim();
+  line.title = `Jump to this event in the chat; open the context menu for display options${treeEligible ? " and Tree navigation" : ""}`;
+  line.setAttribute("aria-label", `${accessibleText}. Jump to this event in the chat. Context menu: display options${treeEligible ? " and Tree navigation" : ""}.`);
   line.addEventListener("click", () => jumpToChatEvent(line));
   elements.eventLog.prepend(line);
   while (elements.eventLog.children.length > 120) elements.eventLog.lastElementChild?.remove();
   if (notify && (level === "error" || level === "warn")) {
     showNoticeToast(message, level);
     noteUnreadEvent();
+  }
+}
+
+function closeEventTreeContextMenu({ returnFocus = true } = {}) {
+  const trigger = eventTreeContextMenuState?.trigger;
+  eventTreeContextMenuState = null;
+  if (elements.eventTreeContextMenu) elements.eventTreeContextMenu.hidden = true;
+  if (elements.eventTreeContextMenuAction) elements.eventTreeContextMenuAction.disabled = false;
+  if (returnFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus({ preventScroll: true }));
+}
+
+function setEventTreeContextMenuStatus(message = "", level = "info") {
+  const status = elements.eventTreeContextMenuStatus;
+  if (!status) return;
+  status.textContent = message;
+  status.hidden = !message;
+  status.className = `event-tree-context-menu-status ${level}`;
+}
+
+function closeOtherContextMenusForEventTree() {
+  closeFileContextMenu({ returnFocus: false });
+  closeGitPanelContextMenu({ returnFocus: false });
+  closeSidePanelContextMenu({ returnFocus: false });
+  closeVisibilityContextMenu({ returnFocus: false });
+  closeGitFooterContextMenu({ returnFocus: false });
+  closeEventTreeContextMenu({ returnFocus: false });
+}
+
+function showEventTreeContextMenu(event, line = null) {
+  const menu = elements.eventTreeContextMenu;
+  if (!menu || (line && !elements.eventLog?.contains(line))) return;
+  const toolCallId = String(line?.dataset.chatToolCallId || "").trim();
+  const phase = line?.dataset.eventToolPhase || "";
+  const treeEligible = !!toolCallId && ["start", "finish"].includes(phase);
+  event.preventDefault();
+  event.stopPropagation();
+  closeOtherContextMenusForEventTree();
+  eventTreeContextMenuState = {
+    trigger: line,
+    toolCallId,
+    phase,
+    tabContext: treeEligible ? activeTabContext() : null,
+    busy: false,
+    openedAt: performance.now(),
+  };
+  setEventTreeContextMenuStatus("");
+  syncEventDisplayModeUi();
+  if (elements.eventTreeContextMenuAction) elements.eventTreeContextMenuAction.hidden = !treeEligible;
+  menu.hidden = false;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(Number(event.clientX) || 0, Math.max(8, window.innerWidth - rect.width - 8));
+  const top = Math.min(Number(event.clientY) || 0, Math.max(8, window.innerHeight - rect.height - 8));
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  const displayAction = eventDisplayMode === "compact" ? elements.eventDisplayCompactAction : elements.eventDisplayDetailedAction;
+  displayAction?.focus({ preventScroll: true });
+}
+
+function eventTreeTargetEntryId(data, state) {
+  const targets = Array.isArray(data?.eventTargets) ? data.eventTargets : [];
+  const target = targets.find((item) => String(item?.toolCallId || "") === state.toolCallId);
+  const entryId = state.phase === "start" ? target?.startEntryId : target?.finishEntryId || target?.startEntryId;
+  if (typeof entryId !== "string" || !entryId.trim()) return "";
+  const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+  return nodes.some((node) => node?.id === entryId) ? entryId : "";
+}
+
+async function navigateEventTreeBoundary() {
+  const state = eventTreeContextMenuState;
+  const action = elements.eventTreeContextMenuAction;
+  if (!state || state.busy || !action || !isCurrentTabContext(state.tabContext)) return;
+  state.busy = true;
+  action.disabled = true;
+  setEventTreeContextMenuStatus("Resolving this tool boundary…");
+  try {
+    const tree = await api("/api/session-tree", { tabId: state.tabContext.tabId });
+    if (eventTreeContextMenuState !== state || !isCurrentTabContext(state.tabContext)) return;
+    const entryId = eventTreeTargetEntryId(tree.data, state);
+    if (!entryId) {
+      setEventTreeContextMenuStatus("This tool boundary is not available in the current persisted session tree.", "warn");
+      addEvent("Tree navigation target is unavailable or stale; the session was not changed.", "warn");
+      return;
+    }
+    setEventTreeContextMenuStatus("");
+    const confirmed = await appConfirm({
+      title: "Navigate to this tool boundary?",
+      summary: "This changes the current session branch. Later entries stay in the tree, and no automatic branch summary is generated.",
+      affected: "Use /tree to navigate back or choose another branch.",
+      undoable: true,
+      confirmLabel: "Navigate",
+      danger: false,
+    });
+    if (eventTreeContextMenuState !== state || !isCurrentTabContext(state.tabContext)) return;
+    if (!confirmed) {
+      setEventTreeContextMenuStatus("Navigation cancelled; the session was not changed.");
+      return;
+    }
+    setEventTreeContextMenuStatus("Navigating…");
+    const result = await api("/api/tree-navigate", {
+      method: "POST",
+      body: { entryId, summarize: false },
+      tabId: state.tabContext.tabId,
+    });
+    if (!isCurrentTabContext(state.tabContext)) return;
+    applyResponseTab(result);
+    addTransientMessage({ role: "native", title: "/tree", content: result.data?.message || "Navigated to the selected tool boundary.", level: "info" });
+    if (eventTreeContextMenuState === state) closeEventTreeContextMenu();
+    await refreshAll(state.tabContext);
+  } catch (error) {
+    if (eventTreeContextMenuState === state && isCurrentTabContext(state.tabContext)) {
+      const message = error?.message || String(error);
+      setEventTreeContextMenuStatus(`Navigation failed: ${message}`, "error");
+      addEvent(`Tree navigation failed: ${message}`, "error");
+    }
+  } finally {
+    if (eventTreeContextMenuState === state) {
+      state.busy = false;
+      action.disabled = false;
+      action.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -19361,6 +19633,7 @@ function showGitFooterContextMenu(event, chip, trigger) {
   closeGitPanelContextMenu({ returnFocus: false });
   closeSidePanelContextMenu({ returnFocus: false });
   closeGitFooterContextMenu({ returnFocus: false });
+  closeEventTreeContextMenu({ returnFocus: false });
   hideFooterTooltip();
 
   const label = cleanStatusText(chip?.label) || gitFooterVisibilityLabel(key);
@@ -47319,7 +47592,7 @@ function supervisorContinuityKey(event, fallbackTabId = activeTabId) {
 function scheduleSupervisorContinuityRefresh(event, { gap = false } = {}) {
   const tabContext = activeTabContext(event?.tabId || activeTabId);
   const key = supervisorContinuityKey(event, tabContext.tabId);
-  if (!key || !tabContext.tabId || !isCurrentTabContext(tabContext)) return;
+  if (!key || !tabContext.tabId || !isCurrentTabContext(tabContext) || closingTerminalTabIds.has(tabContext.tabId)) return;
 
   if (gap && !supervisorGapWarnings.has(key)) {
     supervisorGapWarnings.add(key);
@@ -47329,14 +47602,15 @@ function scheduleSupervisorContinuityRefresh(event, { gap = false } = {}) {
 
   const timer = setTimeout(async () => {
     try {
+      if (closingTerminalTabIds.has(tabContext.tabId)) return;
       const results = await Promise.allSettled([refreshTabs()]);
-      if (isCurrentTabContext(tabContext)) {
+      if (isCurrentTabContext(tabContext) && !closingTerminalTabIds.has(tabContext.tabId)) {
         results.push(...(await Promise.allSettled([
           refreshState(tabContext),
           refreshMessages(tabContext, { authoritative: true }),
         ])));
       }
-      if (!isCurrentTabContext(tabContext)) return;
+      if (!isCurrentTabContext(tabContext) || closingTerminalTabIds.has(tabContext.tabId)) return;
       for (const result of results) {
         if (result.status === "rejected") addEvent(`continuity refresh failed: ${result.reason?.message || String(result.reason)}`, "error");
       }
@@ -47707,7 +47981,7 @@ function handleEvent(event) {
         handleToolExecutionStart(event);
       }
       setRunIndicatorActivity(`Running tool: ${runIndicatorToolName(event.toolName)}…`);
-      if (claimToolBoundaryRecord(event, "log:start")) addEvent(`tool ${event.toolName} started`, "info", { toolCallId: event.toolCallId });
+      if (claimToolBoundaryRecord(event, "log:start")) addEvent(...toolLifecycleEventArguments(event, "start"));
       break;
     case "tool_execution_end": {
       if (voiceConversationActiveFor(event.tabId || activeTabId)) voiceConversation.setAssistantActivity({ toolRunning: false });
@@ -47727,7 +48001,7 @@ function handleEvent(event) {
         handleToolExecutionEnd(event);
       }
       setRunIndicatorActivity(`Tool ${runIndicatorToolName(event.toolName)} ${event.isError ? "failed" : "finished"}; waiting for the agent's next step…`);
-      if (claimToolBoundaryRecord(event, "log:end")) addEvent(`tool ${event.toolName} ${event.isError ? "failed" : "finished"}`, event.isError ? "error" : "info", { toolCallId: event.toolCallId });
+      if (claimToolBoundaryRecord(event, "log:end")) addEvent(...toolLifecycleEventArguments(event, "finish"));
       // Compact tool shells deliberately defer rich body construction to the
       // final transcript reconciliation; normal mode retains its live card.
       scheduleSemanticReconcile({ footerData: true }, tabContext);
@@ -49127,6 +49401,9 @@ document.addEventListener("pointerdown", (event) => {
   if (elements.gitFooterContextMenu && !elements.gitFooterContextMenu.hidden && !event.target?.closest?.(".git-footer-context-menu")) {
     closeGitFooterContextMenu();
   }
+  if (elements.eventTreeContextMenu && !elements.eventTreeContextMenu.hidden && !event.target?.closest?.(".event-tree-context-menu")) {
+    closeEventTreeContextMenu();
+  }
 }, { passive: true });
 document.addEventListener("pointermove", (event) => {
   if (openTerminalTabGroupKey && !event.target?.closest?.(".terminal-tab-group")) {
@@ -49625,6 +49902,56 @@ elements.fileTreeSearchInput?.addEventListener("keydown", (event) => {
   }
 });
 elements.fileTreeSearchClearButton?.addEventListener("click", () => clearFileTreeSearch({ focus: true }));
+syncEventDisplayModeUi();
+elements.eventLog?.addEventListener("contextmenu", (event) => {
+  const line = event.target?.closest?.(".event") || null;
+  if (!line && event.target !== elements.eventLog) return;
+  showEventTreeContextMenu(event, line);
+});
+elements.eventLog?.addEventListener("keydown", (event) => {
+  if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+  const line = event.target?.closest?.(".event");
+  if (!line || !elements.eventLog.contains(line)) return;
+  const rect = line.getBoundingClientRect();
+  showEventTreeContextMenu({
+    preventDefault: () => event.preventDefault(),
+    stopPropagation: () => event.stopPropagation(),
+    clientX: rect.left + Math.min(rect.width, 24),
+    clientY: rect.bottom,
+  }, line);
+});
+elements.eventTreeContextMenu?.addEventListener("keydown", (event) => {
+  const items = [...elements.eventTreeContextMenu.querySelectorAll('[role="menuitem"]:not([disabled]):not([hidden]), [role="menuitemradio"]:not([disabled]):not([hidden])')];
+  const index = items.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeEventTreeContextMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    items[(Math.max(0, index) + direction + items.length) % items.length]?.focus({ preventScroll: true });
+  } else if (event.key === "Home" || event.key === "End") {
+    event.preventDefault();
+    items[event.key === "Home" ? 0 : items.length - 1]?.focus({ preventScroll: true });
+  }
+});
+elements.eventDisplayDetailedAction?.addEventListener("click", () => {
+  setEventDisplayMode("detailed");
+  closeEventTreeContextMenu();
+});
+elements.eventDisplayCompactAction?.addEventListener("click", () => {
+  setEventDisplayMode("compact");
+  closeEventTreeContextMenu();
+});
+elements.eventTreeContextMenuAction?.addEventListener("click", () => void navigateEventTreeBoundary());
+window.addEventListener("storage", (event) => {
+  if (event.key === EVENT_DISPLAY_MODE_STORAGE_KEY) setEventDisplayMode(event.newValue, { persist: false });
+});
+window.addEventListener("resize", () => closeEventTreeContextMenu(), { passive: true });
+document.addEventListener("scroll", () => {
+  if (!eventTreeContextMenuState || performance.now() - eventTreeContextMenuState.openedAt < 100) return;
+  closeEventTreeContextMenu();
+}, { capture: true, passive: true });
 elements.fileContextMenu?.addEventListener("keydown", (event) => {
   const items = [...elements.fileContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
   const index = items.indexOf(document.activeElement);

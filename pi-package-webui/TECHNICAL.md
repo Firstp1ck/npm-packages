@@ -192,6 +192,18 @@ Tracked skill files appear as selectable tags above the composer. The strip keep
 
 When the browser page is hidden, the Web UI closes that page's live event stream so the browser cannot accumulate serialized output frames for later parsing and DOM rendering. Merely moving focus to another visible window does not pause streaming. On return, it first fetches authoritative tabs, state, and transcript snapshots, reconnects live events, and refreshes nonessential panels during browser idle time. Pending extension prompts are replayed by the server after reconnection, and completed output remains available from the authoritative transcript.
 
+## Events and session-tree navigation
+
+Visible non-Intercom tool start, finish, and failure rows in **Events** show the tool name, lifecycle status, a shortened call ID, completion duration when a matching start was observed, and a bounded path only for a small set of file-oriented tools. The panel never displays unrestricted arguments, raw results, or tool output. Select any event row to keep the existing jump-to-chat behavior.
+
+Right-click any event row, press the Context Menu key, or press `Shift+F10` to choose **Detailed** or **Compact** display. Detailed is the default. Compact hides the secondary target, status, duration, and call-ID line, reduces row spacing, and keeps the timestamp and summary visible. Tool rows retain a colored left accent so starts, finishes, and failures remain distinct. The choice is stored in browser-local storage and applies across Web UI sessions in that browser.
+
+A tool lifecycle row with a stable call ID also offers **Tree…**. Choose it to resolve the row against the current persisted session tree. Start rows select the tool-call boundary. Finish and failure rows select the result boundary when available, otherwise the call boundary. General Web UI status events do not offer Tree navigation.
+
+Before navigation, Web UI confirms that the current session branch will change, later entries will remain in the tree, no automatic branch summary will be generated, and `/tree` can navigate back. Cancelling sends no navigation request. Accepting navigates with summarization disabled, refreshes the active tab, and shows normal `/tree` feedback.
+
+An unpersisted, removed, or stale boundary produces visible feedback and leaves the session unchanged. The same is true when no persistent session is available or the server rejects navigation while Pi is busy. Retry after the tool boundary has persisted or the active run has settled; use the full `/tree` selector when you need another branch or optional abandoned-branch summarization.
+
 ## Global control visibility
 
 Right-click a supported workspace, Control Deck, composer, workflow, attachment, or input-frame tag control to hide it. Right-click empty space in a marked toolbar, Control Deck header/footer, or composer region to open the complete grouped list. Checked entries are visible; clear an entry to hide that control or tag type. The menu supports the Context Menu key and `Shift+F10`, arrow keys, `Home`, `End`, `Escape`, and normal outside-click dismissal.
@@ -227,6 +239,10 @@ To restore: stop the Web UI, re-upgrade to a version that supports the two-sided
 The **Subagents** panel accepts managed `pi-subagents` and workflow runs plus cooperating SDK, Pi RPC, JSON, print, interactive/tmux, schedule, gate, and custom launchers. It groups exact parent-session matches with their WebUI terminal and places unmatched registered runs under **External agents**. A model-less `pi-subagents` workflow controller renders as a collapsible run header; its model-powered children remain normal rows inside that section. The workflow controller is count-neutral, so totals report agents rather than orchestration processes. Counts include retained instances that became terminal during the current server run; the status line separately reports running and stale instances. Gate history refers to its child and does not add another count.
 
 At server start or restart, only queued or running agents reconnect from prior state. Pre-existing stale, lost, done, failed, and cancelled rows are not loaded into terminal groups or **External agents**. A run that becomes stale, lost, or terminal after the current server starts remains visible for inspection and normal clearing.
+
+The **Agent models** editor stores ordered model and thinking defaults for the eight built-in roles. User defaults apply unless the active project has its own saved values. The active Pi tab loads one immutable snapshot on startup or reload. Saving changes does not affect that tab until you select **Reload active tab**.
+
+For `subagent` and `subagent_gate` calls, WebUI fills an omitted model from the matching role slot. Role occurrence counts are independent, so the first reviewer uses reviewer slot 1 even if a worker appears earlier in the same task list. An explicit launch model remains unchanged and can satisfy a model choice in the current request. Counted tasks with different same-role slots are not collapsed into one model; use separate task entries. For `workflowScript`, WebUI wraps the supplied script with a local `runs` adapter that applies the same defaults to `runs.run` and `runs.all` children without editing individual call sites. Native provider fallback can still change the final runtime model after a launch failure.
 
 Use the WebUI wrapper when launching Pi subprocesses that should be visible:
 

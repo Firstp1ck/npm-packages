@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=133" />
+    <link rel="stylesheet" href="/styles.css?v=135" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -1236,6 +1236,14 @@
       <button type="button" role="menuitem" data-git-footer-menu-action="disable">Disable this box</button>
       <button type="button" role="menuitem" data-git-footer-menu-action="visibility">Open Git-footer Visibility</button>
     </div>
+    <div id="eventTreeContextMenu" class="file-context-menu event-tree-context-menu" role="menu" aria-labelledby="eventTreeContextMenuLabel" hidden>
+      <div id="eventTreeContextMenuLabel" class="event-tree-context-menu-label">Event actions</div>
+      <button id="eventDisplayDetailedAction" type="button" role="menuitemradio" aria-checked="true">Detailed</button>
+      <button id="eventDisplayCompactAction" type="button" role="menuitemradio" aria-checked="false">Compact</button>
+      <div class="event-tree-context-menu-separator" role="separator"></div>
+      <button id="eventTreeContextMenuAction" type="button" role="menuitem">Tree…</button>
+      <div id="eventTreeContextMenuStatus" class="event-tree-context-menu-status info" role="status" aria-live="polite" hidden></div>
+    </div>
 
     <div id="noticeToastStack" class="notice-toast-stack" aria-label="Notifications"></div>
     <aside id="undoToast" class="undo-toast" aria-live="polite" aria-atomic="true" hidden>
@@ -1846,7 +1854,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=158">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=162">
       (() => {
         "use strict";
 

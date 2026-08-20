@@ -19,9 +19,10 @@ The current flow is:
 ```text
 WebUI settings
   -> effective user/project launch slots
-  -> cached guidance loaded at Pi session_start
+  -> immutable snapshot loaded at Pi session_start
   -> natural-language system-prompt instructions
-  -> parent optionally emits explicit subagent model fields
+  -> WebUI fills omitted models on structured subagent/subagent_gate calls
+  -> WebUI wraps workflowScript runs.run/runs.all calls with the same defaults
   -> pi-subagents independently resolves primary + fallback candidates
   -> child starts
 ```
@@ -29,11 +30,12 @@ WebUI settings
 Relevant current implementation:
 
 - `lib/subagent-launch-slots.mjs` validates and formats launch slots.
-- `webui-rpc-helper.mjs` loads the effective slots on `session_start` and appends guidance in `before_agent_start`.
+- `lib/subagent-launch-policy.mjs` applies ordered role defaults while preserving explicit launch models.
+- `webui-rpc-helper.mjs` loads the effective slots on `session_start`, appends guidance in `before_agent_start`, and applies the defaults in `tool_call`.
 - `pi-subagents/src/runs/shared/model-fallback.ts` resolves explicit model, agent model, parent inheritance, and fallback candidates.
 - `pi-subagents/src/extension/schemas.ts` accepts per-launch model overrides but has no structured deviation reason.
 
-The gap is that WebUI does not currently validate the final launch request. The parent can omit or change the configured model, and native fallback configuration can run models that are absent from the WebUI slots.
+The remaining gap is that WebUI does not validate an explicit mismatched model or attest the final runtime model. Native fallback configuration can still run models that are absent from the WebUI slots, and launch paths that bypass the helper remain unenforced.
 
 ## 3. Goals
 

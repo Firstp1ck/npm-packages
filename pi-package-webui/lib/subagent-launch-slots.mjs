@@ -309,8 +309,9 @@ export function formatSubagentLaunchSlotGuidance(roles) {
   if (!assignments.length) return "";
   return [
     "## WebUI subagent launch slots",
-    "These are default model assignments for future delegation in this Pi tab. Explicit user instructions in the current request win.",
+    "These are the role-specific model defaults for future delegation in this Pi tab. Explicit user instructions in the current request win.",
     ...assignments.slice(0, SUBAGENT_LAUNCH_SLOT_LIMITS.totalSlots),
+    "The WebUI runtime fills omitted model fields for structured subagent and subagent_gate launches, including runs.run and runs.all workflow children. Preserve those defaults unless the current user explicitly requests another model.",
     "When launching multiple slots of one role, create separate task entries so each model remains explicit; do not replace them with count when model specs differ.",
   ].join("\n");
 }

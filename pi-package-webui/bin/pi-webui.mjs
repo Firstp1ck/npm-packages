@@ -27,6 +27,7 @@ import { AgentRunRegistry } from "../lib/agent-run-registry.mjs";
 import { resolveScopedModelsFromPatterns } from "../lib/scoped-models.mjs";
 import { projectIntercomConversations } from "../lib/intercom-conversations.mjs";
 import { filterIntercomTranscriptMessages } from "../lib/intercom-transcript-filter.mjs";
+import { sessionTreeEventTargets } from "../lib/session-tree-event-targets.mjs";
 import {
   readSessionSummaryPreferences,
   supportedSessionSummaryThinkingLevels,
@@ -14577,6 +14578,7 @@ async function getSessionTreeData(tab) {
     cwd: manager.getCwd(),
     leafId,
     nodes: flattenSessionTree(manager.getTree(), { leafId }),
+    eventTargets: sessionTreeEventTargets(manager.getEntries()),
   };
 }
 

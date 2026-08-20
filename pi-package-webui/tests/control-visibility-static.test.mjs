@@ -285,10 +285,10 @@ assert.match(
 
 assert.match(
   serviceWorker,
-  /const CACHE_NAME = "pi-webui-pwa-v124";/,
+  /const CACHE_NAME = "pi-webui-pwa-v128";/,
   "browser asset changes should advance the PWA cache identity",
 );
-assert.match(html, /styles\.css\?v=133/, "visibility styles should advance the stylesheet query revision");
-assert.match(html, /data-app-src="\/app\.js\?v=158"/, "visibility behavior should advance the app query revision");
+assert.match(html, /styles\.css\?v=135/, "visibility styles should advance the stylesheet query revision");
+assert.match(html, /data-app-src="\/app\.js\?v=162"/, "visibility behavior should advance the app query revision");
 
 console.log("control-visibility-static.test.mjs passed");

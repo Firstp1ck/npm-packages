@@ -1,4 +1,4 @@
-const CACHE_NAME = "pi-webui-pwa-v124";
+const CACHE_NAME = "pi-webui-pwa-v128";
 const APP_SHELL = [
   "/",
   "/index.html",

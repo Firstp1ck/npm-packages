@@ -14,6 +14,7 @@ import {
   resolveResourceSelection,
 } from "./lib/resource-selection.mjs";
 import { mutatePiRuntimeFollowUpQueue } from "./lib/queue-mutation.mjs";
+import { applySubagentLaunchSlotDefaults } from "./lib/subagent-launch-policy.mjs";
 import {
   formatSubagentLaunchSlotGuidance,
   resolveSubagentLaunchSlotProjectKey,
@@ -942,6 +943,7 @@ export default function webuiRpcHelper(pi) {
   let resourceRpcActive = false;
   let sessionSamplingParams = {};
   let subagentLaunchSlotGuidance = "";
+  let subagentLaunchSlotRoles = null;
   let subagentContext = null;
   let subagentBridgeAvailable = false;
   let subagentPollTimer = null;
@@ -2138,8 +2140,10 @@ export default function webuiRpcHelper(pi) {
       const settings = await readWebuiSettings();
       const projectKey = await resolveSubagentLaunchSlotProjectKey(ctx?.cwd);
       const effective = subagentLaunchSlotScopeEntry(settings.subagentLaunchSlots, "project", projectKey);
-      subagentLaunchSlotGuidance = formatSubagentLaunchSlotGuidance(effective.entry.roles);
+      subagentLaunchSlotRoles = effective.entry.roles;
+      subagentLaunchSlotGuidance = formatSubagentLaunchSlotGuidance(subagentLaunchSlotRoles);
     } catch (error) {
+      subagentLaunchSlotRoles = null;
       subagentLaunchSlotGuidance = "";
       console.warn(`Web UI subagent launch slots could not be read: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -2325,7 +2329,22 @@ export default function webuiRpcHelper(pi) {
   function dismissSubagentRun(payload = {}) {
     const runId = subagentText(payload.runId, 160);
     if (!runId) throw new Error("Subagent dismiss requires runId");
-    const entry = findTrackedSubagentRun(runId);
+    const entry = ordinarySubagentRunEntries().find((candidate) => candidate.run?.id === runId);
+    if (!entry) {
+      const canonicalRunId = canonicalAgentRunId(runId, "run");
+      const staleProviderInstances = [...agentRunProviderSnapshots.values()]
+        .flatMap((rows) => [...rows.values()])
+        .filter((instance) => instance.runId === canonicalRunId && ["done", "failed", "cancelled"].includes(instance.status));
+      rememberDismissedHelperAgentRunProjections(staleProviderInstances);
+      // Dismiss is idempotent. Force a fresh empty projection so a server that
+      // still has the previous terminal snapshot can clear it immediately.
+      lastPublishedSubagentSignature = "";
+      lastPublishedSubagentAt = 0;
+      lastPublishedAgentRunSignature = "";
+      lastPublishedAgentRunAt = 0;
+      publishSubagentStatus();
+      return { runId, dismissed: true, alreadyMissing: true };
+    }
     if (entry.run.status === "running") throw new Error(`Cannot dismiss running subagent run: ${runId}`);
     rememberDismissedHelperAgentRunProjections(canonicalInstancesFromPublicRun(entry.run, new Set()));
     entry.runs.delete(entry.key);
@@ -2473,6 +2492,11 @@ export default function webuiRpcHelper(pi) {
     await recomputeResourceState(ctx, event.model);
   });
 
+  pi.on("tool_call", (event) => {
+    if (!subagentLaunchSlotRoles || !["subagent", "subagent_gate"].includes(event.toolName)) return;
+    applySubagentLaunchSlotDefaults(event.toolName, event.input, subagentLaunchSlotRoles);
+  });
+
   pi.on("tool_execution_start", (event, ctx) => {
     if (event.toolName !== "subagent" || event.args?.action) return;
     const id = subagentText(event.toolCallId, 160);
@@ -2578,6 +2602,7 @@ export default function webuiRpcHelper(pi) {
     resourceGeneration += 1;
     subagentContext = null;
     subagentLaunchSlotGuidance = "";
+    subagentLaunchSlotRoles = null;
     subagentPollGeneration += 1;
     clearTimeout(subagentPollTimer);
     subagentPollTimer = null;

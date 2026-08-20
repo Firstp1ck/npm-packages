@@ -93,7 +93,9 @@ const ctx = {
 const asyncRunDir = await mkdtemp(path.join(tmpdir(), "pi-webui-subagent-output-test-"));
 const settingsFile = path.join(asyncRunDir, "webui-settings.json");
 const initialLaunchRoles = defaultSubagentLaunchSlotRoles();
+initialLaunchRoles.delegate[0] = { id: "delegate:base", model: "fake/delegate", thinking: "low" };
 initialLaunchRoles.reviewer[0] = { id: "reviewer:base", model: "fake/reviewer", thinking: "high" };
+initialLaunchRoles.reviewer.push({ id: "reviewer:second", model: "fake/reviewer-second", thinking: "medium" });
 await writeFile(settingsFile, `${JSON.stringify({
   version: 5,
   resourceDefaults: { tools: { enabledTools: null }, skills: { enabledSkills: ["repo-explorer"] } },
@@ -184,7 +186,19 @@ const promptWithSkills = [
 ].join("\n");
 const initialGuidance = await beforeAgentStart({ systemPrompt: promptWithSkills, systemPromptOptions: ctx.getSystemPromptOptions() });
 assert.match(initialGuidance?.systemPrompt || "", /reviewer slot 1: agent=reviewer model=fake\/reviewer:high/, "session_start should cache effective launch-slot guidance");
+assert.match(initialGuidance?.systemPrompt || "", /runtime fills omitted model fields for structured subagent and subagent_gate launches, including runs\.run and runs\.all workflow children/, "guidance should explain which calls receive runtime defaults");
 assert.doesNotMatch(initialGuidance?.systemPrompt || "", /code-security/, "launch-slot guidance must compose with disabled-skill filtering");
+const applyLaunchSlotDefaults = (extensionHandlers.get("tool_call") || [])[0];
+assert.ok(applyLaunchSlotDefaults, "helper should register launch-slot defaults before subagent execution");
+const singleLaunchInput = { agent: "delegate", task: "Delegate this work" };
+await applyLaunchSlotDefaults({ toolName: "subagent", input: singleLaunchInput }, ctx);
+assert.equal(singleLaunchInput.model, "fake/delegate:low", "structured single launches should receive the configured role model and thinking level");
+const explicitLaunchInput = { agent: "reviewer", task: "Review with the requested model", model: "fake/explicit:high" };
+await applyLaunchSlotDefaults({ toolName: "subagent", input: explicitLaunchInput }, ctx);
+assert.equal(explicitLaunchInput.model, "fake/explicit:high", "an explicit per-launch model should override the WebUI default");
+const gateLaunchInput = { tasks: [{ agent: "reviewer", task: "Review correctness" }, { agent: "delegate", task: "Check scope" }, { agent: "reviewer", task: "Review tests" }] };
+await applyLaunchSlotDefaults({ toolName: "subagent_gate", input: gateLaunchInput }, ctx);
+assert.deepEqual(gateLaunchInput.tasks.map((task) => task.model), ["fake/reviewer:high", "fake/delegate:low", "fake/reviewer-second:medium"], "gate tasks should consume each role's slots independently in task order");
 const changedLaunchRoles = defaultSubagentLaunchSlotRoles();
 changedLaunchRoles.reviewer[0] = { id: "reviewer:base", model: "fake/changed", thinking: "high" };
 await writeFile(settingsFile, `${JSON.stringify({
@@ -195,6 +209,9 @@ await writeFile(settingsFile, `${JSON.stringify({
 const cachedGuidance = await beforeAgentStart({ systemPrompt: "Base system prompt.", systemPromptOptions: ctx.getSystemPromptOptions() });
 assert.match(cachedGuidance?.systemPrompt || "", /fake\/reviewer:high/, "a settings save must not mutate the active helper snapshot");
 assert.doesNotMatch(cachedGuidance?.systemPrompt || "", /fake\/changed:high/);
+const cachedLaunchInput = { agent: "reviewer", task: "Review after settings save" };
+await applyLaunchSlotDefaults({ toolName: "subagent", input: cachedLaunchInput }, ctx);
+assert.equal(cachedLaunchInput.model, "fake/reviewer:high", "runtime launch defaults should use the same immutable active-tab snapshot as prompt guidance");
 for (let attempt = 0; attempt < 20 && !statuses.some((entry) => entry.text?.startsWith("PI_WEBUI_SUBAGENTS_V1 ") && entry.text.includes("run-a")); attempt++) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
@@ -1033,6 +1050,19 @@ assert.deepEqual(helperResponse("dismiss-finished-foreground"), {
 }, "dismiss should remove only a retained finished run");
 payload = latestPayload();
 assert.equal(payload.runs.some((run) => run.id === "foreground-call"), false, "a dismissed finished run should disappear from the published snapshot");
+
+await helperCommand.handler(JSON.stringify({
+  requestId: "dismiss-already-missing-foreground",
+  action: "subagent-dismiss",
+  payload: { runId: "foreground-call" },
+}), ctx);
+assert.deepEqual(helperResponse("dismiss-already-missing-foreground"), {
+  requestId: "dismiss-already-missing-foreground",
+  ok: true,
+  data: { runId: "foreground-call", dismissed: true, alreadyMissing: true },
+}, "dismiss should be idempotent when the terminal run disappeared before the request arrived");
+payload = latestPayload();
+assert.equal(payload.runs.some((run) => run.id === "foreground-call"), false, "idempotent dismissal should republish the cleared snapshot");
 
 await helperCommand.handler(JSON.stringify({
   requestId: "dismiss-running-async",
