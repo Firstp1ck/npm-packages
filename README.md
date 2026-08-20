@@ -107,6 +107,7 @@ Skills give Pi a reusable workflow for a particular kind of work. You normally a
 - **[Tech Debt Tracker](pi-skill-tech-debt-tracker/README.md)** — Find, group, and prioritize technical debt so cleanup work becomes actionable.
 - **[Tech Deep Dive](pi-skill-tech-deep-dive/README.md)** — Evaluate libraries, frameworks, platforms, models, databases, APIs, or architectures for a real use case.
 - **[Test Plan Generator](pi-skill-test-plan-generator/README.md)** — Turn a change or specification into a prioritized, practical test plan.
+- **[Unslop](pi-skill-unslop/README.md)** — Strip AI writing tells from prose and restore a human voice.
 - **[Vulnerability Scanner](pi-skill-vulnerability-scanner/README.md)** — Check software, containers, and services for known vulnerabilities and explain the risk.
 
 ### Shared utilities
