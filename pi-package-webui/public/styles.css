@@ -8647,9 +8647,21 @@ button.git-workflow-step:hover:not(:disabled) {
   transition: transform 140ms ease;
 }
 .message-collapse[open] > summary.message-header::after { transform: rotate(90deg); }
-.thinking-disclosure > .message-header { cursor: pointer; flex-wrap: wrap; }
+.thinking-disclosure > .message-header {
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "role timestamp disclosure"
+    "preview preview preview";
+  column-gap: 0.75rem;
+  row-gap: 0.3rem;
+}
+.thinking-disclosure > .message-header > .message-role { grid-area: role; min-width: 0; }
+.thinking-disclosure > .message-header > .muted { grid-area: timestamp; }
+.thinking-disclosure > .message-header::after { grid-area: disclosure; margin-left: 0; }
 .thinking-disclosure-preview {
-  flex: 1 1 100%;
+  grid-area: preview;
   min-width: 0;
   overflow: hidden;
   color: rgba(var(--ctp-subtext-rgb), 0.78);

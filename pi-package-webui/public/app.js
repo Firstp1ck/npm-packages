@@ -37439,6 +37439,11 @@ function handleToolExecutionEnd(event) {
   if (run) renderLiveToolRun(run);
 }
 
+function thinkingDisclosurePreviewText(message, charLimit = 140) {
+  const raw = visibleThinkingText(message?.thinking || textFromContent(message?.content));
+  return speakableTextFromMarkdown(raw).slice(0, Math.max(0, charLimit));
+}
+
 function toolResultPreviewText(message, lineLimit = 10) {
   const text = textFromContent(message?.content).replace(/\s+$/g, "");
   if (!text) return "(empty tool result)";
@@ -37592,7 +37597,7 @@ function createMessageBubble(message, { streaming = false, messageIndex = -1, tr
       details.classList.add("thinking-disclosure");
       details.open = compactThinkingDisclosureExpanded(thinkingKey, false);
       details.addEventListener("toggle", () => setCompactThinkingDisclosureExpanded(thinkingKey, details.open, false));
-      const previewText = String(message.thinking || textFromContent(message.content) || "").replace(/\s+/g, " ").trim().slice(0, 140);
+      const previewText = thinkingDisclosurePreviewText(message);
       if (previewText) header.append(make("span", "thinking-disclosure-preview", previewText));
     } else if (shouldOpenMessageCollapseByDefault(message)) details.open = true;
     details.append(header, body);

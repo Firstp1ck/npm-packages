@@ -47,6 +47,7 @@ const compactThinkingBubble = functionBody(app, "ensureCompactThinkingBubble");
 const compactToolShell = functionBody(app, "renderCompactToolShell");
 const clearCompactToolShells = functionBody(app, "clearCompactToolShells");
 const compactTranscript = functionBody(app, "renderCompactTranscriptBody");
+const thinkingDisclosurePreviewText = functionBody(app, "thinkingDisclosurePreviewText");
 const compactThinkingDisclosureExpanded = functionBody(app, "compactThinkingDisclosureExpanded");
 const setCompactThinkingDisclosureExpanded = functionBody(app, "setCompactThinkingDisclosureExpanded");
 const clearCompactThinkingDisclosureState = functionBody(app, "clearCompactThinkingDisclosureState");
@@ -104,7 +105,9 @@ assert.match(appendTranscriptMessage, /compactTranscript && transcriptMessage\.r
 assert.match(compactThinkingSegments, /!thinkingOutputVisible\) return \[\][\s\S]*?message\?\.role === "thinking"[\s\S]*?assistantDisplayMessages\(message\)[\s\S]*?displayMessage\.role === "thinking"/, "fast mode should collect direct and embedded assistant thinking segments only when thinking output is enabled");
 assert.match(compactStoredTranscriptItems, /pendingThinking\.segments\.join\("\\n\\n"\)[\s\S]*?compactThinkingAggregate: true[\s\S]*?pendingThinking\.segments\.push\(\.\.\.thinkingSegments\)/, "thinking separated by tool calls should reconcile into one aggregate Markdown payload");
 assert.match(compactStoredTranscriptItems, /message\?\.role === "user"\) flushThinking\(\)[\s\S]*?message\?\.role === "assistant"\) flushThinking\(\)/, "aggregate thinking should stay bounded to one user turn and end before its final assistant output");
-assert.match(createMessageBubble, /compactThinkingAggregate = compactOutputActive\(\)[\s\S]*?message\.compactThinkingAggregate === true[\s\S]*?isCollapsibleOutput = compactThinkingAggregate[\s\S]*?defaultExpanded = message\.compactThinkingDefaultExpanded === true[\s\S]*?details\.open = compactThinkingDisclosureExpanded\(message\.compactThinkingKey, defaultExpanded\)[\s\S]*?setCompactThinkingDisclosureExpanded\(message\.compactThinkingKey, details\.open, defaultExpanded\)[\s\S]*?else if \(shouldOpenMessageCollapseByDefault/, "aggregate thinking should use a native disclosure with role-specific defaults and preserve explicit toggles across reconciliation");
+assert.match(createMessageBubble, /compactThinkingAggregate = compactOutputActive\(\)[\s\S]*?message\.compactThinkingAggregate === true[\s\S]*?isCollapsibleOutput = compactThinkingAggregate[\s\S]*?defaultExpanded = message\.compactThinkingDefaultExpanded === true[\s\S]*?details\.open = compactThinkingDisclosureExpanded\(message\.compactThinkingKey, defaultExpanded\)[\s\S]*?setCompactThinkingDisclosureExpanded\(message\.compactThinkingKey, details\.open, defaultExpanded\)[\s\S]*?thinkingDisclosurePreviewText\(message\)[\s\S]*?else if \(shouldOpenMessageCollapseByDefault/, "thinking disclosures should preserve their defaults and use the cleaned preview helper");
+assert.match(thinkingDisclosurePreviewText, /visibleThinkingText\(message\?\.thinking \|\| textFromContent\(message\?\.content\)\)[\s\S]*?speakableTextFromMarkdown\(raw\)\.slice\(0, Math\.max\(0, charLimit\)\)/, "collapsed thinking previews should strip Markdown before applying the length limit");
+assert.match(styles, /\.thinking-disclosure > \.message-header \{[\s\S]*?display: grid;[\s\S]*?"role timestamp disclosure"[\s\S]*?"preview preview preview"[\s\S]*?\.thinking-disclosure > \.message-header::after \{ grid-area: disclosure; margin-left: 0; \}/, "collapsed thinking should keep the disclosure arrow in the top header row");
 assert.match(compactThinkingDisclosureExpanded, /compactThinkingDisclosureStateByTab\.get\(activeTabId \|\| "default"\)[\s\S]*?disclosureState\?\.has\(key\)[\s\S]*?!!defaultExpanded/, "aggregate disclosure state should be isolated per terminal tab and fall back to the role-specific default");
 assert.match(setCompactThinkingDisclosureExpanded, /expanded === defaultExpanded[\s\S]*?disclosureState\?\.delete\(key\)[\s\S]*?disclosureState = new Map\(\)[\s\S]*?disclosureState\.set\(key, !!expanded\)/, "aggregate disclosure state should store only explicit overrides from the role-specific default");
 assert.match(clearCompactThinkingDisclosureState, /disclosureState\?\.delete\(key\)[\s\S]*?compactThinkingDisclosureStateByTab\.delete\(tabId\)/, "stream resets should remove a live disclosure override without changing its expanded default");
@@ -156,7 +159,7 @@ assert.match(worker, /pi-webui-pwa-v\d+[\s\S]*?"\/fast-output-live\.mjs"/, "PWA 
 assert.match(html, /<label for="fastOutputModeSelect">Compact mode \(Experimental\)<\/label>/, "the sidebar should mark compact mode as experimental");
 assert.match(html, /Lightweight browser rendering; Markdown final output; live thinking expanded; stored thinking grouped and collapsed/, "the sidebar should distinguish compact rendering from model inference");
 // Intent preserved: the guarded PWA entry point must advance whenever app wiring changes.
-assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=157"/, "the guarded PWA entry point should cache-bust browser wiring");
+assert.match(html, /id="webuiBootLoader"[^>]*data-app-src="\/app\.js\?v=158"/, "the guarded PWA entry point should cache-bust browser wiring");
 assert.match(JSON.parse(packageRaw).scripts.check, /node --check public\/fast-output-live\.mjs/, "package checks should parse the compact helper");
 
 const events = createFastModeOutputEvents();
