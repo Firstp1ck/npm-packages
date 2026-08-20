@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DefaultPackageManager, DynamicBorder, getAgentDir, getSettingsListTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Key, matchesKey, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
@@ -158,6 +158,15 @@ function normalizePath(path: string): string {
   return resolve(path);
 }
 
+/** Skill file location relative to its package root, e.g. `skills/librarian/SKILL.md`. */
+function packageRelativeSkillPath(candidate: SkillCandidate): string {
+  return relative(candidate.enablePath, candidate.skillPath).split(sep).join("/");
+}
+
+function stripPrefix(entry: string): string {
+  return entry.startsWith("+") || entry.startsWith("-") || entry.startsWith("!") ? entry.slice(1) : entry;
+}
+
 function isEnabled(candidate: SkillCandidate, settings: SettingsShape): boolean {
   if (candidate.enableKind === "package-skill") {
     const source = candidate.packageSource;
@@ -166,7 +175,22 @@ function isEnabled(candidate: SkillCandidate, settings: SettingsShape): boolean 
     const entry = (settings.packages ?? []).find((pkg) => packageSource(pkg) === source);
     if (!entry) return false;
     if (typeof entry === "string" || entry.skills === undefined) return true;
-    return entry.skills.includes(skillName);
+
+    const filters = entry.skills;
+    if (filters.length === 0) return false;
+
+    const relPath = packageRelativeSkillPath(candidate);
+    const matches = (filter: string): boolean => {
+      const raw = stripPrefix(filter);
+      return raw === skillName || raw === relPath;
+    };
+
+    if (filters.filter((f) => f.startsWith("!") || f.startsWith("-")).some(matches)) return false;
+
+    const positive = filters.filter((f) => !f.startsWith("!") && !f.startsWith("-"));
+    // Exclusion-only lists leave every other skill enabled, including ones added
+    // by a later package update.
+    return positive.length === 0 || positive.some(matches);
   }
 
   if (candidate.enableKind === "package") {
@@ -181,13 +205,22 @@ function isEnabled(candidate: SkillCandidate, settings: SettingsShape): boolean 
   if (skillSettings.length === 0) return true;
 
   const direct = normalizePath(candidate.enablePath);
-  const plusDirect = `+${direct}`;
-  return skillSettings.some((entry) => {
-    if (entry === plusDirect) return true;
-    if (entry.startsWith("!") || entry.startsWith("-")) return false;
-    const raw = entry.startsWith("+") ? entry.slice(1) : entry;
-    return normalizePath(raw) === direct || normalizePath(raw) === normalizePath(dirname(direct));
-  });
+  const parent = normalizePath(dirname(direct));
+  const hits = (entry: string): boolean => {
+    const raw = stripPrefix(entry);
+    if (raw === "**") return true;
+    if (raw === candidate.name) return true;
+    const normalized = normalizePath(raw);
+    return normalized === direct || normalized === parent;
+  };
+
+  // Mirror Pi's own precedence from isEnabledByOverrides: skills are enabled by
+  // default, `!` excludes, `+` force-includes over an exclusion, `-` wins last.
+  let enabled = true;
+  if (skillSettings.filter((entry) => entry.startsWith("!")).some(hits)) enabled = false;
+  if (skillSettings.filter((entry) => entry.startsWith("+")).some(hits)) enabled = true;
+  if (skillSettings.filter((entry) => entry.startsWith("-")).some(hits)) enabled = false;
+  return enabled;
 }
 
 function applySelection(settings: SettingsShape, candidates: SkillCandidate[], selected: boolean[]): SettingsShape {
@@ -198,13 +231,16 @@ function applySelection(settings: SettingsShape, candidates: SkillCandidate[], s
     candidates.filter((c) => c.enableKind === "package-skill" && c.packageSource).map((c) => c.packageSource!),
   );
 
-  const selectedPackageSkills = new Map<string, string[]>();
+  // Record only what the user switched off. Anything absent stays enabled, so a
+  // package update that ships a new skill loads it without a second visit here.
+  const excludedPackageSkills = new Map<string, string[]>();
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
-    if (candidate.enableKind !== "package-skill" || !candidate.packageSource || !candidate.packageSkillName || !selected[i]) continue;
-    const list = selectedPackageSkills.get(candidate.packageSource) ?? [];
-    list.push(candidate.packageSkillName);
-    selectedPackageSkills.set(candidate.packageSource, list);
+    if (candidate.enableKind !== "package-skill" || !candidate.packageSource || !candidate.packageSkillName) continue;
+    if (selected[i]) continue;
+    const list = excludedPackageSkills.get(candidate.packageSource) ?? [];
+    list.push(packageRelativeSkillPath(candidate));
+    excludedPackageSkills.set(candidate.packageSource, list);
   }
 
   next.packages = (next.packages ?? [])
@@ -215,24 +251,39 @@ function applySelection(settings: SettingsShape, candidates: SkillCandidate[], s
     .map((entry) => {
       const source = packageSource(entry);
       if (!source || !managedPackageSources.has(source)) return entry;
-      const selectedSkills = selectedPackageSkills.get(source) ?? [];
-      const base = typeof entry === "string" ? { source: entry } : { ...entry, source };
-      return { ...base, skills: selectedSkills.sort() };
+      const base: { source: string; skills?: string[]; [key: string]: unknown } =
+        typeof entry === "string" ? { source: entry } : { ...entry, source };
+      const excluded = excludedPackageSkills.get(source) ?? [];
+      if (excluded.length === 0) {
+        const { skills: _unused, ...withoutFilter } = base;
+        return withoutFilter;
+      }
+      return { ...base, skills: excluded.sort().map((relPath) => `-${relPath}`) };
     });
 
-  const existingSkillFilters = (next.skills ?? []).filter((entry) => {
+  // Drop the legacy deny-all and any entry describing a skill shown in this list,
+  // then re-state only the switched-off ones. Unrelated entries, such as an extra
+  // skills directory, are preserved untouched.
+  const preservedSkillFilters = (next.skills ?? []).filter((entry) => {
     if (entry === "!**") return false;
-    const raw = entry.startsWith("+") || entry.startsWith("-") ? entry.slice(1) : entry;
-    return !skillTargets.has(normalizePath(raw));
+    const raw = stripPrefix(entry);
+    if (skillTargets.has(normalizePath(raw))) return false;
+    return !candidates.some((candidate) => candidate.enableKind === "settings-skill" && candidate.name === raw);
   });
-  next.skills = ["!**", ...existingSkillFilters];
+  const disabledSkillFilters: string[] = [];
 
   for (let i = 0; i < candidates.length; i++) {
-    if (!selected[i]) continue;
     const candidate = candidates[i];
-    if (candidate.enableKind === "package") next.packages.push(candidate.enablePath);
-    else if (candidate.enableKind === "settings-skill") next.skills.push(`+${candidate.enablePath}`);
+    if (candidate.enableKind === "package") {
+      if (selected[i]) next.packages.push(candidate.enablePath);
+    } else if (candidate.enableKind === "settings-skill" && !selected[i]) {
+      disabledSkillFilters.push(`-${candidate.enablePath}`);
+    }
   }
+
+  const skills = [...preservedSkillFilters, ...disabledSkillFilters];
+  if (skills.length > 0) next.skills = skills;
+  else delete next.skills;
 
   return next;
 }

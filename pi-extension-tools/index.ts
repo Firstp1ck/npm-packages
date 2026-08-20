@@ -62,11 +62,14 @@ export default function toolsExtension(pi: ExtensionAPI) {
     return allTools.map((tool) => tool.name).sort();
   }
 
-  function readFileState(): string[] | undefined {
+  function readFileState(): ToolsFileState | undefined {
     try {
       if (!existsSync(TOOLS_STATE_PATH)) return undefined;
       const parsed = JSON.parse(readFileSync(TOOLS_STATE_PATH, "utf8")) as Partial<ToolsFileState>;
-      return Array.isArray(parsed.active) ? parsed.active.filter((name) => typeof name === "string") : undefined;
+      if (!Array.isArray(parsed.active)) return undefined;
+      const names = (value: unknown): string[] =>
+        Array.isArray(value) ? value.filter((name): name is string => typeof name === "string") : [];
+      return { active: names(parsed.active), inactive: names(parsed.inactive) };
     } catch (error) {
       console.warn(`Failed to read ${TOOLS_STATE_PATH}:`, error);
       return undefined;
@@ -109,16 +112,34 @@ export default function toolsExtension(pi: ExtensionAPI) {
       if (data?.enabledTools) savedTools = data.enabledTools;
     }
 
-    const fileTools = readFileState();
-    const toolsToRestore = fileTools ?? savedTools;
+    const fileState = readFileState();
 
-    if (toolsToRestore) {
-      enabledTools = new Set(toolsToRestore.filter((name) => allToolNames.has(name)));
+    if (fileState) {
+      // A tool listed in neither active nor inactive was installed after the last
+      // save. Default it on, so installing an extension makes its tools usable
+      // without the user having to discover /tools first.
+      const known = new Set([...fileState.active, ...fileState.inactive]);
+      const newTools = allTools.map((tool) => tool.name).filter((name) => !known.has(name));
+      enabledTools = new Set([...fileState.active.filter((name) => allToolNames.has(name)), ...newTools]);
       applyTools();
-    } else {
-      enabledTools = new Set(pi.getActiveTools());
-      persistFileState();
+
+      if (newTools.length > 0) {
+        persistFileState();
+        const label = newTools.length === 1 ? "tool" : "tools";
+        ctx.ui.notify(`Enabled ${newTools.length} new ${label}: ${newTools.sort().join(", ")}. Run /tools to change.`, "info");
+      }
+      return;
     }
+
+    if (savedTools) {
+      enabledTools = new Set(savedTools.filter((name) => allToolNames.has(name)));
+      applyTools();
+      persistFileState();
+      return;
+    }
+
+    enabledTools = new Set(pi.getActiveTools());
+    persistFileState();
   }
 
   function mutateTools(args: string, enable: boolean): string {

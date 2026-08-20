@@ -10,6 +10,7 @@ Turn Pi tools on or off from an interactive selector.
 - Lets you turn individual tools on or off.
 - Uses an interactive selector instead of manual settings edits.
 - Makes the new tool selection visible immediately.
+- Turns on tools from newly installed extensions automatically, and tells you which ones.
 
 ## Install
 
@@ -30,6 +31,12 @@ Run `/tools`, select the tools Pi should be allowed to use, and save. Use the se
 - `/tools enable <tool...>` — enable one or more tools.
 - `/tools disable <tool...>` — disable one or more tools.
 - `/tools reset` — enable all currently available tools.
+
+## Before you start
+
+Install an extension that ships tools and those tools work right away. They are switched on the first time Pi starts after the install, and a short message names them.
+
+Tools you switched off yourself stay off. The selector remembers your choices, so only genuinely new tools are turned on for you.
 
 ## Technical details
 

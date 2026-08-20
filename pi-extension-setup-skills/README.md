@@ -10,6 +10,7 @@ Choose which local Pi skills are enabled from one interactive list.
 - Shows which skills are currently enabled.
 - Lets you enable or disable several skills together.
 - Saves the resulting skill selection for Pi.
+- Keeps skills you install later working, without a second trip through the list.
 
 ## Install
 
@@ -32,6 +33,12 @@ Run `/skills`, select the skills you want available, and save the selection. Reo
 - `Esc` or `q`: cancel
 - `Ctrl+S`: save
 The command updates Pi settings and prompts for `/reload` after changes.
+
+## Before you start
+
+Skills are available unless you switch them off. Install a skill package and it works straight away, and the same is true for a skill you drop into `~/.pi/agent/skills`. Only the skills you deselect here are recorded, so nothing you install later goes missing.
+
+If you used an older version of this extension, your first save cleans up the settings it wrote back then. Your enabled and disabled skills stay exactly as they are.
 
 ## Technical details
 
