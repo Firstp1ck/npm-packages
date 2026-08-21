@@ -92,6 +92,7 @@ const PROMPT_ESTIMATE_REFRESH_DELAY_MS = 1000;
 const FOOTER_USAGE_RECOMPUTE_DELAY_MS = 1000;
 const WEBUI_FOOTER_STATUS_KEY = "git-footer-webui";
 const GIT_FOOTER_STATUS_KEY = "git-footer";
+const CD_HISTORY_STATUS_KEY = "cd-history";
 const WEBUI_FOOTER_PAYLOAD_TYPE = "firstpick.git-footer-status.footer";
 const WEBUI_FOOTER_PAYLOAD_VERSION = 1;
 const FOOTER_VISIBILITY_SETTINGS_VERSION = 1;
@@ -2262,7 +2263,12 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
           const gitStatus = nativeFooterItemVisible("git-status") ? statuses.get(GIT_FOOTER_STATUS_KEY) : undefined;
           const otherStatuses = nativeFooterItemVisible("extension-statuses")
             ? Array.from(statuses.entries())
-                .filter(([key, value]) => key !== GIT_FOOTER_STATUS_KEY && key !== WEBUI_FOOTER_STATUS_KEY && Boolean(value))
+                .filter(([key, value]) =>
+                  key !== GIT_FOOTER_STATUS_KEY &&
+                  key !== WEBUI_FOOTER_STATUS_KEY &&
+                  key !== CD_HISTORY_STATUS_KEY &&
+                  Boolean(value),
+                )
                 .sort(([a], [b]) => a.localeCompare(b))
                 .map(([, value]) => value as string)
             : [];

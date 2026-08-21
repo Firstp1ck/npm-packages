@@ -142,7 +142,7 @@ const usageChip = (payload) =>
   payload?.main?.find((chip) => chip.key === "usage") ??
   payload?.meta?.find((chip) => chip.key === "usage");
 
-const nativeLines = (state, ctx) => {
+const nativeLines = (state, ctx, extensionStatuses = new Map()) => {
   assert.ok(state.footerFactory, "expected a native footer to be registered");
   const theme = { fg: (_tone, text) => text, bold: (text) => text };
   const tui = { requestRender: () => {} };
@@ -150,7 +150,7 @@ const nativeLines = (state, ctx) => {
     onBranchChange: () => () => {},
     getGitBranch: () => "main",
     getAvailableProviderCount: () => 1,
-    getExtensionStatuses: () => new Map(),
+    getExtensionStatuses: () => extensionStatuses,
   };
   const component = state.footerFactory(tui, theme, footerData);
   return component.render(400);
@@ -177,6 +177,21 @@ const ANTHROPIC_HEADERS = {
   "anthropic-ratelimit-unified-7d-utilization": "0.9",
   "anthropic-ratelimit-unified-7d-reset": "1760000000",
 };
+
+test("native footer suppresses the cd extension's duplicate cwd status", async () => {
+  const harness = createHarness();
+  await startSession(harness);
+
+  const lines = nativeLines(harness.state, harness.ctx, new Map([
+    ["cd-history", `cwd ${harness.ctx.cwd}`],
+    ["codex-fast-mode", "Fast-mode: off"],
+  ])).join("\n");
+
+  assert.doesNotMatch(lines, /cwd /u, "the native footer already renders cwd as its leading path");
+  assert.match(lines, /Fast-mode: off/u, "unrelated extension statuses must remain visible");
+
+  await harness.emit("session_shutdown", {});
+});
 
 test("openai-codex: captures usage and renders native segment and WebUI Usage chip", async () => {
   const harness = createHarness();

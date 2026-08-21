@@ -73,7 +73,7 @@ function isBusy(ctx: Pick<ExtensionCommandContext, "isIdle" | "hasPendingMessage
 }
 
 function publishStatus(ctx: Pick<ExtensionContext, "ui">, enabled: boolean): void {
-  ctx.ui.setStatus(FAST_MODE_STATUS_KEY, enabled ? "on" : "off");
+  ctx.ui.setStatus(FAST_MODE_STATUS_KEY, `Fast-mode: ${enabled ? "on" : "off"}`);
 }
 
 function formatStatus(enabled: boolean): string {
