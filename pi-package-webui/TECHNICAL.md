@@ -180,6 +180,14 @@ Behavior and limits:
 
 The optional `@firstpick/pi-extension-codex-fast-mode` companion adds a **Normal / Fast** selector under **Codex Usage**. Fast mode is off by default and applies only to the active Pi session branch. Eligible subscription-backed models may respond about 1.5× faster while using 2× Standard credits for GPT-5.4 or 2.5× for GPT-5.5/5.6. Account and model eligibility remain controlled by the provider.
 
+## Footer scoped-model layouts
+
+Right-click the Git footer **Model** box, or focus it and press the Context Menu key or `Shift+F10`, then choose **Toggle advanced**. Flat mode keeps the existing drag and `Alt+Up` / `Alt+Down` reorder controls. Advanced mode displays providers in alphabetic columns and preserves the configured scoped-model cycling order inside each provider. On desktop, the picker grows with the provider count and overlays side panels when it needs their screen space. It stops at the viewport gutter and scrolls the provider row internally when more columns remain. On narrow screens, provider groups stack vertically so the picker stays within the page. While advanced mode is active, the same context-menu action is labelled **Toggle Simple**.
+
+In advanced mode, `Left` and `Right` move between providers while retaining the current row when possible. `Up`, `Down`, `Home`, and `End` move within a provider. `Enter` or `Space` applies the focused model; `Escape` closes the picker and returns focus to the Model box. Arrow navigation alone never changes the active model.
+
+The flat-or-advanced choice is a browser-local display preference. It persists across reloads and synchronizes between same-origin Web UI tabs, but it does not change Pi settings, scoped-model order, server state, or another browser's choice.
+
 ## Tool and skill scopes
 
 The browser-native tool and skill selectors, and the TUI `/tools` and `/skills` commands, offer **Session only**, **Global default**, and **Model default** scopes. Tools and skills resolve independently: a session choice wins over an exact case-sensitive provider/model profile, which wins over the global default and then Pi's runtime default.
@@ -197,6 +205,8 @@ When the browser page is hidden, the Web UI closes that page's live event stream
 Visible non-Intercom tool start, finish, and failure rows in **Events** show the tool name, lifecycle status, a shortened call ID, completion duration when a matching start was observed, and a bounded path only for a small set of file-oriented tools. The panel never displays unrestricted arguments, raw results, or tool output. Select any event row to keep the existing jump-to-chat behavior.
 
 Use the **Show** selector above the log to choose **All events**, **Errors / failures**, **Warnings**, **Tool activity**, or **Tree available**. The active filter hides nonmatching rows without discarding them, changing the 120-row browser history bound, or altering warning/error notices and unread counts. The choice is stored in browser-local storage, applies to new rows immediately, and synchronizes across same-origin Web UI tabs. A count reports matching and total rows; an empty message appears when the current history has no matches.
+
+Successful subagent Auto-Clear activity uses one page-local event row. Each cleanup adds its cleared-run count to that row, refreshes the timestamp, and moves the row to the top. Manual cleanup and Auto-Clear failures remain separate events. Switching the active terminal clears this counter with the rest of the browser-held Events history.
 
 Right-click any event row, press the Context Menu key, or press `Shift+F10` to choose **Detailed** or **Compact** display. Detailed is the default. Compact hides the secondary target, status, duration, and call-ID line, reduces row spacing, and keeps the timestamp and summary visible. Tool rows retain a colored left accent so starts, finishes, and failures remain distinct. The choice is stored in browser-local storage and applies across Web UI sessions in that browser.
 

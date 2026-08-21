@@ -67,7 +67,7 @@ Check the server at any time with:
 
 When session history is still loading, the main window shows **Loading agent output…** with a small inline spinner. Existing transcript content and controls remain available; no popup interrupts your work.
 
-Open **Events** to see bounded tool activity details such as status, duration, a safe target when available, and a shortened call ID. Use **Show** to isolate errors and failures, warnings, tool activity, or rows with **Tree…** available; **All events** restores the full browser-held history. Select a row to jump to its chat card. Right-click any row, or use its keyboard context-menu shortcut, to switch between **Detailed** and **Compact** display. Compact keeps the timestamp and summary while hiding secondary metadata; tool rows retain a colored lifecycle accent. Eligible tool rows also offer **Tree…** to confirm navigation to that exact point in the session; use `/tree` to navigate back.
+Open **Events** to see bounded tool activity details such as status, duration, a safe target when available, and a shortened call ID. Use **Show** to isolate errors and failures, warnings, tool activity, or rows with **Tree…** available; **All events** restores the full browser-held history. Select a row to jump to its chat card. Right-click any row, or use its keyboard context-menu shortcut, to switch between **Detailed** and **Compact** display. Compact keeps the timestamp and summary while hiding secondary metadata; tool rows retain a colored lifecycle accent. Eligible tool rows also offer **Tree…** to confirm navigation to that exact point in the session; use `/tree` to navigate back. Repeated successful subagent Auto-Clear activity stays in one row whose finished-run count increases.
 
 Tracked skills appear as compact tags above the composer. Select a named tag to open its skill file; when space is limited, select the **+X** tag to expand the remaining selectable tags upward.
 
@@ -153,6 +153,8 @@ Choose the supported reasoning effort before sending the next prompt. Local mode
 **Optional feature needed:** None — included in Pi Web UI core.
 
 Search available models and control project or global model scope and cycling order.
+
+For a long scoped-model list, right-click the Git footer **Model** box and choose **Toggle advanced**. The picker groups models into alphabetized provider columns. Drag a model within its provider column, or use `Alt+Up` / `Alt+Down`, to change that provider's cycling order. Models cannot move between providers. Use the arrow keys to navigate, `Enter` or `Space` to select, and `Escape` to close. On desktop the picker grows with the provider count, can overlay the side panels, and stops at the viewport edge with internal scrolling. Choose **Toggle Simple** to return to the flat list.
 
 #### Tools setup
 

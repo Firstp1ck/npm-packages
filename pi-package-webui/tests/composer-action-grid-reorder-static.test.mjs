@@ -57,8 +57,8 @@ assert.match(app, /function initializeComposerActionOrdering\(\)[\s\S]*MutationO
 assert.match(app, /event\.key === COMPOSER_ACTION_ORDER_STORAGE_KEY\) restoreComposerActionOrder\(\)[\s\S]*event\.key === COMPOSER_ACTION_LAYOUT_STORAGE_KEY\) restoreComposerActionSlotLayout\(\)/, "other tabs should apply persisted composer order and sparse-layout changes");
 assert.match(app, /initializeComposerActionOrdering\(\);[\s\S]*restoreSidePanelSectionOrder\(\);/, "composer ordering should initialize during guarded app startup");
 
-assert.match(html, /styles\.css\?v=137/, "changed composer styles should advance the stylesheet revision");
-assert.match(html, /app\.js\?v=166/, "changed composer behavior should advance the app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v132"/, "changed browser assets should advance the PWA cache identity");
+assert.match(html, /styles\.css\?v=139/, "changed composer styles should advance the stylesheet revision");
+assert.match(html, /app\.js\?v=168/, "changed composer behavior should advance the app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v135"/, "changed browser assets should advance the PWA cache identity");
 
 console.log("composer-action-grid-reorder-static.test.mjs passed");

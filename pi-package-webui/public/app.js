@@ -1278,6 +1278,7 @@ let customBackgroundLoading = false;
 let footerScopedModels = [];
 let footerScopedModelPatterns = [];
 let footerScopedModelSource = "none";
+let footerScopedModelLayout = "flat";
 const contextUsageUnknownAfterCompactionByTab = new Map();
 let autoFollowChat = true;
 let chatFollowFrame = null;
@@ -1291,6 +1292,7 @@ let chatPausedScrollRestoreUntil = 0;
 let chatLastTouchClientY = null;
 let mobileFooterExpanded = false;
 let footerModelPickerOpen = false;
+let footerModelApplyInFlight = false;
 let footerThinkingPickerOpen = false;
 let footerAutoCompactionToggleInFlight = false;
 let footerBranchPickerOpen = false;
@@ -1369,6 +1371,8 @@ const SUBAGENT_AUTO_CLEAR_STORAGE_KEY = "pi-webui-subagent-auto-clear";
 const TERMINAL_CUSTOM_GROUPS_STORAGE_KEY = "pi-webui-terminal-custom-groups-v1";
 const TERMINAL_TAB_DRAG_MIME = "application/x-pi-terminal-tab-id";
 const FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY = "pi-webui-footer-scoped-model-order-v1";
+const FOOTER_SCOPED_MODEL_LAYOUT_STORAGE_KEY = "pi-webui-footer-scoped-model-layout-v1";
+footerScopedModelLayout = readStoredFooterScopedModelLayout();
 const FOOTER_SCOPED_MODEL_POINTER_DRAG_THRESHOLD_PX = 6;
 const TOOL_OUTPUT_EXPANDED_STORAGE_KEY = "pi-webui-tool-output-expanded";
 const THEME_STORAGE_KEY = "pi-webui-theme";
@@ -17813,7 +17817,7 @@ async function closeTerminalTabs(tabIds, { label = "selected terminal tabs", all
     } else {
       renderTabs();
     }
-    addEvent(`closed ${closedIds.length || targetTabs.length} terminal ${closedIds.length === 1 ? "tab" : "tabs"}`, "warn");
+    addEvent(`closed ${closedIds.length || targetTabs.length} terminal ${closedIds.length === 1 ? "tab" : "tabs"}`, "info");
   } catch (error) {
     addEvent(error.message, "error");
   } finally {
@@ -18091,11 +18095,26 @@ function setEventDisplayMode(value, { persist = true } = {}) {
   }
 }
 
-function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "", details = [], notify = true, occurredAt = Date.now() } = {}) {
+function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "", details = [], notify = true, occurredAt = Date.now(), aggregateKey = "", aggregateIncrement = 1, aggregateSingular = "", aggregatePlural = "" } = {}) {
+  const stableAggregateKey = String(aggregateKey || "").trim();
+  const priorAggregate = stableAggregateKey
+    ? [...(elements.eventLog?.children || [])].find((candidate) => candidate.dataset.eventAggregateKey === stableAggregateKey)
+    : null;
+  const aggregateCount = stableAggregateKey
+    ? Math.max(0, Number.parseInt(priorAggregate?.dataset.eventAggregateCount || "0", 10) || 0) + Math.max(1, Math.trunc(Number(aggregateIncrement) || 1))
+    : 0;
+  const eventMessage = stableAggregateKey && aggregateSingular
+    ? `${message} ${aggregateCount} ${aggregateCount === 1 ? aggregateSingular : aggregatePlural || aggregateSingular}`
+    : String(message || "");
+  priorAggregate?.remove();
   const line = make("button", `event ${level}`.trim());
   line.type = "button";
   line.dataset.eventLevel = String(level || "info").trim().toLowerCase() || "info";
   line.dataset.chatEventTimestamp = String(occurredAt);
+  if (stableAggregateKey) {
+    line.dataset.eventAggregateKey = stableAggregateKey;
+    line.dataset.eventAggregateCount = String(aggregateCount);
+  }
   const stableToolCallId = String(toolCallId || "").trim();
   const toolLifecycle = ["start", "finish"].includes(toolEventPhase);
   const treeEligible = stableToolCallId && toolLifecycle;
@@ -18104,7 +18123,7 @@ function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "
   if (toolLifecycle) line.dataset.eventToolPhase = toolEventPhase;
   line.setAttribute("aria-keyshortcuts", "ContextMenu Shift+F10");
   const time = make("span", "event-time", `[${new Date(occurredAt).toLocaleTimeString()}]`);
-  const summary = make("span", "event-summary", String(message || ""));
+  const summary = make("span", "event-summary", eventMessage);
   const main = make("span", "event-main");
   main.append(time, summary);
   line.append(main);
@@ -18126,7 +18145,7 @@ function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "
   while (elements.eventLog.children.length > 120) elements.eventLog.lastElementChild?.remove();
   applyEventFilter();
   if (notify && (level === "error" || level === "warn")) {
-    showNoticeToast(message, level);
+    showNoticeToast(eventMessage, level);
     noteUnreadEvent();
   }
 }
@@ -19775,6 +19794,14 @@ function closeGitFooterContextMenu({ returnFocus = true } = {}) {
   if (returnFocus && trigger?.isConnected) queueMicrotask(() => trigger.focus?.({ preventScroll: true }));
 }
 
+function syncGitFooterAdvancedMenuItem(key = gitFooterContextMenuState?.key) {
+  const advancedButton = elements.gitFooterContextMenu?.querySelector('[data-git-footer-menu-action="toggle-advanced"]');
+  if (!advancedButton) return;
+  advancedButton.hidden = key !== "model";
+  advancedButton.textContent = footerScopedModelLayout === "advanced" ? "Toggle Simple" : "Toggle advanced";
+  advancedButton.setAttribute("aria-checked", footerScopedModelLayout === "advanced" ? "true" : "false");
+}
+
 function showGitFooterContextMenu(event, chip, trigger) {
   const menu = elements.gitFooterContextMenu;
   const key = cleanStatusText(chip?.key);
@@ -19792,6 +19819,7 @@ function showGitFooterContextMenu(event, chip, trigger) {
   gitFooterContextMenuState = { key, label, trigger };
   const disableButton = menu.querySelector('[data-git-footer-menu-action="disable"]');
   if (disableButton) disableButton.textContent = `Disable ${label} box`;
+  syncGitFooterAdvancedMenuItem(key);
   menu.hidden = false;
   const rect = menu.getBoundingClientRect();
   const left = Math.min(event.clientX, Math.max(8, window.innerWidth - rect.width - 8));
@@ -20625,13 +20653,18 @@ function footerBranchPickerRenderKey() {
   return footerBranchPickerOpen ? JSON.stringify(footerBranchPickerState) : "";
 }
 
+function footerModelPickerRenderKey() {
+  if (!footerModelPickerOpen) return "";
+  return `${footerScopedModelLayout}:${orderedFooterScopedModels().map(footerScopedModelKey).join(",")}`;
+}
+
 function gitFooterPickerStateKey(payload) {
   const tabContext = activeTabContext();
   const refreshInFlight = tabContext.tabId ? gitFooterPayloadRefreshInFlightByTab.has(tabContext.tabId) : false;
   const syncInFlight = tabContext.tabId ? gitFooterSyncInFlightByTab.has(tabContext.tabId) : false;
   const piCalibrationInFlight = tabContext.tabId ? gitFooterPiCalibrationInFlightByTab.has(tabContext.tabId) : false;
   const refreshAvailable = hasLoadedRpcCommand("git-footer-refresh");
-  return `${footerModelPickerOpen ? 1 : 0}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
+  return `${footerModelPickerOpen ? 1 : 0}|${footerModelPickerRenderKey()}|${footerThinkingPickerOpen ? 1 : 0}|${footerBranchPickerOpen ? 1 : 0}|${footerBranchPickerRenderKey()}|${mobileFooterExpanded ? 1 : 0}|${refreshInFlight ? 1 : 0}|${syncInFlight ? 1 : 0}|${piCalibrationInFlight ? 1 : 0}|${refreshAvailable ? 1 : 0}|${gitFooterPayloadVisibilityKey(payload)}`;
 }
 
 function updateGitFooterChipNodeValue(node, chip, valueSelector) {
@@ -22924,7 +22957,7 @@ function renderSavedWorkspacePicker() {
   return panel;
 }
 
-function setFooterModelPickerOpen(open) {
+function setFooterModelPickerOpen(open, { restoreFocus = false } = {}) {
   const wasOpen = footerModelPickerOpen;
   footerModelPickerOpen = !!open;
   if (footerModelPickerOpen) {
@@ -22941,7 +22974,11 @@ function setFooterModelPickerOpen(open) {
   document.body.classList.toggle("footer-model-picker-open", isFooterPickerOpen());
   renderFooter();
   updateFooterModelPickerPosition();
-  if (wasOpen && !footerModelPickerOpen) scheduleDeferredUiFlushAfterDropdownClose();
+  if (footerModelPickerOpen && footerScopedModelLayout === "advanced") focusFooterModelPickerInitialOption();
+  if (wasOpen && !footerModelPickerOpen) {
+    scheduleDeferredUiFlushAfterDropdownClose();
+    if (restoreFocus) focusFooterModelTrigger();
+  }
 }
 
 function setFooterThinkingPickerOpen(open) {
@@ -23794,6 +23831,55 @@ function footerScopedModelKey(model) {
   return model?.provider && model?.id ? `${model.provider}/${model.id}` : "";
 }
 
+function normalizeFooterScopedModelLayout(value) {
+  return value === "advanced" ? "advanced" : "flat";
+}
+
+function readStoredFooterScopedModelLayout() {
+  try {
+    return normalizeFooterScopedModelLayout(localStorage.getItem(FOOTER_SCOPED_MODEL_LAYOUT_STORAGE_KEY));
+  } catch {
+    return "flat";
+  }
+}
+
+function setFooterScopedModelLayout(value, { persist = true } = {}) {
+  const next = normalizeFooterScopedModelLayout(value);
+  if (persist) {
+    try {
+      localStorage.setItem(FOOTER_SCOPED_MODEL_LAYOUT_STORAGE_KEY, next);
+    } catch {}
+  }
+  const changed = next !== footerScopedModelLayout;
+  footerScopedModelLayout = next;
+  syncGitFooterAdvancedMenuItem();
+  if (!changed || !footerModelPickerOpen) return;
+  renderFooter();
+  updateFooterModelPickerPosition();
+  focusFooterModelPickerInitialOption();
+}
+
+function toggleFooterScopedModelLayout() {
+  setFooterScopedModelLayout(footerScopedModelLayout === "advanced" ? "flat" : "advanced");
+}
+
+function compareFooterScopedModelProviders(a, b) {
+  const baseOrder = String(a).localeCompare(String(b), undefined, { sensitivity: "base" });
+  return baseOrder || String(a).localeCompare(String(b));
+}
+
+function footerScopedModelProviderGroups(models = orderedFooterScopedModels()) {
+  const modelsByProvider = new Map();
+  for (const model of models) {
+    const provider = String(model?.provider || "");
+    if (!modelsByProvider.has(provider)) modelsByProvider.set(provider, []);
+    modelsByProvider.get(provider).push(model);
+  }
+  return [...modelsByProvider.entries()]
+    .sort(([a], [b]) => compareFooterScopedModelProviders(a, b))
+    .map(([provider, providerModels]) => ({ provider, models: providerModels }));
+}
+
 function readFooterScopedModelOrder() {
   try {
     const parsed = JSON.parse(localStorage.getItem(FOOTER_SCOPED_MODEL_ORDER_STORAGE_KEY) || "[]");
@@ -23821,14 +23907,30 @@ function orderedFooterScopedModels() {
   });
 }
 
+function focusFooterScopedModelOrderButton(modelKey) {
+  if (!modelKey) return;
+  const movedButton = document.querySelector(`[data-footer-model-key="${CSS.escape(modelKey)}"]`);
+  if (!movedButton) return;
+  const advancedPicker = movedButton.closest(".footer-model-picker-advanced");
+  if (advancedPicker) focusAdvancedFooterModelOption(advancedPicker, movedButton);
+  else movedButton.focus();
+}
+
+function rebuildOpenFooterModelPicker() {
+  const picker = elements.statusBar.querySelector(".footer-model-picker");
+  if (!footerModelPickerOpen || !picker) {
+    renderFooter();
+    return;
+  }
+  picker.replaceWith(renderFooterModelPicker());
+  updateFooterModelPickerPosition();
+}
+
 function commitFooterScopedModelOrder(order, { render = true, focusKey = "" } = {}) {
   writeFooterScopedModelOrder(order);
   footerScopedModels = orderedFooterScopedModels();
-  if (render) renderFooter();
-  if (focusKey) {
-    const movedButton = document.querySelector(`[data-footer-model-key="${CSS.escape(focusKey)}"]`);
-    if (movedButton) movedButton.focus();
-  }
+  if (render) rebuildOpenFooterModelPicker();
+  focusFooterScopedModelOrderButton(focusKey);
 }
 
 function reorderFooterScopedModel(fromKey, toKey, { focus = true } = {}) {
@@ -23854,6 +23956,50 @@ function moveFooterScopedModelByOffset(modelKey, offset) {
   return true;
 }
 
+function footerScopedModelOrderWithProviderOrder(provider, providerOrder) {
+  const models = orderedFooterScopedModels();
+  const providerKeys = models
+    .filter((model) => String(model?.provider || "") === provider)
+    .map(footerScopedModelKey);
+  const allowedKeys = new Set(providerKeys);
+  const nextProviderKeys = [...new Set(providerOrder.filter((key) => allowedKeys.has(key)))];
+  for (const key of providerKeys) {
+    if (!nextProviderKeys.includes(key)) nextProviderKeys.push(key);
+  }
+  let providerIndex = 0;
+  return models.map((model) => String(model?.provider || "") === provider
+    ? nextProviderKeys[providerIndex++]
+    : footerScopedModelKey(model));
+}
+
+function commitFooterScopedModelProviderOrder(provider, providerOrder, { render = true, focusKey = "" } = {}) {
+  if (!provider || !providerOrder.length) return false;
+  const currentOrder = orderedFooterScopedModels().map(footerScopedModelKey);
+  const nextOrder = footerScopedModelOrderWithProviderOrder(provider, providerOrder);
+  if (nextOrder.every((key, index) => key === currentOrder[index])) {
+    focusFooterScopedModelOrderButton(focusKey);
+    return false;
+  }
+  commitFooterScopedModelOrder(nextOrder, { render, focusKey });
+  return true;
+}
+
+function moveFooterScopedModelWithinProviderByOffset(modelKey, offset) {
+  const models = orderedFooterScopedModels();
+  const model = models.find((candidate) => footerScopedModelKey(candidate) === modelKey);
+  const provider = String(model?.provider || "");
+  if (!provider) return false;
+  const providerOrder = models
+    .filter((candidate) => String(candidate?.provider || "") === provider)
+    .map(footerScopedModelKey);
+  const fromIndex = providerOrder.indexOf(modelKey);
+  const toIndex = fromIndex + offset;
+  if (fromIndex < 0 || toIndex < 0 || toIndex >= providerOrder.length) return false;
+  const [moved] = providerOrder.splice(fromIndex, 1);
+  providerOrder.splice(toIndex, 0, moved);
+  return commitFooterScopedModelProviderOrder(provider, providerOrder, { focusKey: modelKey });
+}
+
 function footerScopedModelButtons() {
   return [...document.querySelectorAll(".footer-model-picker .footer-model-option[data-footer-model-key]")];
 }
@@ -23868,9 +24014,16 @@ function clearFooterScopedModelDragMarkers() {
   }
 }
 
-function commitVisibleFooterScopedModelOrder({ render = false, focusKey = "" } = {}) {
-  const order = footerScopedModelButtons().map((button) => button.dataset.footerModelKey).filter(Boolean);
+function commitVisibleFooterScopedModelOrder({ render = false, focusKey = "", provider = "" } = {}) {
+  const order = footerScopedModelButtons()
+    .filter((button) => !provider || button.dataset.footerProvider === provider)
+    .map((button) => button.dataset.footerModelKey)
+    .filter(Boolean);
   if (!order.length) return;
+  if (provider) {
+    commitFooterScopedModelProviderOrder(provider, order, { render, focusKey });
+    return;
+  }
   commitFooterScopedModelOrder(order, { render, focusKey });
 }
 
@@ -23890,7 +24043,7 @@ function moveVisibleFooterScopedModel(fromKey, targetButton, clientY) {
 
   if (insertBefore) parent.insertBefore(sourceButton, targetButton);
   else parent.insertBefore(sourceButton, targetButton.nextSibling);
-  commitVisibleFooterScopedModelOrder({ render: false });
+  commitVisibleFooterScopedModelOrder({ render: false, provider: parent.dataset.footerProvider || "" });
   return true;
 }
 
@@ -23935,6 +24088,7 @@ function endFooterScopedModelPointerDrag(event) {
   window.removeEventListener("pointercancel", endFooterScopedModelPointerDrag, { capture: true });
   const wasActive = drag.active;
   const sourceButton = document.querySelector(`[data-footer-model-key="${CSS.escape(drag.modelKey)}"]`);
+  const provider = sourceButton?.dataset.footerProvider || "";
   footerScopedModelPointerDrag = null;
   footerScopedModelDragKey = "";
   footerScopedModelLastDragOverKey = "";
@@ -23943,15 +24097,18 @@ function endFooterScopedModelPointerDrag(event) {
   if (wasActive) {
     footerScopedModelSuppressClickUntil = Date.now() + 250;
     event.preventDefault();
-    commitVisibleFooterScopedModelOrder({ render: false, focusKey: drag.modelKey });
+    commitVisibleFooterScopedModelOrder({ render: false, focusKey: drag.modelKey, provider });
   }
 }
 
 async function applyFooterModel(model) {
-  if (!model?.provider || !model?.id) return;
+  if (!model?.provider || !model?.id || footerModelApplyInFlight) return;
   const tabContext = activeTabContext();
+  footerModelApplyInFlight = true;
+  footerModelPickerOpen = false;
+  document.body.classList.toggle("footer-model-picker-open", isFooterPickerOpen());
+  renderFooter();
   try {
-    footerModelPickerOpen = false;
     const response = await api("/api/model", { method: "POST", body: { provider: model.provider, modelId: model.id }, tabId: tabContext.tabId });
     if (!isCurrentTabContext(tabContext)) return;
     applyOptimisticModelSelection(response.data || model, tabContext);
@@ -23960,6 +24117,7 @@ async function applyFooterModel(model) {
   } catch (error) {
     if (isCurrentTabContext(tabContext)) addEvent(error.message, "error");
   } finally {
+    footerModelApplyInFlight = false;
     if (isCurrentTabContext(tabContext)) {
       document.body.classList.toggle("footer-model-picker-open", isFooterPickerOpen());
       renderFooter();
@@ -23967,12 +24125,159 @@ async function applyFooterModel(model) {
   }
 }
 
+function focusFooterModelTrigger() {
+  queueMicrotask(() => {
+    const trigger = elements.statusBar.querySelector(".footer-model.footer-meta-action, .footer-tui-model");
+    trigger?.focus({ preventScroll: true });
+  });
+}
+
+function footerModelPickerInitialKey() {
+  const models = orderedFooterScopedModels();
+  const currentKey = footerScopedModelKey(currentState?.model);
+  return models.some((model) => footerScopedModelKey(model) === currentKey) ? currentKey : footerScopedModelKey(models[0]);
+}
+
+function focusFooterModelPickerInitialOption({ retryAfterPointerRender = true } = {}) {
+  const initialKey = footerModelPickerInitialKey();
+  queueMicrotask(() => {
+    if (!footerModelPickerOpen) return;
+    const picker = elements.statusBar.querySelector(".footer-model-picker");
+    if (!picker) {
+      if (retryAfterPointerRender) setTimeout(() => focusFooterModelPickerInitialOption({ retryAfterPointerRender: false }), 0);
+      return;
+    }
+    const escapedKey = initialKey ? CSS.escape(initialKey) : "";
+    const target = (escapedKey && picker.querySelector(`[data-footer-model-key="${escapedKey}"]`))
+      || picker.querySelector(".footer-model-option[data-footer-model-key]");
+    if (!target) return;
+    if (footerScopedModelLayout === "advanced") {
+      for (const button of picker.querySelectorAll(".footer-model-option[data-footer-model-key]")) button.tabIndex = button === target ? 0 : -1;
+    }
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+}
+
+function syncAdvancedFooterModelRovingTabStop(picker = elements.statusBar.querySelector(".footer-model-picker-advanced")) {
+  if (!picker) return;
+  const options = [...picker.querySelectorAll(".footer-model-option[data-footer-model-key]")];
+  const focused = picker.contains(document.activeElement) ? document.activeElement.closest?.(".footer-model-option[data-footer-model-key]") : null;
+  const target = focused || options.find((option) => option.tabIndex === 0) || options[0];
+  for (const option of options) option.tabIndex = option === target ? 0 : -1;
+}
+
+function focusAdvancedFooterModelOption(picker, button) {
+  if (!picker || !button) return;
+  for (const option of picker.querySelectorAll(".footer-model-option[data-footer-model-key]")) option.tabIndex = option === button ? 0 : -1;
+  button.focus({ preventScroll: true });
+  button.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function advancedFooterModelColumnButtons(picker, providerIndex) {
+  const column = picker.querySelector(`[data-footer-provider-index="${providerIndex}"]`);
+  return column ? [...column.querySelectorAll(".footer-model-option[data-footer-model-key]")] : [];
+}
+
+function handleAdvancedFooterModelKeydown(event, model) {
+  const picker = event.currentTarget.closest(".footer-model-picker-advanced");
+  if (!picker) return;
+  const providerIndex = Number(event.currentTarget.dataset.footerProviderIndex);
+  const modelIndex = Number(event.currentTarget.dataset.footerModelIndex);
+  const columns = [...picker.querySelectorAll(".footer-model-provider-column[data-footer-provider-index]")];
+  let target = null;
+
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    if (!event.repeat) void applyFooterModel(model);
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    setFooterModelPickerOpen(false, { restoreFocus: true });
+    return;
+  }
+  if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    moveFooterScopedModelWithinProviderByOffset(footerScopedModelKey(model), event.key === "ArrowUp" ? -1 : 1);
+    return;
+  }
+  if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "Home" || event.key === "End") {
+    const buttons = advancedFooterModelColumnButtons(picker, providerIndex);
+    const lastIndex = Math.max(0, buttons.length - 1);
+    const targetIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? lastIndex
+        : Math.min(lastIndex, Math.max(0, modelIndex + (event.key === "ArrowUp" ? -1 : 1)));
+    target = buttons[targetIndex] || event.currentTarget;
+  } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+    const lastProviderIndex = Math.max(0, columns.length - 1);
+    const targetProviderIndex = Math.min(lastProviderIndex, Math.max(0, providerIndex + (event.key === "ArrowLeft" ? -1 : 1)));
+    const buttons = advancedFooterModelColumnButtons(picker, targetProviderIndex);
+    target = buttons[Math.min(Math.max(0, modelIndex), Math.max(0, buttons.length - 1))] || event.currentTarget;
+  } else {
+    return;
+  }
+
+  event.preventDefault();
+  focusAdvancedFooterModelOption(picker, target);
+}
+
+function renderFooterModelOption(model, { advanced = false, providerIndex = -1, modelIndex = -1, initialKey = "" } = {}) {
+  const current = currentState?.model;
+  const selected = current?.provider === model.provider && current?.id === model.id;
+  const modelKey = footerScopedModelKey(model);
+  const dragging = footerScopedModelDragKey === modelKey;
+  const dragOver = footerScopedModelDragKey && footerScopedModelLastDragOverKey === modelKey;
+  const button = make("button", `footer-model-option${selected ? " active" : ""}${dragging ? " dragging" : ""}${dragOver ? " drag-over" : ""}`);
+  button.type = "button";
+  button.draggable = false;
+  button.dataset.footerModelKey = modelKey;
+  button.setAttribute("role", "option");
+  button.setAttribute("aria-selected", selected ? "true" : "false");
+  button.title = `${model.provider}/${model.id}${model.name ? ` · ${model.name}` : ""}`;
+  button.append(
+    make("span", "footer-model-option-main", advanced ? model.id : `${model.provider}/${model.id}`),
+    make("span", "footer-model-option-name", model.name || ""),
+  );
+  button.addEventListener("click", (event) => {
+    if (Date.now() < footerScopedModelSuppressClickUntil) {
+      event.preventDefault();
+      return;
+    }
+    void applyFooterModel(model);
+  });
+  if (advanced) {
+    button.dataset.footerProvider = model.provider;
+    button.dataset.footerProviderIndex = String(providerIndex);
+    button.dataset.footerModelIndex = String(modelIndex);
+    button.tabIndex = modelKey === initialKey ? 0 : -1;
+    button.addEventListener("keydown", (event) => handleAdvancedFooterModelKeydown(event, model));
+  } else {
+    button.addEventListener("keydown", (event) => {
+      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+      event.preventDefault();
+      moveFooterScopedModelByOffset(modelKey, event.key === "ArrowUp" ? -1 : 1);
+    });
+  }
+  button.addEventListener("pointerdown", (event) => beginFooterScopedModelPointerDrag(event, modelKey));
+  return button;
+}
+
 function renderFooterModelPicker() {
-  const picker = make("div", "footer-model-picker");
+  const advanced = footerScopedModelLayout === "advanced";
+  const picker = make("div", `footer-model-picker${advanced ? " footer-model-picker-advanced" : ""}`);
   picker.setAttribute("role", "listbox");
-  picker.setAttribute("aria-label", "Scoped models");
-  picker.append(make("div", "footer-model-picker-title", "Scoped models"));
-  picker.append(make("div", "footer-model-picker-source", "Drag models to reorder · Alt+↑/↓ moves focused model"));
+  picker.setAttribute("aria-label", advanced ? "Scoped models by provider" : "Scoped models");
+  picker.append(make("div", "footer-model-picker-title", advanced ? "Scoped models by provider" : "Scoped models"));
+  const help = make("div", "footer-model-picker-source", advanced
+    ? "Drag within provider · Alt+Up/Down reorders · Left/Right changes provider · Up/Down changes model · Home/End jumps within provider · Enter/Space selects · Escape closes"
+    : "Drag models to reorder · Alt+Up/Down moves focused model");
+  help.id = "footerModelPickerHelp";
+  picker.setAttribute("aria-describedby", help.id);
+  picker.append(help);
   if (footerScopedModels.length === 0) {
     const empty = make("div", "footer-model-picker-empty muted");
     empty.append(
@@ -23982,39 +24287,29 @@ function renderFooterModelPicker() {
     picker.append(empty);
     return picker;
   }
-  const current = currentState?.model;
   footerScopedModels = orderedFooterScopedModels();
-  for (const model of footerScopedModels) {
-    const selected = current?.provider === model.provider && current?.id === model.id;
-    const modelKey = footerScopedModelKey(model);
-    const dragging = footerScopedModelDragKey === modelKey;
-    const dragOver = footerScopedModelDragKey && footerScopedModelLastDragOverKey === modelKey;
-    const button = make("button", `footer-model-option${selected ? " active" : ""}${dragging ? " dragging" : ""}${dragOver ? " drag-over" : ""}`);
-    button.type = "button";
-    button.draggable = false;
-    button.dataset.footerModelKey = modelKey;
-    button.setAttribute("role", "option");
-    button.setAttribute("aria-selected", selected ? "true" : "false");
-    button.title = `${model.provider}/${model.id}${model.name ? ` · ${model.name}` : ""}`;
-    button.append(
-      make("span", "footer-model-option-main", `${model.provider}/${model.id}`),
-      make("span", "footer-model-option-name", model.name || ""),
-    );
-    button.addEventListener("click", (event) => {
-      if (Date.now() < footerScopedModelSuppressClickUntil) {
-        event.preventDefault();
-        return;
-      }
-      applyFooterModel(model);
-    });
-    button.addEventListener("keydown", (event) => {
-      if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-      event.preventDefault();
-      moveFooterScopedModelByOffset(modelKey, event.key === "ArrowUp" ? -1 : 1);
-    });
-    button.addEventListener("pointerdown", (event) => beginFooterScopedModelPointerDrag(event, modelKey));
-    picker.append(button);
+  const initialKey = footerModelPickerInitialKey();
+  if (!advanced) {
+    for (const model of footerScopedModels) picker.append(renderFooterModelOption(model));
+    return picker;
   }
+
+  const columns = make("div", "footer-model-provider-columns");
+  for (const [providerIndex, group] of footerScopedModelProviderGroups(footerScopedModels).entries()) {
+    const heading = make("div", "footer-model-provider-title", group.provider);
+    heading.id = `footerModelProvider${providerIndex}`;
+    const column = make("div", "footer-model-provider-column");
+    column.dataset.footerProvider = group.provider;
+    column.dataset.footerProviderIndex = String(providerIndex);
+    column.setAttribute("role", "group");
+    column.setAttribute("aria-labelledby", heading.id);
+    column.append(heading);
+    for (const [modelIndex, model] of group.models.entries()) {
+      column.append(renderFooterModelOption(model, { advanced: true, providerIndex, modelIndex, initialKey }));
+    }
+    columns.append(column);
+  }
+  picker.append(columns);
   return picker;
 }
 
@@ -24497,6 +24792,7 @@ function renderFooter() {
   else renderMinimalFooter();
   if (!tooltipSnapshot && footerTooltipTarget && !footerTooltipTarget.isConnected) hideFooterTooltip();
   restoreScopedControlContinuity(elements.statusBar, continuityContextKey, focusSnapshot, (key) => [...elements.statusBar.querySelectorAll("input, textarea, select, button")].find((node) => footerControlKey(node) === key));
+  syncAdvancedFooterModelRovingTabStop();
   restoreTooltipContinuity(elements.statusBar, tooltipSnapshot);
 }
 
@@ -25594,7 +25890,18 @@ async function clearFinishedSubagentRuns({ automatic = false } = {}) {
     renderSubagents();
     scheduleRefreshSubagents();
   }
-  if (dismissed) addEvent(`${automatic ? "auto-cleared" : "cleared"} ${dismissed} finished subagent ${dismissed === 1 ? "run" : "runs"}`, "info");
+  if (dismissed) {
+    if (automatic) {
+      addEvent("auto-cleared", "info", {
+        aggregateKey: "subagent-auto-clear",
+        aggregateIncrement: dismissed,
+        aggregateSingular: "finished subagent run",
+        aggregatePlural: "finished subagent runs",
+      });
+    } else {
+      addEvent(`cleared ${dismissed} finished subagent ${dismissed === 1 ? "run" : "runs"}`, "info");
+    }
+  }
   if (failures.length) addEvent(`could not ${automatic ? "auto-clear" : "clear"} ${failures.length} finished subagent ${failures.length === 1 ? "run" : "runs"}`, "warn");
 }
 
@@ -50055,6 +50362,7 @@ window.addEventListener("storage", (event) => {
     footerScopedModels = orderedFooterScopedModels();
     renderFooter();
   }
+  if (event.key === FOOTER_SCOPED_MODEL_LAYOUT_STORAGE_KEY) setFooterScopedModelLayout(event.newValue, { persist: false });
   if (event.key === FILE_VIEWER_WIDTH_STORAGE_KEY) restoreFileViewerWidthPreference();
 });
 // Durable layout reconciliation runs on its own foreground/online lifecycle
@@ -50122,7 +50430,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (isFooterPickerOpen()) {
-    setFooterModelPickerOpen(false);
+    setFooterModelPickerOpen(false, { restoreFocus: footerModelPickerOpen });
     setFooterThinkingPickerOpen(false);
     setFooterBranchPickerOpen(false);
     return;
@@ -50401,7 +50709,7 @@ elements.controlVisibilitySetupCloseButton?.addEventListener("click", () => elem
 elements.controlVisibilitySetupDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
 elements.controlVisibilitySetupDialog?.addEventListener("close", restoreControlVisibilitySetupFocus);
 elements.gitFooterContextMenu?.addEventListener("keydown", (event) => {
-  const items = [...elements.gitFooterContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
+  const items = [...elements.gitFooterContextMenu.querySelectorAll('[role="menuitem"]:not([disabled]):not([hidden]), [role="menuitemcheckbox"]:not([disabled]):not([hidden])')];
   const index = items.indexOf(document.activeElement);
   if (event.key === "Escape") {
     event.preventDefault();
@@ -50422,6 +50730,7 @@ elements.gitFooterContextMenu?.addEventListener("click", (event) => {
   const action = button.dataset.gitFooterMenuAction;
   closeGitFooterContextMenu({ returnFocus: action !== "visibility" });
   if (action === "disable") void disableGitFooterContextChip(state.key, state.label);
+  else if (action === "toggle-advanced" && state.key === "model") toggleFooterScopedModelLayout();
   else if (action === "visibility") openGitFooterVisibilityDialog();
 });
 elements.fileTreeNewFileButton?.addEventListener("click", () => createFileTreeEntry(null, "file").catch((error) => addEvent(error.message || String(error), "error")));

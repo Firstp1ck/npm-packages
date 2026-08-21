@@ -310,6 +310,22 @@ assert.equal(
   "side-panel section panels should be hidden by default",
 );
 assert.match(html, /id="jumpToLatestButton"/, "chat should expose a jump-to-latest control for non-forced streaming");
+assert.match(
+  html,
+  /<div class="main-output-surface">[\s\S]*?<div id="chat"[\s\S]*?<\/div>\s*<button id="jumpToLatestButton"[\s\S]*?<\/button>\s*<\/div>\s*<div id="runIndicatorHost"/,
+  "jump-to-latest should overlay the output surface above the separate run indicator",
+);
+assert.match(
+  css,
+  /\.jump-to-latest-button \{[\s\S]*?position: absolute;[\s\S]*?z-index: 14;[\s\S]*?bottom: 0\.75rem;[\s\S]*?left: 50%;[\s\S]*?transform: translateX\(-50%\);/,
+  "jump-to-latest should stay centered in the top overlay layer without taking a layout row",
+);
+assert.match(
+  css,
+  /\.jump-to-latest-button:hover \{[\s\S]*?transform: translateX\(-50%\) translateY\(-1px\);[\s\S]*?\.jump-to-latest-button:active \{[\s\S]*?transform: translateX\(-50%\) translateY\(0\);/,
+  "jump-to-latest hover and press feedback should preserve horizontal centering",
+);
+assert.doesNotMatch(css, /terminal-tabs-left \.jump-to-latest-button \{ grid-row:/, "sidebar terminal layout should not assign the overlay its own row");
 assert.match(html, /id="stickyUserPromptButton"/, "chat should expose a fixed last-user-prompt jump control");
 assert.match(html, /id="feedbackTray"/, "chat should expose a queued action-feedback tray");
 assert.match(html, /id="sendFeedbackButton"/, "action feedback should be submittable after the agent finishes");
@@ -1269,7 +1285,7 @@ const clearFinishedContext = {
   async api(path, options) { clearFinishedCalls.push({ path, options }); },
   async refreshSubagents() { clearFinishedRefreshes += 1; },
   scheduleRefreshSubagents() {},
-  addEvent(message, level) { clearFinishedEvents.push({ message, level }); },
+  addEvent(message, level, options = {}) { clearFinishedEvents.push({ message, level, options }); },
 };
 vm.runInNewContext(`${app.slice(clearFinishedSourceStart, clearFinishedSourceEnd)}\nthis.runClearFinishedSubagentRuns = clearFinishedSubagentRuns;`, clearFinishedContext);
 await clearFinishedContext.runClearFinishedSubagentRuns();
@@ -1280,10 +1296,73 @@ assert.deepEqual(JSON.parse(JSON.stringify(clearFinishedCalls)), [
 ], "clear-finished should call the existing dismiss endpoint only for visible terminal ordinary runs");
 assert.equal(clearFinishedRefreshes, 1, "clear-finished should refresh the overview once after all dismissals");
 assert.equal(clearFinishedContext.subagentsClearingFinished, false, "clear-finished should always release its in-flight guard");
-assert.deepEqual(clearFinishedEvents, [{ message: "cleared 3 finished subagent runs", level: "info" }]);
+assert.deepEqual(clearFinishedEvents, [{ message: "cleared 3 finished subagent runs", level: "info", options: {} }]);
 clearFinishedContext.latestSubagents = { tabs: [{ tabId: "tab-c", runs: [{ id: "done-c", status: "done", source: "async" }] }] };
 await clearFinishedContext.runClearFinishedSubagentRuns({ automatic: true });
-assert.deepEqual(clearFinishedEvents.at(-1), { message: "auto-cleared 1 finished subagent run", level: "info" }, "automatic clearing should identify its action without changing terminal-run selection semantics");
+assert.deepEqual(JSON.parse(JSON.stringify(clearFinishedEvents.at(-1))), {
+  message: "auto-cleared",
+  level: "info",
+  options: {
+    aggregateKey: "subagent-auto-clear",
+    aggregateIncrement: 1,
+    aggregateSingular: "finished subagent run",
+    aggregatePlural: "finished subagent runs",
+  },
+}, "automatic clearing should use one keyed event whose cleared-run counter can accumulate");
+const addEventSource = appFunctionSource("addEvent", "closeEventTreeContextMenu");
+assert.match(addEventSource, /eventAggregateKey === stableAggregateKey[\s\S]*eventAggregateCount[\s\S]*priorAggregate\?\.remove\(\)[\s\S]*eventLog\.prepend\(line\)/, "keyed events should replace their prior row, retain a cumulative count, and return to the top of the log");
+assert.match(addEventSource, /aggregateCount === 1 \? aggregateSingular : aggregatePlural/, "aggregate rows should keep singular and plural summaries accurate");
+const aggregateEventLog = {
+  children: [],
+  prepend(node) {
+    node.parent = this;
+    this.children.unshift(node);
+  },
+  get lastElementChild() { return this.children.at(-1) || null; },
+};
+function aggregateEventNode(_tag, className = "", text = "") {
+  return {
+    className,
+    dataset: {},
+    children: [],
+    attributes: {},
+    textContent: text,
+    classList: { contains: (value) => className.split(/\s+/).includes(value) },
+    append(...children) {
+      this.children.push(...children);
+      this.textContent += children.map((child) => child?.textContent || "").join("");
+    },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    addEventListener() {},
+    remove() {
+      if (!this.parent) return;
+      this.parent.children = this.parent.children.filter((child) => child !== this);
+      this.parent = null;
+    },
+  };
+}
+const aggregateEventContext = {
+  elements: { eventLog: aggregateEventLog },
+  make: aggregateEventNode,
+  applyEventFilter() {},
+  jumpToChatEvent() {},
+  showNoticeToast() {},
+  noteUnreadEvent() {},
+};
+vm.runInNewContext(`${addEventSource}\nthis.runAddEvent = addEvent;`, aggregateEventContext);
+const aggregateOptions = {
+  aggregateKey: "subagent-auto-clear",
+  aggregateIncrement: 1,
+  aggregateSingular: "finished subagent run",
+  aggregatePlural: "finished subagent runs",
+};
+aggregateEventContext.runAddEvent("auto-cleared", "info", aggregateOptions);
+aggregateEventContext.runAddEvent("unrelated event", "info");
+aggregateEventContext.runAddEvent("auto-cleared", "info", { ...aggregateOptions, aggregateIncrement: 2 });
+assert.equal(aggregateEventLog.children.length, 2, "repeated keyed events should occupy one row alongside unrelated events");
+assert.equal(aggregateEventLog.children[0].dataset.eventAggregateCount, "3", "the keyed row should accumulate the supplied run counts");
+assert.equal(aggregateEventLog.children[0].children[0].children[1].textContent, "auto-cleared 3 finished subagent runs", "the keyed row should show its current cumulative count");
+assert.equal(aggregateEventLog.children[1].children[0].children[1].textContent, "unrelated event", "updating a keyed row should not remove unrelated history");
 assert.match(app, /function materializeRetainedSubagentTerminalViews\(\)[\s\S]*subagentOverviewGroups\(\)[\s\S]*restoreKey = `\$\{tab\.tabId\}\\u0000\$\{tab\.sessionFile[\s\S]*tab\.displayRuns[\s\S]*\["queued", "running", "stale"\]\.includes\(subagentAgentStatus\(run\)\)[\s\S]*ensureSubagentTerminalView/, "terminal mode should materialize only ungated restored retained agent views once per parent session identity without touching overlay mode");
 assert.match(app, /from "\.\/subagent-launch-slot-state\.mjs"[\s\S]*function renderSubagentLaunchSlots\(\)[\s\S]*function loadSubagentLaunchSlotConfig\([\s\S]*\/api\/subagents\/config/, "launch-slot configuration should have its own browser state and API loader");
 assert.match(app, /function subagentLaunchSlotThinkingForModel\(model\)[\s\S]*modelThinkingLevels/, "launch-slot thinking choices should come from the selected model metadata");

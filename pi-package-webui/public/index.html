@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=137" />
+    <link rel="stylesheet" href="/styles.css?v=139" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -296,19 +296,21 @@
           <button id="chatSearchNextButton" class="chat-search-button" type="button" aria-label="Next match" title="Next match (Enter)">↓</button>
           <button id="chatSearchCloseButton" class="chat-search-button" type="button" aria-label="Close search" title="Close (Escape)">✕</button>
         </div>
-        <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
-          <span class="main-output-loading-spinner" aria-hidden="true"></span>
-          <span>Loading agent output…</span>
-        </div>
-        <div id="chat" class="chat" aria-live="polite" aria-busy="false">
-          <button id="stickyUserPromptButton" class="sticky-user-prompt-button" type="button" aria-controls="chat" hidden></button>
+        <div class="main-output-surface">
+          <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
+            <span class="main-output-loading-spinner" aria-hidden="true"></span>
+            <span>Loading agent output…</span>
+          </div>
+          <div id="chat" class="chat" aria-live="polite" aria-busy="false">
+            <button id="stickyUserPromptButton" class="sticky-user-prompt-button" type="button" aria-controls="chat" hidden></button>
+          </div>
+          <button id="jumpToLatestButton" class="jump-to-latest-button" type="button" hidden>Latest ↓</button>
         </div>
         <div id="runIndicatorHost" class="run-indicator-host"></div>
         <div id="feedbackTray" class="feedback-tray" aria-live="polite" hidden>
           <span id="feedbackTraySummary">No action feedback queued.</span>
           <button id="sendFeedbackButton" type="button">Send &amp; create LEARNING</button>
         </div>
-        <button id="jumpToLatestButton" class="jump-to-latest-button" type="button" hidden>Latest ↓</button>
         <div id="statusBar" class="statusbar" aria-live="polite"></div>
         <section id="contextMeterBar" class="context-meter-bar" aria-live="polite"></section>
         <section id="gitWorkflowPanel" class="git-workflow-panel" aria-live="polite" hidden>
@@ -1246,6 +1248,7 @@
     <div id="visibilityContextMenu" class="file-context-menu control-visibility-context-menu" role="menu" aria-label="Choose visible controls" hidden></div>
     <div id="gitFooterContextMenu" class="file-context-menu git-footer-context-menu" role="menu" aria-label="Git footer box actions" hidden>
       <button type="button" role="menuitem" data-git-footer-menu-action="disable">Disable this box</button>
+      <button type="button" role="menuitemcheckbox" aria-checked="false" data-git-footer-menu-action="toggle-advanced" hidden>Toggle advanced</button>
       <button type="button" role="menuitem" data-git-footer-menu-action="visibility">Open Git-footer Visibility</button>
     </div>
     <div id="eventTreeContextMenu" class="file-context-menu event-tree-context-menu" role="menu" aria-labelledby="eventTreeContextMenuLabel" hidden>
@@ -1882,7 +1885,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=166">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=168">
       (() => {
         "use strict";
 

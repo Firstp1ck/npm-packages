@@ -234,10 +234,14 @@ test("main output shows non-blocking inline feedback while transcript data loads
     await expect(chat).toHaveAttribute("aria-busy", "true");
     await expect(page.locator("#promptInput")).toBeEnabled();
     assert.equal(await page.evaluate(() => document.querySelectorAll("dialog:modal").length), 0, "loading feedback should not open a popup");
+    const loadingChatBounds = await chat.boundingBox();
+    assert.ok(loadingChatBounds, "the transcript should have measurable bounds while loading");
 
     releaseMessages();
     await expect(loading).toBeHidden();
     await expect(chat).toHaveAttribute("aria-busy", "false");
+    const settledChatBounds = await chat.boundingBox();
+    assert.deepEqual(settledChatBounds, loadingChatBounds, "showing or hiding loading feedback must not move or resize the transcript");
   } finally {
     releaseMessages?.();
     await page.unroute(messagesPattern);

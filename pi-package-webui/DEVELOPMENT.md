@@ -185,6 +185,22 @@ node tests/http-endpoints-harness.test.mjs
 npx playwright test --project=chromium tests/browser/subagent-observability.spec.mjs
 ```
 
+## Git footer advanced model picker
+
+The footer picker keeps presentation state browser-local under `pi-webui-footer-scoped-model-layout-v1`; only normalized `flat` and `advanced` values are accepted. Storage events adopt the value across same-origin tabs without a settings write. The context-menu checkbox names the destination layout: **Toggle advanced** in flat mode and **Toggle Simple** in advanced mode. Advanced rendering groups `orderedFooterScopedModels()` by provider, sorts only the provider groups, and retains the existing order inside every group. Provider containers are labelled ARIA groups, and option buttons carry stable provider/model indices for clamped directional focus movement.
+
+Advanced options use a roving tab stop. Arrow, `Home`, and `End` keys move focus only; `Enter` and `Space` call the existing model-selection path, while `Escape` closes and restores the footer trigger. Pointer drag and `Alt+ArrowUp` / `Alt+ArrowDown` listeners remain in the flat branch only. The desktop picker uses intrinsic provider-column width, temporarily escapes the chat-panel clip, and raises the workspace stacking context above side panels. Its width is capped to a viewport gutter and the provider row becomes internally scrollable at that cap. Narrow-screen groups stack vertically, so neither layout creates page-level horizontal overflow.
+
+Focused validation:
+
+```bash
+node tests/git-footer-context-menu-static.test.mjs
+node --check public/app.js
+npx playwright test tests/browser/footer-model-advanced-layout.spec.mjs --project=chromium
+```
+
+The static contract covers Model-only menu visibility, normalized persistence and storage adoption, grouping, semantics, keyboard behavior, flat reorder isolation, bounded side-panel overlay stacking, and responsive CSS hooks. The Chromium fixtures cover toggle synchronization/reload, group and model order, directional focus, model application, `Escape` focus restoration, flat `Alt+Arrow` and pointer selection, narrow-viewport overflow, and a ten-provider case that verifies viewport capping, side-panel overlap, paint order, and horizontal scrolling.
+
 ## Control Deck side-panel architecture
 
 The durable interface envelope is schema version 3 and the private Web UI settings envelope is version 8. `layout.sidePanel` contains `placement`, atomic `sectionLayout` (`order` plus `leftSectionIds`), `collapsedSectionIds`, `hiddenSectionIds`, side-specific `collapsedPanels`, and side-specific `panelWidths`. Validation rejects unknown patch fields, duplicate section IDs, left IDs absent from the global order, invalid placements, and widths outside 320–4096 pixels. Version-1 reads migrate to right placement, no left assignments, right-only legacy collapse/width, and preserve every unrelated layout field; stale version-1 writes are rejected. Version-2 reads migrate to version 3 by adding the default `controlVisibility` field (`hiddenIds: null`) while preserving every existing layout field.
@@ -260,6 +276,8 @@ The browser keeps only the live call ID and lifecycle phase on an eligible event
 The same context menu exposes radio-style `Detailed` and `Compact` display choices for every event row. The browser stores the normalized value under `pi-webui-event-display-mode-v1`, defaults unknown values to `detailed`, and mirrors it to `#eventLog[data-display-mode]`. Compact CSS hides `.event-details`, tightens row spacing, and uses `data-event-tool-phase` for lifecycle accents. This preference does not change event payloads, the 120-row bound, click-to-jump behavior, or Tree eligibility.
 
 The visible Events filter stores one normalized value under `pi-webui-event-filter-v1`: `all`, `errors`, `warnings`, `tools`, or `tree`. Each row retains only its normalized level plus the existing lifecycle phase and a derived Tree-availability boolean. Filtering toggles the row's `hidden` state in place, so the log's newest-first order, 120-row bound, jump target, notice/unread behavior, and session-tree contract remain unchanged. Storage events apply changes from other same-origin tabs without writing them back.
+
+`addEvent` supports opt-in page-local aggregation through an event key, numeric increment, and singular/plural labels. A matching row contributes its stored count, is removed, and is recreated at the top with the latest timestamp. Subagent Auto-Clear uses the `subagent-auto-clear` key and increments by the number of runs dismissed. Manual clears and failure rows do not use that key. The aggregate row still participates normally in filtering and the 120-row bound.
 
 Focused checks are `node tests/session-tree-event-targets.test.mjs`, `node tests/events-tree-context-menu-static.test.mjs`, `node tests/streaming-ui-coupling.test.mjs`, `node tests/intercom-main-transcript-suppression-static.test.mjs`, `npx playwright test tests/browser/events-tree-context-menu.spec.mjs --project=chromium`, and `node --check public/app.js`.
 
