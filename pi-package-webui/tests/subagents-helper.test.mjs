@@ -28,6 +28,7 @@ class EventBus {
 const bus = new EventBus();
 const extensionHandlers = new Map();
 const registeredCommands = new Map();
+const registeredTools = new Map();
 const statuses = [];
 const notifications = [];
 const sentMessages = [];
@@ -37,6 +38,8 @@ let idle = true;
 let subagentStatusRequestCount = 0;
 let subagentRpcReplyHook = null;
 let setStatusFailures = 0;
+let confirmationResponse = true;
+const confirmations = [];
 const pi = {
   events: bus,
   on(name, handler) {
@@ -45,6 +48,7 @@ const pi = {
     extensionHandlers.set(name, handlers);
   },
   registerCommand(name, command) { registeredCommands.set(name, command); },
+  registerTool(tool) { registeredTools.set(tool.name, tool); },
   getAllTools() { return []; },
   getActiveTools() { return []; },
   setActiveTools() {},
@@ -77,6 +81,10 @@ const ctx = {
     };
   },
   ui: {
+    async confirm(title, message) {
+      confirmations.push({ title, message });
+      return confirmationResponse;
+    },
     setStatus(key, text) {
       if (setStatusFailures > 0) {
         setStatusFailures -= 1;
@@ -187,17 +195,159 @@ const promptWithSkills = [
 const initialGuidance = await beforeAgentStart({ systemPrompt: promptWithSkills, systemPromptOptions: ctx.getSystemPromptOptions() });
 assert.match(initialGuidance?.systemPrompt || "", /reviewer slot 1: agent=reviewer model=fake\/reviewer:high/, "session_start should cache effective launch-slot guidance");
 assert.match(initialGuidance?.systemPrompt || "", /runtime fills omitted model fields for structured subagent and subagent_gate launches, including runs\.run and runs\.all workflow children/, "guidance should explain which calls receive runtime defaults");
+assert.match(initialGuidance?.systemPrompt || "", /Explicit reviewer model or thinking mismatches are blocked before launch/, "guidance should explain reviewer mismatch enforcement");
+assert.match(initialGuidance?.systemPrompt || "", /approve_subagent_model_deviation tool is valid only after the user explicitly authorizes/, "guidance should require explicit user authorization for deviations");
 assert.doesNotMatch(initialGuidance?.systemPrompt || "", /code-security/, "launch-slot guidance must compose with disabled-skill filtering");
+
+const deviationTool = registeredTools.get("approve_subagent_model_deviation");
+assert.ok(deviationTool, "helper should register the WebUI-owned reviewer deviation approval tool");
+assert.equal(deviationTool.parameters.additionalProperties, false, "deviation approval parameters should reject unknown fields");
+assert.deepEqual(deviationTool.parameters.required, ["role", "occurrence", "requestedModel", "reason"]);
+assert.equal(deviationTool.parameters.properties.role.const, "reviewer");
+assert.deepEqual(
+  [deviationTool.parameters.properties.occurrence.minimum, deviationTool.parameters.properties.occurrence.maximum],
+  [1, 8],
+  "deviation approvals should use one-based reviewer occurrences bounded to the eight slots",
+);
+assert.equal(deviationTool.parameters.properties.requestedModel.maxLength, 280);
+assert.equal(deviationTool.parameters.properties.reason.maxLength, 500);
+assert.match(`${deviationTool.description} ${deviationTool.promptGuidelines.join(" ")}`, /only after the user explicitly authorizes/i);
+
 const applyLaunchSlotDefaults = (extensionHandlers.get("tool_call") || [])[0];
 assert.ok(applyLaunchSlotDefaults, "helper should register launch-slot defaults before subagent execution");
 const singleLaunchInput = { agent: "delegate", task: "Delegate this work" };
-await applyLaunchSlotDefaults({ toolName: "subagent", input: singleLaunchInput }, ctx);
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: singleLaunchInput }, ctx), undefined);
 assert.equal(singleLaunchInput.model, "fake/delegate:low", "structured single launches should receive the configured role model and thinking level");
+const omittedReviewerInput = { agent: "reviewer", task: "Use the configured reviewer" };
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: omittedReviewerInput }, ctx), undefined);
+assert.equal(omittedReviewerInput.model, "fake/reviewer:high", "an omitted reviewer model should receive the immutable snapshot default");
+const exactReviewerInput = { agent: "reviewer", task: "Use the exact configured reviewer", model: "fake/reviewer:high" };
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: exactReviewerInput }, ctx), undefined, "an exact reviewer model should be admitted");
 const explicitLaunchInput = { agent: "reviewer", task: "Review with the requested model", model: "fake/explicit:high" };
-await applyLaunchSlotDefaults({ toolName: "subagent", input: explicitLaunchInput }, ctx);
-assert.equal(explicitLaunchInput.model, "fake/explicit:high", "an explicit per-launch model should override the WebUI default");
+const explicitBlock = await applyLaunchSlotDefaults({ toolName: "subagent", input: explicitLaunchInput }, ctx);
+assert.equal(explicitBlock?.block, true, "an explicit reviewer model mismatch should block before tool execution");
+assert.match(explicitBlock?.reason || "", /occurrence 1.*expected fake\/reviewer:high, requested fake\/explicit:high.*Retry with fake\/reviewer:high/i, "the block should identify occurrence, expected, requested, and correction details");
+assert.equal(explicitLaunchInput.model, "fake/explicit:high", "a blocked explicit mismatch must never be silently overwritten");
+const nonReviewerInput = { agent: "delegate", task: "Keep this explicit model", model: "fake/explicit-delegate:low" };
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: nonReviewerInput }, ctx), undefined);
+assert.equal(nonReviewerInput.model, "fake/explicit-delegate:low", "explicit non-reviewer models should retain their prior behavior");
+
+ctx.hasUI = false;
+await assert.rejects(
+  deviationTool.execute("permit-no-ui", {
+    role: "reviewer",
+    occurrence: 1,
+    requestedModel: "fake/no-ui:high",
+    reason: "The user asked for this reviewer model.",
+  }),
+  /requires an interactive WebUI confirmation/,
+  "deviation approval must fail closed when interactive UI is unavailable",
+);
+ctx.hasUI = true;
+confirmationResponse = false;
+await assert.rejects(
+  deviationTool.execute("permit-rejected", {
+    role: "reviewer",
+    occurrence: 2,
+    requestedModel: "fake/rejected:medium",
+    reason: "The user may reject this exact request.",
+  }),
+  /not confirmed by the user/,
+  "deviation approval must fail closed when the user rejects the confirmation",
+);
+assert.deepEqual(confirmations.at(-1), {
+  title: "Authorize reviewer model deviation?",
+  message: "Allow reviewer occurrence 2 to use fake/rejected:medium once within 2 minutes?\n\nReason: The user may reject this exact request.",
+}, "the interactive confirmation should identify the exact occurrence, model, duration, and reason");
+confirmationResponse = true;
+
+const mixedPermit = await deviationTool.execute("permit-mixed", {
+  role: "reviewer",
+  occurrence: 1,
+  requestedModel: " fake/permitted:high ",
+  reason: "  The user explicitly requested a different first reviewer.  ",
+});
+assert.equal(mixedPermit.details.requestedModel, "fake/permitted:high", "permit model and reason input should be normalized before local storage");
+const mixedGateInput = { tasks: [
+  { agent: "reviewer", task: "Permitted first mismatch", model: "fake/permitted:high" },
+  { agent: "reviewer", task: "Unpermitted second mismatch", model: "fake/unpermitted:medium" },
+] };
+assert.equal((await applyLaunchSlotDefaults({ toolName: "subagent_gate", input: mixedGateInput }, ctx))?.block, true, "one unpermitted mismatch should block the whole structured request");
+const retainedPermitInput = { agent: "reviewer", task: "Retry the retained permit", model: "fake/permitted:high" };
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: retainedPermitInput }, ctx), undefined, "a permit matched in a blocked request should remain available until the whole request is admitted");
+assert.equal((await applyLaunchSlotDefaults({ toolName: "subagent", input: { ...retainedPermitInput } }, ctx))?.block, true, "an admitted direct launch should consume its matching permit exactly once");
+
+const expiringPermit = await deviationTool.execute("permit-expiry", {
+  role: "reviewer",
+  occurrence: 1,
+  requestedModel: "fake/expired:high",
+  reason: "The user explicitly authorized this temporary reviewer model.",
+});
+const realDateNowForPermit = Date.now;
+Date.now = () => expiringPermit.details.expiresAt + 1;
+try {
+  const expiredInput = { agent: "reviewer", task: "Expired reviewer", model: "fake/expired:high" };
+  assert.equal((await applyLaunchSlotDefaults({ toolName: "subagent", input: expiredInput }, ctx))?.block, true, "an expired permit should be pruned and rejected");
+} finally {
+  Date.now = realDateNowForPermit;
+}
+
+const workflowPermit = await deviationTool.execute("permit-workflow", {
+  role: "reviewer",
+  occurrence: 1,
+  requestedModel: "fake/workflow-reviewer:high",
+  reason: "The user explicitly authorized this reviewer inside one workflow.",
+});
+const workflowInput = {
+  workflowScript: "return runs.run('review', { agent: 'reviewer', task: 'Review it', model: 'fake/workflow-reviewer:high' })",
+};
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: workflowInput }, ctx), undefined, "a matching permit should be leased into one workflow wrapper");
+assert.match(workflowInput.workflowScript, /PI_WEBUI_SUBAGENT_LAUNCH_SLOTS_V1/);
+assert.match(workflowInput.workflowScript, new RegExp(workflowPermit.details.permitId), "the wrapped workflow should contain the leased permit descriptor");
+assert.match(workflowInput.workflowScript, new RegExp(`\\"expiresAt\\":${workflowPermit.details.expiresAt}`), "the workflow descriptor should retain its bounded expiry");
+const workflowPermitReuse = { agent: "reviewer", task: "Do not reuse the workflow permit", model: "fake/workflow-reviewer:high" };
+assert.equal((await applyLaunchSlotDefaults({ toolName: "subagent", input: workflowPermitReuse }, ctx))?.block, true, "leasing a permit into a workflow should remove it from helper memory immediately");
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const immediateWorkflowCalls = [];
+await new AsyncFunction("runs", workflowInput.workflowScript)({
+  run(key, params) { immediateWorkflowCalls.push({ key, ...params }); return Promise.resolve({ key }); },
+  all() { throw new Error("unexpected runs.all"); },
+  status() { return {}; },
+  ref() { return ""; },
+  refs() { return ""; },
+});
+assert.equal(immediateWorkflowCalls.length, 1, "an unexpired leased workflow permit should admit its exact reviewer child");
+
+const delayedWorkflowPermit = await deviationTool.execute("permit-delayed-workflow", {
+  role: "reviewer",
+  occurrence: 1,
+  requestedModel: "fake/delayed-workflow-reviewer:high",
+  reason: "The user explicitly authorized this reviewer inside one delayed workflow.",
+});
+const delayedWorkflowInput = {
+  workflowScript: "return runs.run('review', { agent: 'reviewer', task: 'Review later', model: 'fake/delayed-workflow-reviewer:high' })",
+};
+await applyLaunchSlotDefaults({ toolName: "subagent", input: delayedWorkflowInput }, ctx);
+const realDateNowForDelayedWorkflow = Date.now;
+Date.now = () => delayedWorkflowPermit.details.expiresAt + 1;
+try {
+  await assert.rejects(
+    new AsyncFunction("runs", delayedWorkflowInput.workflowScript)({
+      run() { throw new Error("expired workflow permit reached original runs"); },
+      all() { throw new Error("unexpected runs.all"); },
+      status() { return {}; },
+      ref() { return ""; },
+      refs() { return ""; },
+    }),
+    (error) => error.code === "reviewer-model-policy-blocked",
+    "a leased workflow permit must be rechecked at delayed use time",
+  );
+} finally {
+  Date.now = realDateNowForDelayedWorkflow;
+}
+
 const gateLaunchInput = { tasks: [{ agent: "reviewer", task: "Review correctness" }, { agent: "delegate", task: "Check scope" }, { agent: "reviewer", task: "Review tests" }] };
-await applyLaunchSlotDefaults({ toolName: "subagent_gate", input: gateLaunchInput }, ctx);
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent_gate", input: gateLaunchInput }, ctx), undefined);
 assert.deepEqual(gateLaunchInput.tasks.map((task) => task.model), ["fake/reviewer:high", "fake/delegate:low", "fake/reviewer-second:medium"], "gate tasks should consume each role's slots independently in task order");
 const changedLaunchRoles = defaultSubagentLaunchSlotRoles();
 changedLaunchRoles.reviewer[0] = { id: "reviewer:base", model: "fake/changed", thinking: "high" };
@@ -212,7 +362,37 @@ assert.doesNotMatch(cachedGuidance?.systemPrompt || "", /fake\/changed:high/);
 const cachedLaunchInput = { agent: "reviewer", task: "Review after settings save" };
 await applyLaunchSlotDefaults({ toolName: "subagent", input: cachedLaunchInput }, ctx);
 assert.equal(cachedLaunchInput.model, "fake/reviewer:high", "runtime launch defaults should use the same immutable active-tab snapshot as prompt guidance");
-for (let attempt = 0; attempt < 20 && !statuses.some((entry) => entry.text?.startsWith("PI_WEBUI_SUBAGENTS_V1 ") && entry.text.includes("run-a")); attempt++) {
+const staleGenerationPermit = await deviationTool.execute("permit-old-generation", {
+  role: "reviewer",
+  occurrence: 1,
+  requestedModel: "fake/old-generation:high",
+  reason: "The user explicitly authorized this model in the current snapshot.",
+});
+for (let index = 1; index < 8; index += 1) {
+  await deviationTool.execute(`permit-bound-${index}`, {
+    role: "reviewer",
+    occurrence: index + 1,
+    requestedModel: `fake/bounded-${index}:high`,
+    reason: "The user explicitly authorized this bounded local permit.",
+  });
+}
+await assert.rejects(
+  deviationTool.execute("permit-over-limit", {
+    role: "reviewer",
+    occurrence: 1,
+    requestedModel: "fake/over-limit:high",
+    reason: "This should exceed the local permit bound.",
+  }),
+  /already has 8 unused reviewer model deviation permits/,
+  "the helper should retain at most eight local permits",
+);
+for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "reload-launch-slot-snapshot" }, ctx);
+const staleGenerationInput = { agent: "reviewer", task: "Do not reuse stale authorization", model: staleGenerationPermit.details.requestedModel };
+assert.equal((await applyLaunchSlotDefaults({ toolName: "subagent", input: staleGenerationInput }, ctx))?.block, true, "snapshot reload should invalidate permits from the prior revision and helper generation");
+const reloadedLaunchInput = { agent: "reviewer", task: "Use the reloaded reviewer slot" };
+assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: reloadedLaunchInput }, ctx), undefined);
+assert.equal(reloadedLaunchInput.model, "fake/changed:high", "a snapshot reload should atomically adopt the newly saved reviewer slot");
+for (let attempt = 0; attempt < 20 && !statuses.filter((entry) => entry.key === "webui-subagents").at(-1)?.text?.includes("run-a"); attempt++) {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 

@@ -50,6 +50,7 @@ try {
       extensionHandlers.set(name, handlers);
     },
     registerCommand(name, command) { registeredCommands.set(name, command); },
+    registerTool() {},
     getAllTools() { return []; },
     getActiveTools() { return []; },
     setActiveTools() {},

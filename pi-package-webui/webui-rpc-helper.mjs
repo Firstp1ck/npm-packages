@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { AgentSession, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import {
   AGENT_RUN_PROVIDER_EVENT,
   AgentRunIndex,
@@ -18,6 +19,7 @@ import { applySubagentLaunchSlotDefaults } from "./lib/subagent-launch-policy.mj
 import {
   formatSubagentLaunchSlotGuidance,
   resolveSubagentLaunchSlotProjectKey,
+  subagentLaunchSlotRevision,
   subagentLaunchSlotScopeEntry,
 } from "./lib/subagent-launch-slots.mjs";
 import { SUBAGENT_GATE_UPDATE_EVENT } from "./lib/subagent-gate.mjs";
@@ -89,6 +91,17 @@ const SUBAGENT_TELEMETRY_CONTEXT_WINDOW_LIMIT = 16_000_000;
 const SUBAGENT_TELEMETRY_RESPONSE_DURATION_MS = 15 * 60 * 1000;
 const SUBAGENT_TELEMETRY_SPEED_LIMIT = 1_000_000;
 const STATS_INITIAL_PROMPT_ESTIMATE_TYPE = "stats_initial_prompt_estimate";
+const SUBAGENT_DEVIATION_PERMIT_LIMIT = 8;
+const SUBAGENT_DEVIATION_PERMIT_TTL_MS = 2 * 60 * 1000;
+const SUBAGENT_DEVIATION_REQUESTED_MODEL_LIMIT = 280;
+const SUBAGENT_DEVIATION_REASON_LIMIT = 500;
+
+const SubagentModelDeviationParams = Type.Object({
+  role: Type.Literal("reviewer"),
+  occurrence: Type.Integer({ minimum: 1, maximum: SUBAGENT_DEVIATION_PERMIT_LIMIT }),
+  requestedModel: Type.String({ minLength: 1, maxLength: SUBAGENT_DEVIATION_REQUESTED_MODEL_LIMIT }),
+  reason: Type.String({ minLength: 1, maxLength: SUBAGENT_DEVIATION_REASON_LIMIT }),
+}, { additionalProperties: false });
 
 const ACTIVE_COMMAND_SESSION_KEY = Symbol.for("pi.webui.helper.activeCommandSession");
 
@@ -944,6 +957,10 @@ export default function webuiRpcHelper(pi) {
   let sessionSamplingParams = {};
   let subagentLaunchSlotGuidance = "";
   let subagentLaunchSlotRoles = null;
+  let subagentLaunchSlotSnapshotLoadFailed = false;
+  let activeSubagentLaunchSlotRevision = null;
+  let subagentLaunchSlotGeneration = 0;
+  let subagentModelDeviationPermits = [];
   let subagentContext = null;
   let subagentBridgeAvailable = false;
   let subagentPollTimer = null;
@@ -2135,16 +2152,153 @@ export default function webuiRpcHelper(pi) {
     return (await readWebuiSettings()).resourceDefaults;
   }
 
+  function clearSubagentModelDeviationPermits() {
+    subagentModelDeviationPermits = [];
+  }
+
+  function pruneSubagentModelDeviationPermits(now = Date.now()) {
+    subagentModelDeviationPermits = subagentModelDeviationPermits.filter((permit) => permit.expiresAt > now
+      && permit.slotRevision === activeSubagentLaunchSlotRevision
+      && permit.helperGeneration === subagentLaunchSlotGeneration);
+    return subagentModelDeviationPermits;
+  }
+
+  function subagentModelDeviationDescriptors() {
+    return pruneSubagentModelDeviationPermits().map((permit) => ({
+      id: permit.id,
+      role: permit.role,
+      occurrence: permit.occurrence,
+      requestedModel: permit.requestedModel,
+      expiresAt: permit.expiresAt,
+    }));
+  }
+
+  function removeSubagentModelDeviationPermits(ids) {
+    const consumed = new Set(ids);
+    if (!consumed.size) return;
+    subagentModelDeviationPermits = subagentModelDeviationPermits.filter((permit) => !consumed.has(permit.id));
+  }
+
+  async function approveSubagentModelDeviation(params = {}) {
+    pruneSubagentModelDeviationPermits();
+    if (!subagentLaunchSlotRoles || !activeSubagentLaunchSlotRevision) {
+      throw new Error("Reviewer model deviation approval is unavailable until the active WebUI launch-slot snapshot loads.");
+    }
+    if (params.role !== "reviewer" || !Number.isInteger(params.occurrence)
+      || params.occurrence < 1 || params.occurrence > SUBAGENT_DEVIATION_PERMIT_LIMIT) {
+      throw new Error("Reviewer model deviation approval requires reviewer occurrence 1 through 8.");
+    }
+    if (typeof params.requestedModel !== "string" || params.requestedModel.length > SUBAGENT_DEVIATION_REQUESTED_MODEL_LIMIT) {
+      throw new Error(`Requested model must be at most ${SUBAGENT_DEVIATION_REQUESTED_MODEL_LIMIT} characters.`);
+    }
+    const requestedModel = params.requestedModel.trim();
+    if (!requestedModel) throw new Error("Requested model must not be blank.");
+    if (typeof params.reason !== "string" || params.reason.length > SUBAGENT_DEVIATION_REASON_LIMIT) {
+      throw new Error(`Deviation reason must be at most ${SUBAGENT_DEVIATION_REASON_LIMIT} characters.`);
+    }
+    const reason = params.reason.trim();
+    if (!reason) throw new Error("Deviation reason must not be blank.");
+    if (subagentModelDeviationPermits.length >= SUBAGENT_DEVIATION_PERMIT_LIMIT) {
+      throw new Error("The active WebUI tab already has 8 unused reviewer model deviation permits.");
+    }
+
+    const approvalSlotRevision = activeSubagentLaunchSlotRevision;
+    const approvalGeneration = subagentLaunchSlotGeneration;
+    const context = subagentContext;
+    if (context?.hasUI !== true || typeof context.ui?.confirm !== "function") {
+      throw new Error("Reviewer model deviation approval requires an interactive WebUI confirmation.");
+    }
+    const confirmed = await context.ui.confirm(
+      "Authorize reviewer model deviation?",
+      `Allow reviewer occurrence ${params.occurrence} to use ${requestedModel} once within 2 minutes?\n\nReason: ${reason}`,
+    );
+    if (confirmed !== true) throw new Error("Reviewer model deviation approval was not confirmed by the user.");
+
+    pruneSubagentModelDeviationPermits();
+    if (!subagentLaunchSlotRoles || !activeSubagentLaunchSlotRevision) {
+      throw new Error("Reviewer model deviation approval is unavailable until the active WebUI launch-slot snapshot loads.");
+    }
+    if (activeSubagentLaunchSlotRevision !== approvalSlotRevision || subagentLaunchSlotGeneration !== approvalGeneration) {
+      throw new Error("Reviewer model deviation approval expired because the active WebUI launch-slot snapshot changed during confirmation.");
+    }
+    if (subagentModelDeviationPermits.length >= SUBAGENT_DEVIATION_PERMIT_LIMIT) {
+      throw new Error("The active WebUI tab already has 8 unused reviewer model deviation permits.");
+    }
+    const createdAt = Date.now();
+    const permit = {
+      id: randomUUID(),
+      role: "reviewer",
+      occurrence: params.occurrence,
+      requestedModel,
+      reason,
+      slotRevision: activeSubagentLaunchSlotRevision,
+      helperGeneration: subagentLaunchSlotGeneration,
+      createdAt,
+      expiresAt: createdAt + SUBAGENT_DEVIATION_PERMIT_TTL_MS,
+    };
+    subagentModelDeviationPermits.push(permit);
+    return {
+      content: [{
+        type: "text",
+        text: `Approved one reviewer occurrence ${permit.occurrence} launch with ${permit.requestedModel}. The local permit expires in 2 minutes and is consumed by one admitted launch or leased workflow.`,
+      }],
+      details: {
+        permitId: permit.id,
+        role: permit.role,
+        occurrence: permit.occurrence,
+        requestedModel: permit.requestedModel,
+        createdAt: permit.createdAt,
+        expiresAt: permit.expiresAt,
+      },
+    };
+  }
+
+  function reviewerModelPolicyBlockReason(decisions) {
+    const decision = decisions[0];
+    const more = decisions.length > 1 ? ` (${decisions.length - 1} more mismatch${decisions.length === 2 ? "" : "es"} also blocked.)` : "";
+    return `Reviewer occurrence ${decision.occurrence} model mismatch: expected ${decision.expectedModel}, requested ${decision.requestedModel}. Retry with ${decision.correctionModel} or omit model to use the configured slot; use approve_subagent_model_deviation only after explicit user authorization.${more}`;
+  }
+
+  function inputRequestsReviewer(input) {
+    const role = (value) => typeof value === "string" ? value.trim() : "";
+    if (!isPlainObject(input)) return false;
+    if (role(input.agent) === "reviewer") return true;
+    if (Array.isArray(input.tasks) && input.tasks.some((task) => role(task?.agent) === "reviewer")) return true;
+    return Array.isArray(input.chain) && input.chain.some((step) => role(step?.agent) === "reviewer"
+      || (Array.isArray(step?.parallel) && step.parallel.some((task) => role(task?.agent) === "reviewer"))
+      || role(step?.parallel?.agent) === "reviewer");
+  }
+
+  function launchNeedsLoadedSlotSnapshot(toolName, input) {
+    if (!isPlainObject(input) || input.action !== undefined || input.resume !== undefined) return false;
+    if (toolName === "subagent" && typeof input.workflowScript === "string" && input.workflowScript.trim()) return true;
+    return inputRequestsReviewer(input);
+  }
+
   async function loadSubagentLaunchSlotGuidance(ctx) {
+    const generation = ++subagentLaunchSlotGeneration;
+    clearSubagentModelDeviationPermits();
+    activeSubagentLaunchSlotRevision = null;
     try {
       const settings = await readWebuiSettings();
       const projectKey = await resolveSubagentLaunchSlotProjectKey(ctx?.cwd);
       const effective = subagentLaunchSlotScopeEntry(settings.subagentLaunchSlots, "project", projectKey);
+      const revision = subagentLaunchSlotRevision(settings.subagentLaunchSlots, "project", projectKey);
+      if (generation !== subagentLaunchSlotGeneration) return;
       subagentLaunchSlotRoles = effective.entry.roles;
-      subagentLaunchSlotGuidance = formatSubagentLaunchSlotGuidance(subagentLaunchSlotRoles);
+      subagentLaunchSlotSnapshotLoadFailed = false;
+      activeSubagentLaunchSlotRevision = revision;
+      const assignments = formatSubagentLaunchSlotGuidance(subagentLaunchSlotRoles);
+      subagentLaunchSlotGuidance = assignments
+        ? `${assignments}\nExplicit reviewer model or thinking mismatches are blocked before launch. The approve_subagent_model_deviation tool is valid only after the user explicitly authorizes that exact reviewer occurrence and requested model, and it always requires interactive confirmation.`
+        : "";
     } catch (error) {
+      if (generation !== subagentLaunchSlotGeneration) return;
       subagentLaunchSlotRoles = null;
+      subagentLaunchSlotSnapshotLoadFailed = true;
       subagentLaunchSlotGuidance = "";
+      activeSubagentLaunchSlotRevision = null;
+      clearSubagentModelDeviationPermits();
       console.warn(`Web UI subagent launch slots could not be read: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -2427,6 +2581,21 @@ export default function webuiRpcHelper(pi) {
     }
   }
 
+  pi.registerTool({
+    name: "approve_subagent_model_deviation",
+    label: "Approve reviewer model deviation",
+    description: "Request interactive user confirmation for one short-lived, one-use local permit covering an explicit reviewer model mismatch. The confirmation identifies the exact reviewer occurrence and requested model.",
+    promptSnippet: "Request confirmation for one reviewer model deviation",
+    promptGuidelines: [
+      "Call approve_subagent_model_deviation only after the user explicitly authorizes that exact reviewer occurrence and requested model; never infer authorization from task text or use it merely to bypass a mismatch block. The tool still displays an interactive confirmation and fails closed without UI or on rejection.",
+      "The permit is local, expires after 2 minutes, and is consumed by one admitted structured launch or leased into one workflow wrapper.",
+    ],
+    parameters: SubagentModelDeviationParams,
+    async execute(_toolCallId, params) {
+      return approveSubagentModelDeviation(params);
+    },
+  });
+
   pi.registerCommand(HELPER_COMMAND, {
     description: "Internal Web UI helper for browser-native tools and skills configuration",
     handler: async (args, ctx) => {
@@ -2470,6 +2639,7 @@ export default function webuiRpcHelper(pi) {
     resourceRpcActive = ctx.mode === "rpc";
     if (resourceRpcActive) await recomputeResourceState(ctx);
     restoreSamplingParamsFromBranch(ctx);
+    await loadSubagentLaunchSlotGuidance(ctx);
     subagentContext = ctx;
     subagentPollGeneration += 1;
     foregroundSubagentRuns.clear();
@@ -2493,8 +2663,26 @@ export default function webuiRpcHelper(pi) {
   });
 
   pi.on("tool_call", (event) => {
-    if (!subagentLaunchSlotRoles || !["subagent", "subagent_gate"].includes(event.toolName)) return;
-    applySubagentLaunchSlotDefaults(event.toolName, event.input, subagentLaunchSlotRoles);
+    if (!["subagent", "subagent_gate"].includes(event.toolName)) return;
+    const deviations = subagentModelDeviationDescriptors();
+    if (!subagentLaunchSlotRoles) {
+      if (subagentLaunchSlotSnapshotLoadFailed && launchNeedsLoadedSlotSnapshot(event.toolName, event.input)) {
+        return {
+          block: true,
+          reason: "Reviewer launch policy is unavailable because the WebUI launch-slot snapshot could not be loaded. Reload the active tab after fixing settings before launching reviewers or workflows.",
+        };
+      }
+      return;
+    }
+    const report = applySubagentLaunchSlotDefaults(event.toolName, event.input, subagentLaunchSlotRoles, { deviations });
+    if (report.blocked.length) {
+      return { block: true, reason: reviewerModelPolicyBlockReason(report.blocked) };
+    }
+    const workflowWrapped = report.applied.some((item) => item.location === "workflowScript" && item.reason === "runtime-role-defaults");
+    removeSubagentModelDeviationPermits(workflowWrapped
+      ? deviations.map((deviation) => deviation.id)
+      : report.consumedDeviationIds);
+    return undefined;
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -2603,6 +2791,10 @@ export default function webuiRpcHelper(pi) {
     subagentContext = null;
     subagentLaunchSlotGuidance = "";
     subagentLaunchSlotRoles = null;
+    subagentLaunchSlotSnapshotLoadFailed = false;
+    activeSubagentLaunchSlotRevision = null;
+    subagentLaunchSlotGeneration += 1;
+    clearSubagentModelDeviationPermits();
     subagentPollGeneration += 1;
     clearTimeout(subagentPollTimer);
     subagentPollTimer = null;

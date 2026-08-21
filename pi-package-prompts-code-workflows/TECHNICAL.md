@@ -22,6 +22,14 @@ pi install ./pi-package-prompts-code-workflows
 
 No required configuration. After installation, type `/` in Pi to autocomplete the prompt templates.
 
+`/recomended` uses the agent's latest relevant response as its source. Every argument is an exclusion and may be a recommendation number, label, or short description:
+
+```text
+/recomended 2 "skip the database migration"
+```
+
+Run it without arguments to implement all actionable recommendations. If the source recommendations or an exclusion are ambiguous, the prompt tells the agent to ask before making changes.
+
 ## Dependencies
 
 No repository-local Pi extensions, tools, skills, or other prompt packages are required. This bundle only contributes prompt templates through `pi.prompts`.

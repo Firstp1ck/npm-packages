@@ -58,6 +58,7 @@ try {
       extensionHandlers.set(name, handlers);
     },
     registerCommand(name, command) { registeredCommands.set(name, command); },
+    registerTool() {},
     getAllTools() {
       return ["read", "bash", "write"].map((name) => ({ name, description: `${name} tool`, sourceInfo: { source: "builtin" } }));
     },
@@ -109,9 +110,20 @@ try {
   for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "startup" }, ctx);
   assert.deepEqual(activeTools, ["read", "bash", "write"], "an initial settings-read failure must leave Pi's runtime tools unchanged");
   assert.ok(notifications.some((entry) => /tools and skills remain unchanged/i.test(entry.message)), "initial settings failure should emit a bounded warning");
+  const applyLaunchSlotDefaults = (extensionHandlers.get("tool_call") || [])[0];
+  assert.ok(applyLaunchSlotDefaults, "resource defaults helper should register launch-slot admission");
+  const unavailableReviewer = await applyLaunchSlotDefaults({ toolName: "subagent", input: { agent: "reviewer", task: "Review while settings are unavailable" } }, ctx);
+  assert.equal(unavailableReviewer?.block, true, "a reviewer-bearing direct launch must fail closed after snapshot load failure");
+  assert.match(unavailableReviewer?.reason || "", /snapshot could not be loaded.*Reload the active tab/i);
+  const unavailableWorkflow = await applyLaunchSlotDefaults({ toolName: "subagent", input: { workflowScript: "return runs.run('review', {agent:'reviewer', task:'Review'})" } }, ctx);
+  assert.equal(unavailableWorkflow?.block, true, "an opaque workflow launch must fail closed after snapshot load failure");
+  const unaffectedDelegate = { agent: "delegate", task: "Continue non-reviewer work", model: "provider/delegate" };
+  assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: unaffectedDelegate }, ctx), undefined, "a non-reviewer direct launch should remain available after snapshot load failure");
+  assert.equal(unaffectedDelegate.model, "provider/delegate");
 
   await writeFile(settingsFile, `${JSON.stringify(settingsPayload, null, 2)}\n`, "utf8");
   for (const handler of extensionHandlers.get("session_start") || []) await handler({ reason: "settings-restored" }, ctx);
+  assert.equal(await applyLaunchSlotDefaults({ toolName: "subagent", input: { agent: "reviewer", task: "Review after reload" } }, ctx), undefined, "a successful reload should clear snapshot-failure admission blocking");
   availableSkills = ["skill-a", "skill-b", "skill-c"];
   assert.deepEqual(activeTools, ["read", "write"], "a new session should inherit the global tool allowlist");
   assert.deepEqual(

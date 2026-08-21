@@ -10,5 +10,6 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 - `/incident` — triage incidents with impact, severity, mitigation, and investigation plan.
 - `/issue-fix` — turn an issue into root-cause analysis and implementation plan.
 - `/issue-new` — draft a clean maintainer-friendly issue.
+- `/recomended` — implement the latest agent recommendations, excluding any points supplied as arguments.
 - `/review` — review code for correctness, security, performance, and maintainability.
 - `/sum-issue` — summarize current feature/fix state and next step.

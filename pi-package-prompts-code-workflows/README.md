@@ -5,6 +5,7 @@ Adds ready-made prompts for reviews, bug fixes, issue work, and incident triage.
 ## What you can do
 
 - Adds prompts for code review and bug fixing.
+- Implements the agent's recommendations while letting you exclude specific points.
 - Includes issue investigation and implementation flows.
 - Provides an incident-triage prompt for urgent problems.
 - Keeps each workflow reusable across projects.
@@ -27,8 +28,11 @@ Choose the slash command that matches the job, such as `/review`, `/fix`, or `/i
 - `/incident` — triage incidents with impact, severity, mitigation, and investigation plan.
 - `/issue-fix` — turn an issue into root-cause analysis and implementation plan.
 - `/issue-new` — draft a clean maintainer-friendly issue.
+- `/recomended` — implement the agent's latest recommendations. Add recommendation numbers, labels, or short descriptions to exclude them.
 - `/review` — review code for correctness, security, performance, and maintainability.
 - `/sum-issue` — summarize current feature/fix state and next step.
+
+For example, `/recomended 2 "documentation changes"` implements the other recommendations but skips recommendation 2 and any documentation changes. Run `/recomended` without arguments to implement every actionable recommendation.
 
 ## Technical details
 
