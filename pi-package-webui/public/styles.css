@@ -11530,6 +11530,37 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   word-break: break-word;
   text-shadow: 0 0 0.7rem rgba(166, 227, 161, 0.25);
 }
+.event-filter-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.event-filter-bar label {
+  color: var(--ctp-subtext);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+.event-filter-bar select {
+  width: 100%;
+  min-width: 0;
+  min-height: 2rem;
+  padding-block: 0.28rem;
+  font-size: var(--text-xs);
+}
+.event-filter-status {
+  color: var(--ctp-overlay);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.event-filter-empty {
+  margin: 0 0 0.5rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px dashed rgba(180, 190, 254, 0.2);
+  border-radius: 0.46rem;
+  font-size: var(--text-xs);
+}
 .event-log {
   max-height: min(17rem, 32vh);
   overflow: auto;
@@ -11552,6 +11583,7 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   overflow-wrap: anywhere;
   cursor: context-menu;
 }
+.event[hidden] { display: none; }
 .event:hover,
 .event:focus-visible {
   transform: none;
@@ -12308,6 +12340,125 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
   padding: 0;
   margin: 1rem 0 0;
 }
+.extension-dialog.control-visibility-setup-dialog {
+  width: min(48rem, calc(100vw - 1.5rem));
+  max-height: min(88vh, calc(var(--visual-viewport-height, 100dvh) - 1.5rem));
+  overflow: hidden;
+  border-color: rgba(148, 226, 213, 0.44);
+  box-shadow: 0 2rem 5rem var(--shadow), 0 0 2rem rgba(148, 226, 213, 0.18);
+}
+.control-visibility-setup-dialog form {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  max-height: calc(min(88vh, var(--visual-viewport-height, 100dvh)) - 2rem);
+  min-height: 0;
+}
+.control-visibility-setup-dialog h2 {
+  color: var(--ctp-teal);
+  text-shadow: 0 0 1rem rgba(148, 226, 213, 0.22);
+}
+.control-visibility-setup-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+.control-visibility-setup-toolbar button { min-width: 8rem; }
+.control-visibility-setup-body {
+  display: grid;
+  gap: 0.75rem;
+  min-height: 0;
+  max-height: min(58vh, 38rem);
+  overflow: auto;
+  padding: 0.15rem 0.18rem 0.25rem 0;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.control-visibility-setup-group {
+  min-width: 0;
+  margin: 0;
+  padding: 0.72rem;
+  border: 1px solid rgba(148, 226, 213, 0.2);
+  border-radius: 0.85rem;
+  background: rgba(var(--ctp-crust-rgb), 0.46);
+}
+.control-visibility-setup-group-label {
+  padding: 0 0.3rem;
+  color: var(--ctp-teal);
+  font-size: 0.9rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+.control-visibility-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.5rem;
+}
+.control-visibility-setup-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.58rem;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.65rem;
+  cursor: pointer;
+  border: 1px solid rgba(180, 190, 254, 0.16);
+  border-radius: 0.62rem;
+  background: rgba(var(--ctp-surface-rgb), 0.34);
+}
+.control-visibility-setup-toggle:has(input:checked) {
+  border-color: rgba(148, 226, 213, 0.4);
+  background: rgba(148, 226, 213, 0.08);
+}
+.control-visibility-setup-toggle:focus-within {
+  outline: 2px solid var(--ctp-teal);
+  outline-offset: 2px;
+}
+.control-visibility-setup-toggle input {
+  width: 1.2rem;
+  min-width: 1.2rem;
+  height: 1.2rem;
+  min-height: 1.2rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--ctp-teal);
+  box-shadow: none;
+}
+.control-visibility-setup-toggle-label {
+  min-width: 0;
+  color: var(--ctp-text);
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.control-visibility-setup-status {
+  min-height: 1.2rem;
+  margin: 0.7rem 0 0;
+  font-size: 0.82rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+@media (max-width: 34rem) {
+  .extension-dialog.control-visibility-setup-dialog {
+    width: calc(100vw - 0.75rem);
+    max-height: calc(var(--visual-viewport-height, 100dvh) - 0.75rem);
+  }
+  .control-visibility-setup-dialog form {
+    max-height: calc(var(--visual-viewport-height, 100dvh) - 1.5rem);
+  }
+  .control-visibility-setup-grid { grid-template-columns: minmax(0, 1fr); }
+  .control-visibility-setup-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .control-visibility-setup-toolbar button,
+  .control-visibility-setup-dialog menu button {
+    min-width: 0;
+    min-height: 44px;
+  }
+}
+
 .extension-dialog.git-footer-visibility-dialog {
   width: min(72rem, calc(100vw - 1.5rem));
   max-height: min(86vh, calc(var(--visual-viewport-height, 100dvh) - 1.5rem));
@@ -14723,7 +14874,7 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   border-left-color: rgba(148, 226, 213, 0.24);
 }
 .git-side-panel-file {
-  grid-template-columns: 1rem minmax(4rem, 1fr) auto;
+  grid-template-columns: 1rem minmax(4rem, 1fr) auto auto;
   gap: 0.24rem;
 }
 

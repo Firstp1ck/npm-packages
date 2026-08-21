@@ -359,6 +359,9 @@ const elements = {
   visibilityContextMenu: $("#visibilityContextMenu"),
   gitFooterContextMenu: $("#gitFooterContextMenu"),
   eventTreeContextMenu: $("#eventTreeContextMenu"),
+  eventFilterSelect: $("#eventFilterSelect"),
+  eventFilterStatus: $("#eventFilterStatus"),
+  eventFilterEmpty: $("#eventFilterEmpty"),
   eventDisplayDetailedAction: $("#eventDisplayDetailedAction"),
   eventDisplayCompactAction: $("#eventDisplayCompactAction"),
   eventTreeContextMenuAction: $("#eventTreeContextMenuAction"),
@@ -571,6 +574,12 @@ const elements = {
   appRunnerInfoDialog: $("#appRunnerInfoDialog"),
   appRunnerInfoBody: $("#appRunnerInfoBody"),
   appRunnerInfoCloseButton: $("#appRunnerInfoCloseButton"),
+  controlVisibilitySetupDialog: $("#controlVisibilitySetupDialog"),
+  controlVisibilitySetupBody: $("#controlVisibilitySetupBody"),
+  controlVisibilitySetupStatus: $("#controlVisibilitySetupStatus"),
+  controlVisibilitySetupShowAllButton: $("#controlVisibilitySetupShowAllButton"),
+  controlVisibilitySetupResetButton: $("#controlVisibilitySetupResetButton"),
+  controlVisibilitySetupCloseButton: $("#controlVisibilitySetupCloseButton"),
   gitFooterVisibilityDialog: $("#gitFooterVisibilityDialog"),
   gitFooterVisibilityBody: $("#gitFooterVisibilityBody"),
   gitFooterVisibilityStatus: $("#gitFooterVisibilityStatus"),
@@ -599,6 +608,8 @@ const transcriptRenderer = createTranscriptRenderer({
 
 const PI_WEBUI_NPM_URL = "https://www.npmjs.com/package/@firstpick/pi-package-webui";
 const EVENT_DISPLAY_MODE_STORAGE_KEY = "pi-webui-event-display-mode-v1";
+const EVENT_FILTER_STORAGE_KEY = "pi-webui-event-filter-v1";
+const EVENT_FILTER_VALUES = new Set(["all", "errors", "warnings", "tools", "tree"]);
 
 let currentState = null;
 let tabStateCache = new Map();
@@ -634,6 +645,7 @@ let sidePanelContextMenuState = null;
 let gitFooterContextMenuState = null;
 let eventTreeContextMenuState = null;
 let eventDisplayMode = readStoredEventDisplayMode();
+let eventFilter = readStoredEventFilter();
 const toolEventStartedAt = new Map();
 let sidePanelSectionEditMode = false;
 let sidePanelSectionPointerDrag = null;
@@ -13562,6 +13574,7 @@ function applyControlVisibility(hiddenIdsOverride) {
   }
   // Hiding composer actions leaves grid holes; repack/restore the saved layout.
   if (composerChanged) scheduleComposerActionSlotLayoutRestore();
+  refreshControlVisibilitySetupDialog();
 }
 
 function persistControlVisibilityHiddenIds(hiddenIds) {
@@ -13586,6 +13599,71 @@ function resetControlVisibilityDefaults() {
 }
 
 let visibilityContextMenuState = null;
+let controlVisibilitySetupFocusReturn = null;
+
+function setControlVisibilitySetupStatus(message = "") {
+  if (elements.controlVisibilitySetupStatus) elements.controlVisibilitySetupStatus.textContent = message;
+}
+
+function renderControlVisibilitySetupDialog() {
+  const body = elements.controlVisibilitySetupBody;
+  if (!body) return;
+  const groups = CONTROL_VISIBILITY_GROUP_LABELS.map(([groupId, groupLabel], groupIndex) => {
+    const fieldset = make("fieldset", "control-visibility-setup-group");
+    fieldset.append(make("legend", "control-visibility-setup-group-label", groupLabel));
+    const grid = make("div", "control-visibility-setup-grid");
+    for (const [entryIndex, entry] of CONTROL_VISIBILITY_CATALOG.filter((item) => item.group === groupId).entries()) {
+      const label = make("label", "control-visibility-setup-toggle");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `controlVisibilitySetupToggle-${groupIndex}-${entryIndex}`;
+      checkbox.dataset.visibilitySetupId = entry.id;
+      checkbox.setAttribute("aria-label", `Show ${entry.label}`);
+      label.htmlFor = checkbox.id;
+      label.append(checkbox, make("span", "control-visibility-setup-toggle-label", entry.label));
+      grid.append(label);
+    }
+    fieldset.append(grid);
+    return fieldset;
+  });
+  body.replaceChildren(...groups);
+}
+
+function refreshControlVisibilitySetupDialog() {
+  const dialog = elements.controlVisibilitySetupDialog;
+  const body = elements.controlVisibilitySetupBody;
+  if (!dialog?.open || !body) return;
+  const hiddenSet = new Set(userControlHiddenIds());
+  for (const checkbox of body.querySelectorAll("[data-visibility-setup-id]")) {
+    checkbox.checked = !hiddenSet.has(checkbox.dataset.visibilitySetupId);
+  }
+  const visibleCount = CONTROL_VISIBILITY_CATALOG.filter((entry) => !hiddenSet.has(entry.id)).length;
+  setControlVisibilitySetupStatus(`${visibleCount} of ${CONTROL_VISIBILITY_CATALOG.length} optional controls shown by preference.`);
+}
+
+function openControlVisibilitySetupDialog(trigger = null) {
+  const dialog = elements.controlVisibilitySetupDialog;
+  if (!dialog) return;
+  controlVisibilitySetupFocusReturn = trigger instanceof HTMLElement ? trigger : elements.promptInput;
+  if (!elements.controlVisibilitySetupBody?.childElementCount) renderControlVisibilitySetupDialog();
+  if (!dialog.open) dialog.showModal();
+  refreshControlVisibilitySetupDialog();
+  queueMicrotask(() => elements.controlVisibilitySetupBody?.querySelector("input")?.focus({ preventScroll: true }));
+}
+
+function restoreControlVisibilitySetupFocus() {
+  const trigger = controlVisibilitySetupFocusReturn;
+  controlVisibilitySetupFocusReturn = null;
+  const triggerSurvives = trigger
+    && trigger.isConnected
+    && !trigger.closest?.("[hidden], .webui-user-hidden")
+    && typeof trigger.focus === "function";
+  requestAnimationFrame(() => {
+    if (triggerSurvives) trigger.focus({ preventScroll: true });
+    else elements.promptInput?.focus({ preventScroll: true });
+  });
+}
+
 
 function closeVisibilityContextMenu({ returnFocus = true } = {}) {
   const trigger = visibilityContextMenuState?.trigger;
@@ -13652,12 +13730,13 @@ function prepareControlVisibilityMenu(trigger, entryId = null) {
 
 // Right-clicking a visible registered control offers Hide <label> plus the
 // recovery actions; empty marked regions open the grouped full catalog.
-function showControlVisibilityDirectMenu(entry, directElement, { clientX, clientY }) {
-  const menu = prepareControlVisibilityMenu(directElement, entry.id);
+function showControlVisibilityDirectMenu(entry, focusTrigger, { clientX, clientY }) {
+  const menu = prepareControlVisibilityMenu(focusTrigger, entry.id);
   if (!menu) return;
   const items = [
     controlVisibilityMenuLabel("Hide or restore controls"),
     controlVisibilityMenuAction("hide", `Hide ${entry.label}`),
+    controlVisibilityMenuAction("open-setup", "Open setup"),
     controlVisibilityMenuAction("show-all", "Show all"),
     controlVisibilityMenuAction("reset-defaults", "Reset defaults"),
   ];
@@ -13682,6 +13761,7 @@ function showControlVisibilityRegionMenu(trigger, { clientX, clientY }) {
       children.push(button);
     }
   }
+  children.push(controlVisibilityMenuAction("open-setup", "Open setup"));
   children.push(controlVisibilityMenuAction("show-all", "Show all"));
   children.push(controlVisibilityMenuAction("reset-defaults", "Reset defaults"));
   menu.replaceChildren(...children);
@@ -13700,7 +13780,8 @@ function handleControlVisibilityContextMenu(event) {
   if (entry) {
     event.preventDefault();
     event.stopPropagation();
-    showControlVisibilityDirectMenu(entry, direct, { clientX: event.clientX, clientY: event.clientY });
+    const focusTrigger = target.closest?.("button, a, input, select, textarea, [tabindex]");
+    showControlVisibilityDirectMenu(entry, focusTrigger, { clientX: event.clientX, clientY: event.clientY });
     return;
   }
   if (target.closest?.("button, input, textarea, select, [contenteditable='true'], a")) return;
@@ -13729,8 +13810,10 @@ function handleControlVisibilityKeydown(event) {
   const position = { clientX: rect.left + Math.min(rect.width, 24), clientY: rect.bottom };
   event.preventDefault();
   event.stopPropagation();
-  if (entry) showControlVisibilityDirectMenu(entry, direct, position);
-  else showControlVisibilityRegionMenu(anchor, position);
+  if (entry) {
+    const focusTrigger = target.closest?.("button, a, input, select, textarea, [tabindex]");
+    showControlVisibilityDirectMenu(entry, focusTrigger, position);
+  } else showControlVisibilityRegionMenu(anchor, position);
 }
 
 function initializeControlVisibility() {
@@ -17925,6 +18008,66 @@ function readStoredEventDisplayMode() {
   }
 }
 
+function normalizeEventFilter(value) {
+  return EVENT_FILTER_VALUES.has(value) ? value : "all";
+}
+
+function readStoredEventFilter() {
+  try {
+    return normalizeEventFilter(localStorage.getItem(EVENT_FILTER_STORAGE_KEY));
+  } catch {
+    return "all";
+  }
+}
+
+function eventRowMatchesFilter(line, filter = eventFilter) {
+  if (!line?.classList?.contains("event") || filter === "all") return true;
+  if (filter === "errors") return line.dataset.eventLevel === "error";
+  if (filter === "warnings") return line.dataset.eventLevel === "warn";
+  if (filter === "tools") return ["start", "finish"].includes(line.dataset.eventToolPhase);
+  if (filter === "tree") return line.dataset.eventTreeAvailable === "true";
+  return true;
+}
+
+function applyEventFilter() {
+  const rows = [...(elements.eventLog?.children || [])].filter((line) => line.classList?.contains("event"));
+  let shown = 0;
+  for (const line of rows) {
+    const matches = eventRowMatchesFilter(line);
+    line.hidden = !matches;
+    if (matches) shown += 1;
+  }
+  const total = rows.length;
+  if (elements.eventFilterStatus) {
+    elements.eventFilterStatus.textContent = total === 0
+      ? "No events yet"
+      : eventFilter === "all"
+        ? `${total} event${total === 1 ? "" : "s"}`
+        : `${shown} of ${total}`;
+  }
+  if (elements.eventFilterEmpty) {
+    elements.eventFilterEmpty.hidden = total === 0 || shown > 0;
+    const label = elements.eventFilterSelect?.selectedOptions?.[0]?.textContent?.trim() || "this filter";
+    elements.eventFilterEmpty.textContent = `No events match ${label.toLowerCase()}.`;
+  }
+}
+
+function syncEventFilterUi() {
+  if (elements.eventFilterSelect) elements.eventFilterSelect.value = eventFilter;
+  applyEventFilter();
+}
+
+function setEventFilter(value, { persist = true } = {}) {
+  eventFilter = normalizeEventFilter(value);
+  syncEventFilterUi();
+  if (!persist) return;
+  try {
+    localStorage.setItem(EVENT_FILTER_STORAGE_KEY, eventFilter);
+  } catch {
+    // The filter remains active for this page when storage is unavailable.
+  }
+}
+
 function syncEventDisplayModeUi() {
   if (elements.eventLog) elements.eventLog.dataset.displayMode = eventDisplayMode;
   elements.eventDisplayDetailedAction?.setAttribute("aria-checked", String(eventDisplayMode === "detailed"));
@@ -17945,10 +18088,12 @@ function setEventDisplayMode(value, { persist = true } = {}) {
 function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "", details = [], notify = true, occurredAt = Date.now() } = {}) {
   const line = make("button", `event ${level}`.trim());
   line.type = "button";
+  line.dataset.eventLevel = String(level || "info").trim().toLowerCase() || "info";
   line.dataset.chatEventTimestamp = String(occurredAt);
   const stableToolCallId = String(toolCallId || "").trim();
   const toolLifecycle = ["start", "finish"].includes(toolEventPhase);
   const treeEligible = stableToolCallId && toolLifecycle;
+  line.dataset.eventTreeAvailable = String(!!treeEligible);
   if (stableToolCallId) line.dataset.chatToolCallId = stableToolCallId;
   if (toolLifecycle) line.dataset.eventToolPhase = toolEventPhase;
   line.setAttribute("aria-keyshortcuts", "ContextMenu Shift+F10");
@@ -17973,6 +18118,7 @@ function addEvent(message, level = "info", { toolCallId = "", toolEventPhase = "
   line.addEventListener("click", () => jumpToChatEvent(line));
   elements.eventLog.prepend(line);
   while (elements.eventLog.children.length > 120) elements.eventLog.lastElementChild?.remove();
+  applyEventFilter();
   if (notify && (level === "error" || level === "warn")) {
     showNoticeToast(message, level);
     noteUnreadEvent();
@@ -49903,6 +50049,8 @@ elements.fileTreeSearchInput?.addEventListener("keydown", (event) => {
 });
 elements.fileTreeSearchClearButton?.addEventListener("click", () => clearFileTreeSearch({ focus: true }));
 syncEventDisplayModeUi();
+syncEventFilterUi();
+elements.eventFilterSelect?.addEventListener("change", () => setEventFilter(elements.eventFilterSelect.value));
 elements.eventLog?.addEventListener("contextmenu", (event) => {
   const line = event.target?.closest?.(".event") || null;
   if (!line && event.target !== elements.eventLog) return;
@@ -49946,6 +50094,7 @@ elements.eventDisplayCompactAction?.addEventListener("click", () => {
 elements.eventTreeContextMenuAction?.addEventListener("click", () => void navigateEventTreeBoundary());
 window.addEventListener("storage", (event) => {
   if (event.key === EVENT_DISPLAY_MODE_STORAGE_KEY) setEventDisplayMode(event.newValue, { persist: false });
+  if (event.key === EVENT_FILTER_STORAGE_KEY) setEventFilter(event.newValue, { persist: false });
 });
 window.addEventListener("resize", () => closeEventTreeContextMenu(), { passive: true });
 document.addEventListener("scroll", () => {
@@ -50026,12 +50175,17 @@ elements.visibilityContextMenu?.addEventListener("click", (event) => {
     return;
   }
   const action = button.dataset.visibilityMenuAction;
-  if (action === "hide") {
+  if (action === "open-setup") {
+    const trigger = visibilityContextMenuState?.trigger;
+    closeVisibilityContextMenu({ returnFocus: false });
+    openControlVisibilitySetupDialog(trigger);
+  } else if (action === "hide") {
     const entryId = visibilityContextMenuState?.entryId;
-    closeVisibilityContextMenu();
+    closeVisibilityContextMenu({ returnFocus: false });
     if (entryId) {
       const label = CONTROL_VISIBILITY_REGISTRY.get(entryId)?.label || "control";
       setControlVisibilityHidden(entryId, true);
+      elements.promptInput?.focus({ preventScroll: true });
       offerUndo({
         message: `Hid ${label}. Right-click a toolbar area (or use the command palette) to show hidden controls again.`,
         undo: () => setControlVisibilityHidden(entryId, false),
@@ -50046,6 +50200,28 @@ elements.visibilityContextMenu?.addEventListener("click", (event) => {
     resetControlVisibilityDefaults();
   }
 });
+elements.controlVisibilitySetupBody?.addEventListener("change", (event) => {
+  const checkbox = event.target?.closest?.("[data-visibility-setup-id]");
+  if (!(checkbox instanceof HTMLInputElement)) return;
+  const entry = CONTROL_VISIBILITY_REGISTRY.get(checkbox.dataset.visibilitySetupId);
+  if (!entry) return;
+  setControlVisibilityHidden(entry.id, !checkbox.checked);
+  refreshControlVisibilitySetupDialog();
+  setControlVisibilitySetupStatus(`${entry.label} is ${checkbox.checked ? "shown" : "hidden"} by preference.`);
+});
+elements.controlVisibilitySetupShowAllButton?.addEventListener("click", () => {
+  showAllControls();
+  refreshControlVisibilitySetupDialog();
+  setControlVisibilitySetupStatus("All optional controls are shown by preference.");
+});
+elements.controlVisibilitySetupResetButton?.addEventListener("click", () => {
+  resetControlVisibilityDefaults();
+  refreshControlVisibilitySetupDialog();
+  setControlVisibilitySetupStatus("Control visibility was reset to its defaults.");
+});
+elements.controlVisibilitySetupCloseButton?.addEventListener("click", () => elements.controlVisibilitySetupDialog?.close());
+elements.controlVisibilitySetupDialog?.querySelector("form")?.addEventListener("submit", (event) => event.preventDefault());
+elements.controlVisibilitySetupDialog?.addEventListener("close", restoreControlVisibilitySetupFocus);
 elements.gitFooterContextMenu?.addEventListener("keydown", (event) => {
   const items = [...elements.gitFooterContextMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
   const index = items.indexOf(document.activeElement);

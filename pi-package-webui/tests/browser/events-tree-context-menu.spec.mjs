@@ -104,8 +104,34 @@ test("display modes persist while pointer and keyboard Tree actions remain safe"
   let finishRow = await emitToolLifecycle(page);
   const menu = page.locator("#eventTreeContextMenu");
   const eventDetails = finishRow.locator(".event-details");
+  const filter = page.locator("#eventFilterSelect");
+  const visibleRows = page.locator("#eventLog .event:not([hidden])");
   await expect(page.locator("#eventLog")).toHaveAttribute("data-display-mode", "detailed");
+  await expect(filter).toHaveValue("all");
   await expect(eventDetails).toBeVisible();
+
+  await page.locator("#eventLog").evaluate((log) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "event error";
+    row.dataset.eventLevel = "error";
+    row.dataset.eventTreeAvailable = "false";
+    row.textContent = "fixture filter failure";
+    log.prepend(row);
+  });
+  await filter.selectOption("errors");
+  await expect(visibleRows).toHaveCount(1);
+  await expect(visibleRows).toContainText("fixture filter failure");
+  await expect(page.locator("#eventFilterStatus")).toContainText("1 of");
+  await filter.selectOption("warnings");
+  await expect(visibleRows).toHaveCount(0);
+  await expect(page.locator("#eventFilterEmpty")).toBeVisible();
+  await filter.selectOption("tools");
+  await expect(visibleRows).toHaveCount(2);
+  await filter.selectOption("tree");
+  await expect(visibleRows).toHaveCount(2);
+  expect(await page.evaluate(() => localStorage.getItem("pi-webui-event-filter-v1"))).toBe("tree");
+  await filter.selectOption("all");
 
   await dispatchPointerMenu(finishRow);
   await expect(menu).toBeVisible();
@@ -118,12 +144,16 @@ test("display modes persist while pointer and keyboard Tree actions remain safe"
   await expect(finishRow.locator(".event-summary")).toContainText("tool read finished");
   await expect(finishRow).toHaveCSS("border-left-style", "solid");
   expect(await page.evaluate(() => localStorage.getItem("pi-webui-event-display-mode-v1"))).toBe("compact");
+  await filter.selectOption("tree");
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await openEvents(page);
   await expect(page.locator("#eventLog")).toHaveAttribute("data-display-mode", "compact");
+  await expect(page.locator("#eventFilterSelect")).toHaveValue("tree");
   finishRow = await emitToolLifecycle(page);
   await expect(finishRow.locator(".event-details")).toBeHidden();
+  await expect(page.locator("#eventLog .event:not([hidden])")).toHaveCount(2);
+  await page.locator("#eventFilterSelect").selectOption("all");
   await dispatchPointerMenu(finishRow);
   await expect(page.locator("#eventDisplayCompactAction")).toBeFocused();
   await expect(page.locator("#eventDisplayCompactAction")).toHaveAttribute("aria-checked", "true");

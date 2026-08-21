@@ -24,6 +24,8 @@ assert.match(html, /<div id="eventTreeContextMenu"[^>]*role="menu"[^>]*aria-labe
 assert.match(html, /id="eventDisplayDetailedAction"[^>]*role="menuitemradio"[^>]*aria-checked="true"[^>]*>Detailed<\/button>/, "the menu should expose Detailed as the default mode");
 assert.match(html, /id="eventDisplayCompactAction"[^>]*role="menuitemradio"[^>]*aria-checked="false"[^>]*>Compact<\/button>/, "the menu should expose Compact mode");
 assert.match(html, /role="separator"[\s\S]*id="eventTreeContextMenuAction"[^>]*role="menuitem"[^>]*>Tree…<\/button>[\s\S]*id="eventTreeContextMenuStatus"[^>]*role="status"/, "display choices should stay separate from Tree navigation and live feedback");
+assert.match(html, /<label for="eventFilterSelect">Show<\/label>[\s\S]*id="eventFilterSelect"[\s\S]*value="all">All events<[\s\S]*value="errors">Errors \/ failures<[\s\S]*value="warnings">Warnings<[\s\S]*value="tools">Tool activity<[\s\S]*value="tree">Tree available</, "Events should expose the recommended native filter choices");
+assert.match(html, /id="eventFilterStatus"[^>]*role="status"[^>]*aria-live="polite"[\s\S]*id="eventFilterEmpty"[^>]*hidden/, "the filter should expose live counts and an empty state");
 
 const normalizeDisplaySource = functionSource(app, "normalizeEventDisplayMode");
 assert.match(normalizeDisplaySource, /value === "compact" \? "compact" : "detailed"/, "unknown values should fall back to detailed mode");
@@ -31,6 +33,23 @@ assert.match(functionSource(app, "readStoredEventDisplayMode"), /localStorage\.g
 const setDisplaySource = functionSource(app, "setEventDisplayMode");
 assert.match(setDisplaySource, /localStorage\.setItem\(EVENT_DISPLAY_MODE_STORAGE_KEY, eventDisplayMode\)/, "display choices should persist");
 assert.match(functionSource(app, "syncEventDisplayModeUi"), /eventLog\.dataset\.displayMode = eventDisplayMode[\s\S]*eventDisplayDetailedAction[\s\S]*eventDisplayCompactAction/, "the current choice should update the log and radio menu state");
+
+const normalizeFilterSource = functionSource(app, "normalizeEventFilter");
+assert.match(normalizeFilterSource, /EVENT_FILTER_VALUES\.has\(value\) \? value : "all"/, "unknown filters should fall back to all events");
+assert.match(functionSource(app, "readStoredEventFilter"), /localStorage\.getItem\(EVENT_FILTER_STORAGE_KEY\)/, "the event filter should restore from browser-local storage");
+const filterMatchSource = functionSource(app, "eventRowMatchesFilter");
+for (const contract of [
+  /filter === "errors"[\s\S]*eventLevel === "error"/,
+  /filter === "warnings"[\s\S]*eventLevel === "warn"/,
+  /filter === "tools"[\s\S]*eventToolPhase/,
+  /filter === "tree"[\s\S]*eventTreeAvailable === "true"/,
+]) assert.match(filterMatchSource, contract, "each visible filter should have an explicit row predicate");
+const applyFilterSource = functionSource(app, "applyEventFilter");
+assert.match(applyFilterSource, /line\.hidden = !matches[\s\S]*eventFilterStatus[\s\S]*eventFilterEmpty\.hidden/, "filtering should hide rows in place and update count and empty-state feedback");
+const setFilterSource = functionSource(app, "setEventFilter");
+assert.match(setFilterSource, /localStorage\.setItem\(EVENT_FILTER_STORAGE_KEY, eventFilter\)/, "filter choices should persist");
+assert.match(app, /eventFilterSelect\?\.addEventListener\("change"[\s\S]*setEventFilter\(elements\.eventFilterSelect\.value\)/, "the native select should apply its selected filter");
+assert.match(app, /event\.key === EVENT_FILTER_STORAGE_KEY[\s\S]*setEventFilter\(event\.newValue, \{ persist: false \}\)/, "filter changes should synchronize across same-origin tabs");
 
 // Bounded event details: explicit target allowlist, status, duration, and shortened ID.
 const targetSource = functionSource(app, "boundedToolEventTarget");
@@ -54,7 +73,9 @@ assert.match(detailsSource, /phase === "finish"[\s\S]*toolEventStartedAt\.get\(t
 // Every row exposes display choices; stable lifecycle rows alone expose Tree navigation.
 const addEventSource = functionSource(app, "addEvent");
 assert.match(addEventSource, /const toolLifecycle = \["start", "finish"\]\.includes\(toolEventPhase\)[\s\S]*stableToolCallId && toolLifecycle/, "only stable lifecycle rows should be Tree eligible");
+assert.match(addEventSource, /line\.dataset\.eventLevel = String\(level[\s\S]*line\.dataset\.eventTreeAvailable = String\(!!treeEligible\)/, "rows should retain bounded filter metadata without copying payloads");
 assert.match(addEventSource, /if \(toolLifecycle\) line\.dataset\.eventToolPhase = toolEventPhase/, "all tool lifecycle rows should remain visually identifiable in compact mode");
+assert.match(addEventSource, /while \(elements\.eventLog\.children\.length > 120\)[\s\S]*applyEventFilter\(\)/, "new rows should apply the active filter after preserving the existing history bound");
 assert.match(addEventSource, /setAttribute\("aria-keyshortcuts", "ContextMenu Shift\+F10"\)/, "every event row should expose keyboard display choices");
 assert.match(addEventSource, /addEventListener\("click", \(\) => jumpToChatEvent\(line\)\)/, "event rows should preserve click-to-jump");
 assert.match(
@@ -95,14 +116,16 @@ assert.match(postResponseSource, /applyResponseTab\(result\)[\s\S]*title: "\/tre
 assert.match(navigateSource, /not available in the current persisted session tree[\s\S]*session was not changed/, "missing or stale targets should fail visibly without navigation");
 assert.match(navigateSource, /state\.busy = true[\s\S]*action\.disabled = true[\s\S]*finally[\s\S]*action\.disabled = false/, "the action should preserve busy/error controls");
 
+assert.match(styles, /\.event-filter-bar \{[\s\S]*grid-template-columns: auto minmax\(0, 1fr\) auto/, "the filter bar should keep its label, native select, and count aligned");
+assert.match(styles, /\.event\[hidden\] \{ display: none; \}/, "filtered event rows should remain hidden despite the row display rule");
 assert.match(styles, /\.event-details \{[\s\S]*flex-wrap: wrap/, "bounded details should wrap in detailed mode");
 assert.match(styles, /\.event-log\[data-display-mode="compact"\] \.event-details \{ display: none; \}/, "compact mode should hide secondary metadata");
 assert.match(styles, /\.event-log\[data-display-mode="compact"\] \.event\[data-event-tool-phase\][\s\S]*border-left:[\s\S]*\.event\[data-event-tool-phase="finish"\][\s\S]*border-left-color/, "compact tool events should retain visible lifecycle accents");
 assert.match(styles, /\.event-tree-context-menu \{[\s\S]*max-width: calc\(100vw - 1rem\)/, "the dedicated menu should remain viewport bounded");
 
 // Cache tuple for this browser-asset change.
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v128";/, "the PWA cache identity should advance");
-assert.match(html, /styles\.css\?v=135/, "compact-mode styles should advance the stylesheet revision");
-assert.match(html, /data-app-src="\/app\.js\?v=162"/, "the app query revision should advance");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v130";/, "the PWA cache identity should advance");
+assert.match(html, /styles\.css\?v=137/, "compact-mode styles should advance the stylesheet revision");
+assert.match(html, /data-app-src="\/app\.js\?v=164"/, "the app query revision should advance");
 
 console.log("events-tree-context-menu-static.test.mjs passed");

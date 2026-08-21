@@ -246,6 +246,69 @@ assert.match(
   "checked menu items should expose a visible check mark as well as aria-checked",
 );
 
+// --- Catalog-driven setup dialog -----------------------------------------------
+
+assert.equal(catalog.length, 24, "the approved visibility catalog should contain 24 entries");
+assert.equal(groupLabels.length, 5, "the setup should retain the five approved groups");
+assert.match(
+  html,
+  /<dialog id="controlVisibilitySetupDialog"[^>]*aria-labelledby="controlVisibilitySetupDialogTitle"[^>]*aria-describedby="controlVisibilitySetupDescription"[\s\S]*?<div id="controlVisibilitySetupBody"[^>]*><\/div>[\s\S]*?<button id="controlVisibilitySetupCloseButton"[^>]*type="button">Close<\/button>/,
+  "the setup should use a labelled native dialog with a generated body and explicit Close button",
+);
+assert.equal(
+  app.match(/controlVisibilityMenuAction\("open-setup", "Open setup"\)/g)?.length,
+  2,
+  "both the direct and grouped visibility menus should offer Open setup",
+);
+assert.match(
+  app,
+  /function renderControlVisibilitySetupDialog\(\)[\s\S]*CONTROL_VISIBILITY_GROUP_LABELS\.map[\s\S]*CONTROL_VISIBILITY_CATALOG\.filter[\s\S]*checkbox\.dataset\.visibilitySetupId = entry\.id[\s\S]*body\.replaceChildren\(\.\.\.groups\)/,
+  "the five setup groups and their checkboxes should be generated from the canonical catalog",
+);
+assert.match(
+  app,
+  /controlVisibilitySetupBody\?\.addEventListener\("change"[\s\S]*CONTROL_VISIBILITY_REGISTRY\.get\(checkbox\.dataset\.visibilitySetupId\)[\s\S]*setControlVisibilityHidden\(entry\.id, !checkbox\.checked\)/,
+  "native setup checkbox changes should persist immediately through the existing setter",
+);
+assert.match(
+  app,
+  /function applyControlVisibility\(hiddenIdsOverride\)[\s\S]*refreshControlVisibilitySetupDialog\(\)/,
+  "normal visibility application should synchronize an open setup dialog",
+);
+assert.match(
+  app,
+  /controlVisibilitySetupShowAllButton\?\.addEventListener\("click"[\s\S]*showAllControls\(\)[\s\S]*refreshControlVisibilitySetupDialog\(\)[\s\S]*controlVisibilitySetupResetButton\?\.addEventListener\("click"[\s\S]*resetControlVisibilityDefaults\(\)[\s\S]*refreshControlVisibilitySetupDialog\(\)/,
+  "setup quick actions should retain the existing [] and null setters and refresh checkbox state",
+);
+assert.match(
+  app,
+  /if \(action === "open-setup"\) \{[\s\S]*closeVisibilityContextMenu\(\{ returnFocus: false \}\)[\s\S]*openControlVisibilitySetupDialog\(trigger\)/,
+  "Open setup should transfer the context-menu trigger to the dialog without intermediate focus restoration",
+);
+{
+  const restoreSetupFocus = app.match(/function restoreControlVisibilitySetupFocus\(\) \{[\s\S]*?^\}/m)?.[0] || "";
+  assert.match(
+    restoreSetupFocus,
+    /trigger\.isConnected[\s\S]*!trigger\.closest\?\.\("\[hidden\], \.webui-user-hidden"\)[\s\S]*if \(triggerSurvives\) trigger\.focus[\s\S]*else elements\.promptInput\?\.focus/,
+    "Close and Escape should restore a surviving opener or use the prompt fallback",
+  );
+}
+assert.match(
+  app,
+  /controlVisibilitySetupDialog\?\.addEventListener\("close", restoreControlVisibilitySetupFocus\)/,
+  "native dialog dismissal should share the setup focus-restoration path",
+);
+assert.match(
+  styles,
+  /\.control-visibility-setup-body \{[\s\S]*overflow: auto;[\s\S]*overscroll-behavior: contain;[\s\S]*@media \(max-width: 34rem\)[\s\S]*\.control-visibility-setup-grid \{ grid-template-columns: minmax\(0, 1fr\); \}[\s\S]*min-height: 44px;/,
+  "the generated catalog should scroll independently and retain usable narrow-screen controls",
+);
+assert.doesNotMatch(
+  app.match(/function renderControlVisibilitySetupDialog\(\)[\s\S]*?function refreshControlVisibilitySetupDialog/)?.[0] || "",
+  /send/i,
+  "the setup renderer should not introduce a Send-specific entry outside the catalog",
+);
+
 // --- Keyboard-only recovery from Send ------------------------------------------
 
 assert.match(
@@ -285,10 +348,10 @@ assert.match(
 
 assert.match(
   serviceWorker,
-  /const CACHE_NAME = "pi-webui-pwa-v128";/,
+  /const CACHE_NAME = "pi-webui-pwa-v130";/,
   "browser asset changes should advance the PWA cache identity",
 );
-assert.match(html, /styles\.css\?v=135/, "visibility styles should advance the stylesheet query revision");
-assert.match(html, /data-app-src="\/app\.js\?v=162"/, "visibility behavior should advance the app query revision");
+assert.match(html, /styles\.css\?v=137/, "visibility styles should advance the stylesheet query revision");
+assert.match(html, /data-app-src="\/app\.js\?v=164"/, "visibility behavior should advance the app query revision");
 
 console.log("control-visibility-static.test.mjs passed");

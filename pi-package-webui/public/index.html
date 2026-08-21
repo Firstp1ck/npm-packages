@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=135" />
+    <link rel="stylesheet" href="/styles.css?v=137" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -1211,6 +1211,18 @@
               </button>
             </h2>
             <div id="sidePanelSectionEvents" class="side-panel-section-content" hidden>
+              <div class="event-filter-bar">
+                <label for="eventFilterSelect">Show</label>
+                <select id="eventFilterSelect" aria-describedby="eventFilterStatus">
+                  <option value="all">All events</option>
+                  <option value="errors">Errors / failures</option>
+                  <option value="warnings">Warnings</option>
+                  <option value="tools">Tool activity</option>
+                  <option value="tree">Tree available</option>
+                </select>
+                <span id="eventFilterStatus" class="event-filter-status" role="status" aria-live="polite">No events yet</span>
+              </div>
+              <p id="eventFilterEmpty" class="event-filter-empty muted" hidden>No events match this filter.</p>
               <div id="eventLog" class="event-log"></div>
             </div>
           </section>
@@ -1755,6 +1767,22 @@
       </form>
     </dialog>
 
+    <dialog id="controlVisibilitySetupDialog" class="extension-dialog control-visibility-setup-dialog" aria-labelledby="controlVisibilitySetupDialogTitle" aria-describedby="controlVisibilitySetupDescription">
+      <form method="dialog">
+        <h2 id="controlVisibilitySetupDialogTitle">Control visibility setup</h2>
+        <p id="controlVisibilitySetupDescription" class="muted">Choose which optional controls you want to show. Changes apply immediately and are saved globally for every Pi session. Controls unavailable in the current session stay hidden.</p>
+        <div class="control-visibility-setup-toolbar" aria-label="Control visibility quick actions">
+          <button id="controlVisibilitySetupShowAllButton" type="button">Show all</button>
+          <button id="controlVisibilitySetupResetButton" type="button">Reset defaults</button>
+        </div>
+        <div id="controlVisibilitySetupBody" class="control-visibility-setup-body"></div>
+        <p id="controlVisibilitySetupStatus" class="control-visibility-setup-status muted" role="status" aria-live="polite"></p>
+        <menu>
+          <button id="controlVisibilitySetupCloseButton" class="primary" type="button">Close</button>
+        </menu>
+      </form>
+    </dialog>
+
     <dialog id="gitFooterVisibilityDialog" class="extension-dialog git-footer-visibility-dialog" aria-labelledby="gitFooterVisibilityDialogTitle">
       <form method="dialog">
         <h2 id="gitFooterVisibilityDialogTitle">Git-footer Visibility</h2>
@@ -1854,7 +1882,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=162">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=164">
       (() => {
         "use strict";
 

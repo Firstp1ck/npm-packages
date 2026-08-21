@@ -119,6 +119,17 @@ async function suppressUnrelatedOverlays(page) {
   await page.addStyleTag({ content: "#optionalFeatureMigrationSurface, #updateNotification { display: none !important; }" });
 }
 
+async function openSetupFromDirect(page, selector) {
+  const menu = page.locator(MENU_SELECTOR);
+  await page.locator(selector).click({ button: "right" });
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: "Open setup" }).click();
+  await expect(menu).toBeHidden();
+  const dialog = page.locator("#controlVisibilitySetupDialog");
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
@@ -134,6 +145,131 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await stopServer();
   await rm(tempRoot, { recursive: true, force: true });
+});
+
+test("setup dialog covers the catalog, immediate durability, quick actions, focus, gating, and narrow viewports", async ({ page }) => {
+  await page.goto(baseURL, { waitUntil: "domcontentloaded" });
+  await suppressUnrelatedOverlays(page);
+  const menu = page.locator(MENU_SELECTOR);
+  const optionsButton = page.locator("#optionsMenuButton");
+  const optionsAction = page.locator('[data-composer-action-id="options"]');
+
+  // The grouped area menu opens setup and its non-focusable host uses the
+  // prompt fallback when setup closes.
+  await openAreaMenu(page);
+  await menu.getByRole("menuitem", { name: "Open setup" }).click();
+  let dialog = page.locator("#controlVisibilitySetupDialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("#promptInput")).toBeFocused();
+
+  // Wrapped controls preserve the actual inner button for pointer and keyboard
+  // invocation instead of retaining their non-focusable catalog wrapper.
+  dialog = await openSetupFromDirect(page, "#optionsMenuButton");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(optionsButton).toBeFocused();
+
+  await optionsButton.focus();
+  await page.keyboard.press("Shift+F10");
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: "Open setup" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(optionsButton).toBeFocused();
+
+  // If setup hides the wrapped catalog root, its inner button is no longer a
+  // surviving return target and focus falls back safely to the prompt.
+  dialog = await openSetupFromDirect(page, "#optionsMenuButton");
+  await dialog.getByLabel("Show Common options").uncheck();
+  await expect(optionsAction).toHaveClass(/webui-user-hidden/);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(page.locator("#promptInput")).toBeFocused();
+  await openAreaMenu(page);
+  await menu.getByRole("menuitem", { name: "Reset defaults" }).click();
+  await expect(optionsAction).not.toHaveClass(/webui-user-hidden/);
+  await expect.poll(hiddenIdsOnDisk).toBe(null);
+
+  // A direct visibility menu opens the generated setup and transfers focus.
+  dialog = await openSetupFromDirect(page, "#newSessionButton");
+  await expect(dialog.getByRole("checkbox")).toHaveCount(24);
+  await expect(dialog.getByRole("group")).toHaveCount(5);
+  assert.deepEqual(
+    await dialog.getByRole("group").evaluateAll((groups) => groups.map((group) => group.querySelector("legend")?.textContent?.trim())),
+    ["Workspace toolbar", "Control Deck", "Composer actions", "Input-frame controls", "Input-frame tags"],
+    "setup groups should follow the approved catalog order",
+  );
+  await expect(dialog.locator('[data-visibility-setup-id="composer.send"]')).toHaveCount(0);
+  await expect(dialog.getByText("Send", { exact: true })).toHaveCount(0);
+  await expect(dialog.getByLabel("Show Save workspace")).toBeFocused();
+
+  // Simulate runtime capability gating deterministically: preference application
+  // may toggle only its class and must leave the capability-owned hidden state intact.
+  const gitButton = page.locator('[data-composer-action-id="git"]');
+  await expect(dialog.getByLabel("Show Guided Git workflow")).toBeChecked();
+  await gitButton.evaluate((element) => { element.hidden = true; });
+  await expect(gitButton).toBeHidden();
+
+  // Escape follows the native dialog close path and restores a surviving opener.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("#newSessionButton")).toBeFocused();
+
+  // Hiding the invoking control persists immediately and makes Close use the prompt fallback.
+  dialog = await openSetupFromDirect(page, "#attachButton");
+  const attachToggle = dialog.getByLabel("Show Attach files");
+  await attachToggle.uncheck();
+  await expect(page.locator("#attachButton")).toHaveClass(/webui-user-hidden/);
+  assert.deepEqual(await hiddenIdsInLocal(page), ["input.attach-files"], "setup changes should update the local cache immediately");
+  await expect.poll(hiddenIdsOnDisk).toEqual(["input.attach-files"]);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("#promptInput")).toBeFocused();
+
+  // Reload from durable settings, not the browser cache, and synchronize the setup checkbox.
+  await page.evaluate((key) => localStorage.removeItem(key), HIDDEN_IDS_KEY);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await suppressUnrelatedOverlays(page);
+  await expect(page.locator("#attachButton")).toHaveClass(/webui-user-hidden/);
+  dialog = await openSetupFromDirect(page, "#newSessionButton");
+  await expect(dialog.getByLabel("Show Attach files")).not.toBeChecked();
+
+  // Reapply the simulated capability state after reload, which replaced the DOM.
+  await gitButton.evaluate((element) => { element.hidden = true; });
+  await expect(gitButton).toBeHidden();
+
+  // Setup quick actions preserve the [] versus null contract and refresh all toggles.
+  await dialog.getByRole("button", { name: "Show all" }).click();
+  await expect.poll(() => dialog.getByRole("checkbox").evaluateAll((checkboxes) => checkboxes.every((checkbox) => checkbox.checked))).toBe(true);
+  assert.deepEqual(await hiddenIdsInLocal(page), [], "Show all should persist an explicit empty list");
+  await expect.poll(hiddenIdsOnDisk).toEqual([]);
+  assert.ok(await gitButton.evaluate((element) => element.hidden), "Show all must not clear capability-owned hidden state");
+
+  await dialog.getByRole("button", { name: "Reset defaults" }).click();
+  await expect.poll(() => dialog.getByRole("checkbox").evaluateAll((checkboxes) => checkboxes.every((checkbox) => checkbox.checked))).toBe(true);
+  assert.equal(await hiddenIdsInLocal(page), null, "Reset defaults should clear the preference to null");
+  await expect.poll(hiddenIdsOnDisk).toBe(null);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(page.locator("#newSessionButton")).toBeFocused();
+
+  // A short viewport keeps the dialog bounded, its persistent actions usable,
+  // and the full generated catalog reachable through an independently scrolling body.
+  dialog = await openSetupFromDirect(page, "#newSessionButton");
+  await page.setViewportSize({ width: 360, height: 640 });
+  await expect(dialog.getByRole("button", { name: "Show all" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Reset defaults" })).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close" })).toBeVisible();
+  const dialogBounds = await dialog.boundingBox();
+  assert.ok(dialogBounds.x >= 0 && dialogBounds.y >= 0, "the setup should not overflow the top or left viewport edges");
+  assert.ok(dialogBounds.x + dialogBounds.width <= 360 && dialogBounds.y + dialogBounds.height <= 640, "the setup should remain bounded by the narrow viewport");
+  assert.ok(await dialog.locator("#controlVisibilitySetupBody").evaluate((body) => body.scrollHeight > body.clientHeight), "the setup catalog should scroll within its bounded body");
+  await dialog.locator("#controlVisibilitySetupBody").evaluate((body) => { body.scrollTop = body.scrollHeight; });
+  await expect(dialog.getByLabel("Show Workflow-mode tag")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(menu).toBeHidden();
 });
 
 test("grouped area menu, direct hide, recovery, persistence, gating, Send exclusion, keyboard", async ({ page }) => {
@@ -152,10 +288,12 @@ test("grouped area menu, direct hide, recovery, persistence, gating, Send exclus
   await page.reload({ waitUntil: "domcontentloaded" });
   await suppressUnrelatedOverlays(page);
   const optionsAction = page.locator('[data-composer-action-id="options"]');
+  const compactAction = page.locator('[data-composer-action-id="compact"]');
   const newAction = page.locator('[data-composer-action-id="new"]');
   await expect.poll(() => optionsAction.evaluate((element) => Number(element.style.getPropertyValue("--composer-action-grid-column")))).toBeGreaterThan(1);
   await expect.poll(() => newAction.evaluate((element) => Number(element.style.getPropertyValue("--composer-action-grid-column")))).toBeGreaterThan(0);
   const initialOptionsColumn = Number(await optionsAction.evaluate((element) => element.style.getPropertyValue("--composer-action-grid-column")));
+  const initialCompactColumn = Number(await compactAction.evaluate((element) => element.style.getPropertyValue("--composer-action-grid-column")));
   const initialNewColumn = Number(await newAction.evaluate((element) => element.style.getPropertyValue("--composer-action-grid-column")));
 
   // Send and editable controls are not region-menu proxies.
@@ -193,13 +331,14 @@ test("grouped area menu, direct hide, recovery, persistence, gating, Send exclus
   await menu.locator('[data-visibility-menu-action="hide"]').click();
   await expect(page.locator("#newSessionButton")).toHaveClass(/webui-user-hidden/);
   await expect(page.locator("#promptInput")).toBeFocused();
-  await expect.poll(() => optionsAction.evaluate((element) => Number(element.style.getPropertyValue("--composer-action-grid-column")))).toBeLessThan(initialOptionsColumn);
+  await expect.poll(() => compactAction.evaluate((element) => Number(element.style.getPropertyValue("--composer-action-grid-column")))).toBeLessThan(initialCompactColumn);
   assert.ok(Number(await optionsAction.evaluate((element) => element.style.getPropertyValue("--composer-action-grid-column"))) > 0, "repacked actions should keep a positive dense slot");
   assert.deepEqual(await hiddenIdsInLocal(page), ["composer.new"], "direct hide should persist locally first");
   await expect.poll(async () => (await hiddenIdsOnDisk())?.slice?.().sort?.()).toEqual(["composer.new"]);
 
-  // Runtime capability gating remains authoritative when preferences show all.
+  // Simulate runtime capability gating deterministically before preferences show all.
   const gitButton = page.locator('[data-composer-action-id="git"]');
+  await gitButton.evaluate((element) => { element.hidden = true; });
   await openAreaMenu(page);
   assert.ok(await gitButton.evaluate((element) => element.hidden), "capability-hidden controls keep the hidden attribute");
   await menu.getByRole("menuitem", { name: "Show all" }).click();
