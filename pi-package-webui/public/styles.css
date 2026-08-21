@@ -270,8 +270,9 @@ textarea {
 }
 textarea::placeholder { color: rgba(var(--ctp-subtext-rgb), 0.62); }
 #promptInput {
+  --prompt-input-block-chrome: calc(1.8rem + 2px);
   min-height: calc(1.5em + 1.8rem);
-  max-height: min(25vh, 10rem);
+  max-height: calc(6lh + var(--prompt-input-block-chrome));
   resize: none;
   overflow-y: auto;
   overscroll-behavior-y: contain;
@@ -15743,8 +15744,9 @@ button.git-workflow-step { min-height: 1.9rem; }
     border-radius: 0.72rem;
   }
   #promptInput {
+    --prompt-input-block-chrome: calc(1.04rem + 2px);
     min-height: calc(1.35em + 1.05rem);
-    max-height: min(24dvh, 10rem);
+    max-height: calc(6lh + var(--prompt-input-block-chrome));
     padding: 0.52rem 0.62rem;
     resize: none;
     font-size: 0.95rem;
@@ -15781,7 +15783,7 @@ button.git-workflow-step { min-height: 1.9rem; }
   }
   body.mobile-keyboard-open #promptInput {
     min-height: calc(1.35em + 1.05rem);
-    max-height: min(22dvh, 8rem);
+    max-height: min(22dvh, calc(6lh + var(--prompt-input-block-chrome)));
   }
   body.mobile-keyboard-open .composer-row {
     grid-template-columns: 1fr;
@@ -19479,6 +19481,7 @@ body:has(#undoToast:not([hidden])) .notice-toast-stack { bottom: calc(max(1rem, 
   .composer-input-row { gap: 0.28rem; }
   .composer-attach-button { padding: 0.36rem; border-radius: 0.64rem; }
   #promptInput {
+    --prompt-input-block-chrome: calc(0.88rem + 2px);
     min-height: calc(1.3em + 0.88rem);
     padding: 0.44rem 0.52rem;
     font-size: 0.88rem;

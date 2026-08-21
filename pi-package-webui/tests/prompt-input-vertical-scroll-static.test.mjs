@@ -16,11 +16,11 @@ const resizeEnd = app.indexOf("\nfunction updateComposerModeButtons", resizeStar
 assert.ok(resizeStart >= 0 && resizeEnd > resizeStart, "resizePromptInput should remain inspectable");
 const resizePromptInput = app.slice(resizeStart, resizeEnd);
 
-assert.match(css, /#promptInput \{[\s\S]*max-height: min\(25vh, 10rem\);[\s\S]*overflow-y: auto;[\s\S]*overscroll-behavior-y: contain;/, "the prompt should retain bounded growth with native vertical scrolling as its CSS fallback");
-assert.match(resizePromptInput, /input\.style\.height = "auto";[\s\S]*Math\.min\(input\.scrollHeight, maxHeight\)[\s\S]*input\.style\.overflowY = "auto";/, "every auto-resize pass should preserve vertical scrolling after the height cap is reached or growth stalls");
-assert.doesNotMatch(resizePromptInput, /overflowY[^\n]+"hidden"/, "auto-resizing must not disable the prompt's vertical overflow fallback");
-assert.match(html, /styles\.css\?v=139/, "the page should request the scroll-enabled stylesheet revision");
-assert.match(html, /app\.js\?v=168/, "the page should request the scroll-enabled app revision");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v135"/, "the PWA cache identity should advance with the prompt scroll assets");
+assert.match(css, /#promptInput \{[\s\S]*--prompt-input-block-chrome: calc\(1\.8rem \+ 2px\);[\s\S]*max-height: calc\(6lh \+ var\(--prompt-input-block-chrome\)\);[\s\S]*overflow-y: auto;[\s\S]*overscroll-behavior-y: contain;/, "the prompt should show six complete lines before native vertical scrolling begins");
+assert.match(resizePromptInput, /input\.style\.height = "auto";[\s\S]*borderTopWidth[\s\S]*borderBottomWidth[\s\S]*naturalHeight = input\.scrollHeight \+ borderBlock[\s\S]*isCapped \? "auto" : "hidden"/, "auto-resizing should include the textarea borders and enable vertical scrolling only after the six-line cap");
+assert.doesNotMatch(resizePromptInput, /input\.style\.overflowY = "auto";/, "auto-resizing must not force a scrollbar below the six-line cap");
+assert.match(html, /styles\.css\?v=140/, "the page should request the six-line prompt stylesheet revision");
+assert.match(html, /app\.js\?v=169/, "the page should request the current app revision");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v136"/, "the PWA cache identity should advance with the prompt scroll assets");
 
 console.log("prompt-input-vertical-scroll-static.test.mjs passed");

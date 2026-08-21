@@ -7453,10 +7453,13 @@ function isAbortAvailable() {
 function resizePromptInput() {
   const input = elements.promptInput;
   input.style.height = "auto";
-  const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
-  const nextHeight = Number.isFinite(maxHeight) ? Math.min(input.scrollHeight, maxHeight) : input.scrollHeight;
-  input.style.height = `${Math.ceil(nextHeight)}px`;
-  input.style.overflowY = "auto";
+  const style = getComputedStyle(input);
+  const maxHeight = Number.parseFloat(style.maxHeight);
+  const borderBlock = Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+  const naturalHeight = input.scrollHeight + borderBlock;
+  const isCapped = Number.isFinite(maxHeight) && naturalHeight > Math.ceil(maxHeight);
+  input.style.height = `${Math.ceil(isCapped ? maxHeight : naturalHeight)}px`;
+  input.style.overflowY = isCapped ? "auto" : "hidden";
 }
 
 function updateComposerModeButtons() {
@@ -34069,7 +34072,7 @@ async function loadGitWorkflowMessage({ requireFresh = false, generationId, runI
   if (existing?.key === loadKey) return existing.promise;
 
   const promise = (async () => {
-    const deadline = Date.now() + (requireFresh ? GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS : 0);
+    let deadline = Date.now() + (requireFresh ? GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS : 0);
     const baseOutput = workflow.output || "Waiting for generated commit message files…";
     let attempt = 0;
     while (gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) {
@@ -34079,6 +34082,7 @@ async function loadGitWorkflowMessage({ requireFresh = false, generationId, runI
         if (!message || !gitWorkflowMessageLoadIsCurrent(tabId, expectedRunId, expectedGenerationId)) return;
         if (message.ready === false) {
           if (message.expired) throw new Error(message.reason || "This commit-message generation has expired. Regenerate the message files.");
+          if (message.running === true) deadline = Date.now() + GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS;
           if (!requireFresh || Date.now() >= deadline) {
             throw new Error(`${message.reason || "Generated commit message files are not ready."} Regenerate, or use Preview current message files after verifying both files.`);
           }

@@ -305,6 +305,35 @@ test("only hidden pages disconnect live events and resume from one authoritative
   assert.ok(Date.now() - resumedAt < 4_000, "the bounded snapshot resume should complete without replaying the hidden stream duration");
 });
 
+test("the main input shows six lines before vertical scrolling", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(baseURL);
+
+  const promptInput = page.locator("#promptInput");
+  await promptInput.fill(Array.from({ length: 6 }, (_, index) => `line ${index + 1}`).join("\n"));
+  const sixLines = await promptInput.evaluate((node) => {
+    const style = getComputedStyle(node);
+    return {
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+      renderedHeight: node.getBoundingClientRect().height,
+      lineHeight: style.lineHeight,
+      maxHeight: style.maxHeight,
+      paddingBlock: `${style.paddingTop} + ${style.paddingBottom}`,
+    };
+  });
+  assert.ok(sixLines.scrollHeight <= sixLines.clientHeight + 1, `six lines overflowed: ${JSON.stringify(sixLines)}`);
+
+  await promptInput.fill(Array.from({ length: 7 }, (_, index) => `line ${index + 1}`).join("\n"));
+  const sevenLines = await promptInput.evaluate((node) => ({
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+    renderedHeight: node.getBoundingClientRect().height,
+  }));
+  assert.ok(sevenLines.scrollHeight > sevenLines.clientHeight + 1, "the seventh line should overflow the six-line input height");
+  assert.ok(Math.abs(sevenLines.renderedHeight - sixLines.renderedHeight) <= 1, "the prompt should stop growing after six lines");
+});
+
 test("autosizing the main input does not move settled agent output", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(baseURL);

@@ -8,6 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 
+test.describe.configure({ mode: "serial" });
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const serverScript = join(root, "bin", "pi-webui.mjs");
 
@@ -44,13 +46,39 @@ test.beforeAll(async () => {
   const fakePi = join(tempRoot, "fake-pi.mjs");
   const logFile = join(tempRoot, "rpc.jsonl");
   await writeFile(fakePi, `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 const logFile = process.env.GUIDED_GIT_BROWSER_LOG;
+const fallbackSuccessFlag = process.env.GUIDED_GIT_BROWSER_FALLBACK_SUCCESS;
+const artifactRoot = process.env.GUIDED_GIT_BROWSER_ARTIFACT_ROOT;
 let model = { provider: "fake", id: "original" };
 let thinkingLevel = "high";
 function send(value) { process.stdout.write(JSON.stringify(value) + "\\n"); }
 function log(value) { appendFileSync(logFile, JSON.stringify(value) + "\\n"); }
+function fallbackSuccessEnabled() { return existsSync(fallbackSuccessFlag); }
+function event(value) { send(value); }
+function assistantFailure() { return { role: "assistant", stopReason: "error", content: [{ type: "text", text: "fixture failure" }] }; }
+function writeCommitArtifacts() {
+  const directory = join(artifactRoot, "dev", "COMMIT");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, "staged-commit-short.txt"), "fallback short\\n");
+  writeFileSync(join(directory, "staged-commit-long.txt"), "fallback long\\n");
+}
+function settle({ failed = false, wait = 20 } = {}) {
+  setTimeout(() => {
+    event({ type: "agent_start" });
+    if (failed) {
+      const message = assistantFailure();
+      event({ type: "message_end", message });
+      event({ type: "agent_end", willRetry: false, messages: [message] });
+    } else {
+      event({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "fixture success" }] } });
+      event({ type: "agent_end" });
+    }
+    event({ type: "agent_settled" });
+  }, wait);
+}
 const models = [
   { provider: "fake", id: "original", name: "Original", reasoning: true },
   { provider: "fake", id: "primary", name: "Primary", reasoning: true },
@@ -69,10 +97,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     { name: "pr", source: "extension", description: "Generate PR text" },
   ] } });
   else if (command.type === "get_messages") send({ ...response, data: { messages: [] } });
-  else if (command.type === "set_model" && command.modelId === "primary") send({ ...response, success: false, error: "SECRET primary failure at /private/provider.mjs:12" });
+  else if (command.type === "set_model" && command.modelId === "primary" && !fallbackSuccessEnabled()) send({ ...response, success: false, error: "SECRET primary failure at /private/provider.mjs:12" });
   else if (command.type === "set_model") { model = { provider: command.provider, id: command.modelId }; send({ ...response, data: model }); }
   else if (command.type === "set_thinking_level") { thinkingLevel = command.level; send({ ...response, data: { level: thinkingLevel } }); }
-  else if (command.type === "prompt" && model.id === "fallback") send({ ...response, success: false, error: "SECRET fallback failure at /private/provider.mjs:44" });
+  else if (command.type === "prompt" && model.id === "primary" && fallbackSuccessEnabled()) { send({ ...response, data: {} }); settle({ failed: true }); }
+  else if (command.type === "prompt" && model.id === "fallback" && !fallbackSuccessEnabled()) send({ ...response, success: false, error: "SECRET fallback failure at /private/provider.mjs:44" });
+  else if (command.type === "prompt" && model.id === "fallback") { send({ ...response, data: {} }); setTimeout(writeCommitArtifacts, 450); settle({ wait: 600 }); }
   else send({ ...response, data: {} });
 });
 `, "utf8");
@@ -103,6 +133,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       PI_CODING_AGENT_DIR: join(tempRoot, "agent"),
       PI_WEBUI_SETTINGS_FILE: settingsFile,
       GUIDED_GIT_BROWSER_LOG: logFile,
+      GUIDED_GIT_BROWSER_FALLBACK_SUCCESS: join(tempRoot, "fallback-success"),
+      GUIDED_GIT_BROWSER_ARTIFACT_ROOT: tempRoot,
     },
   });
   child.stdout.on("data", (chunk) => { output += String(chunk); });
@@ -150,4 +182,37 @@ test("pre-response fallback lifecycle survives correlation and remains browser-o
   const log = (await import("node:fs/promises")).readFile(join(tempRoot, "rpc.jsonl"), "utf8");
   const entries = (await log).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.equal(entries.filter((entry) => entry.type === "prompt" && entry.activeModel === "fallback").length, 1, "the browser must not dispatch another fallback prompt");
+});
+
+test("a slow successful fallback opens the generated message preview automatically", async ({ page }) => {
+  await writeFile(join(tempRoot, "fallback-success"), "enabled\n", "utf8");
+  await page.route("**/app.js?v=*", async (route) => {
+    const response = await route.fetch();
+    const source = await response.text();
+    assert.match(source, /GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS = 30_000/);
+    await route.fulfill({ response, body: source.replace("GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS = 30_000", "GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS = 100") });
+  });
+  await page.route("**/api/commands?*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true, data: { commands: [
+        { name: "git-staged-msg", source: "extension", description: "Generate commit messages" },
+        { name: "git-branch-name", source: "extension", description: "Generate branch names" },
+        { name: "pr", source: "extension", description: "Generate PR text" },
+      ] } }),
+    });
+  });
+  await page.goto(baseURL);
+  await page.locator("#gitWorkflowButton").click();
+
+  const panel = page.locator("#gitWorkflowPanel");
+  await panel.getByRole("button", { name: "Run git add ." }).click();
+  await panel.getByRole("button", { name: "Generate commit message" }).click();
+
+  const outputText = page.locator("#gitWorkflowOutput");
+  await expect(outputText).toContainText("fallback short");
+  await expect(outputText).toContainText("fallback long");
+  await expect(panel.getByRole("button", { name: "Commit short (default)", exact: true })).toBeVisible();
+  await expect(outputText).not.toContainText("Preview current message files");
 });

@@ -15,7 +15,7 @@ assert.match(server, /async function createGitWorkflowMessageGeneration\(tab, ge
 assert.match(server, /generationId: record\.generationId/, "generation dispatch must return one server-owned correlation ID across every kind and both attempts");
 assert.match(server, /tab\.gitWorkflowArtifactGeneration = record\.artifactGeneration/, "the artifact generation record must be owned by the originating tab");
 assert.match(server, /case "\/api\/git-workflow\/message"[\s\S]*generationId[\s\S]*tab\?\.gitWorkflowArtifactGeneration/, "fresh message reads must resolve the correlated generation from the requested tab");
-assert.match(server, /readGitWorkflowMessages\(cwd, \{ generationId = "", generation = null \} = \{\}\)[\s\S]*generation\.cwd !== messageCwd[\s\S]*!generation\.terminal[\s\S]*!generation\.successful/, "message readiness must reject wrong identity, active attempts, and terminal failure");
+assert.match(server, /readGitWorkflowMessages\(cwd, \{ generationId = "", generation = null \} = \{\}\)[\s\S]*generation\.cwd !== messageCwd[\s\S]*!generation\.terminal[\s\S]*running: true[\s\S]*!generation\.successful/, "message readiness must reject wrong identity and terminal failure while identifying an active attempt");
 assert.match(server, /gitMessageArtifactPairReadiness\(generation\.baseline, pair\)[\s\S]*GIT_WORKFLOW_MESSAGE_PAIR_SETTLE_MS[\s\S]*sameGitMessageArtifactPair\(pair, settledPair\)/, "the backend must require both changed artifacts and a stable settled pair");
 assert.doesNotMatch(app, /newestMtime \+ 10000 < currentWorkflow\.messageRequestedAt/, "freshness must not use the previous wall-clock/mtime tolerance");
 
@@ -25,6 +25,7 @@ assert.match(app, /function acceptGitWorkflowGenerationCorrelation[\s\S]*generat
 assert.match(app, /const loadKey = `\$\{expectedRunId\}:\$\{expectedGenerationId \|\| "preview"\}`[\s\S]*existing\?\.key === loadKey[\s\S]*return existing\.promise/, "duplicate timer/resume/agent_end wakeups must reuse one poll promise");
 assert.match(app, /gitWorkflowMessageLoadIsCurrent\(tabId, expectedRunId, expectedGenerationId\)/, "poll results must be guarded by tab, run, and generation identity");
 assert.match(app, /GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS = 30_000[\s\S]*GIT_WORKFLOW_MESSAGE_POLL_DELAYS_MS/, "fresh message polling must be adaptive and bounded");
+assert.match(app, /message\.running === true\) deadline = Date\.now\(\) \+ GIT_WORKFLOW_MESSAGE_POLL_TIMEOUT_MS/, "an active fallback generation must renew the artifact-settle deadline instead of forcing manual preview");
 assert.match(app, /\?generationId=\$\{encodeURIComponent\(expectedGenerationId\)\}/, "fresh commit reads must send the correlation ID to the backend");
 assert.match(app, /branch-name\$\{query\}[\s\S]*pr-description\$\{query\}/, "fresh branch and PR reads must also send exact generation IDs");
 assert.match(app, /message\.ready === false[\s\S]*message\.expired[\s\S]*Regenerate/, "pending and expired generation states must remain actionable");

@@ -373,6 +373,7 @@ await runScenario("artifact-primary-then-fallback", async ({ request, readLog })
   await waitFor(async () => (await readLog()).some((entry) => entry.type === "set_model" && entry.modelId === "fallback"), "fallback should begin after primary artifacts");
   const intermediate = await request(`/api/git-workflow/message?generationId=${encodeURIComponent(generationId)}`);
   assert.equal(intermediate.body.data.ready, false, "failed-primary artifacts must remain pending while fallback runs");
+  assert.equal(intermediate.body.data.running, true, "the browser must be told that the correlated fallback generation is still active");
   await waitFor(async () => (await readLog()).some((entry) => entry.type === "set_model" && entry.modelId === "original"), "fallback artifact generation should settle");
   const final = await request(`/api/git-workflow/message?generationId=${encodeURIComponent(generationId)}`);
   assert.equal(final.body.data.ready, true);

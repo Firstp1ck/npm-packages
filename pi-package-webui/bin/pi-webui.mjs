@@ -7717,7 +7717,7 @@ async function readGitWorkflowMessages(cwd, { generationId = "", generation = nu
     return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "This commit-message generation is no longer active. Regenerate the message files.", { expired: true });
   }
   if (generationId && !generation.terminal) {
-    return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "The correlated commit-message generation is still running.");
+    return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "The correlated commit-message generation is still running.", { running: true });
   }
   if (generationId && !generation.successful) {
     return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "The correlated commit-message generation did not finish successfully. Regenerate the message files.", { expired: true });
