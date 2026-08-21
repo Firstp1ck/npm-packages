@@ -134,7 +134,7 @@ test("extension restores state, publishes concise status, and persists successfu
   assert.ok(sessionStart && request && command);
 
   sessionStart!({}, harness.context as unknown as ExtensionContext);
-  assert.deepEqual(harness.statusUpdates.at(-1), { key: FAST_MODE_STATUS_KEY, value: "Fast-mode: on" });
+  assert.deepEqual(harness.statusUpdates.at(-1), { key: FAST_MODE_STATUS_KEY, value: "on" });
   assert.deepEqual(request!({ payload: { service_tier: "standard", keep: true } }, harness.context), {
     service_tier: FAST_MODE_SERVICE_TIER,
     keep: true,
@@ -142,7 +142,7 @@ test("extension restores state, publishes concise status, and persists successfu
 
   await command.handler("off", harness.context);
   assert.deepEqual(harness.appendCalls, [{ customType: FAST_MODE_STATE_ENTRY_TYPE, data: { enabled: false } }]);
-  assert.deepEqual(harness.statusUpdates.at(-1), { key: FAST_MODE_STATUS_KEY, value: "Fast-mode: off" });
+  assert.deepEqual(harness.statusUpdates.at(-1), { key: FAST_MODE_STATUS_KEY, value: "off" });
   assert.equal(request!({ payload: { keep: true } }, harness.context), undefined);
 
   await command.handler("status", harness.context);
@@ -184,5 +184,5 @@ test("tree navigation reconstructs the active branch state", () => {
   sessionStart!({}, harness.context as unknown as ExtensionContext);
   harness.entries.push({ type: "custom", customType: FAST_MODE_STATE_ENTRY_TYPE, data: { enabled: false } });
   sessionTree!({}, harness.context as unknown as ExtensionContext);
-  assert.deepEqual(harness.statusUpdates.at(-1), { key: FAST_MODE_STATUS_KEY, value: "Fast-mode: off" });
+  assert.deepEqual(harness.statusUpdates.at(-1), { key: FAST_MODE_STATUS_KEY, value: "off" });
 });
