@@ -636,8 +636,8 @@ Session-specific tool and skill choices are independent and always win when thei
 
 ### Guided Git workflow
 
-- **What it is:** A guided browser workflow for staging changes, generating commit messages, committing, pushing, and optionally creating a pull request.
-- **What you can do:** Run the stage/message/commit/push steps, choose generated short or long commit messages, type a manual message, create or confirm PR branch names, review generated PR text, and push only after confirmation.
+- **What it is:** A guided browser workflow for staging changes, generating commit messages with an optional one-shot fallback model, committing, pushing, and optionally creating a pull request.
+- **What you can do:** Configure separate primary and fallback reasoning efforts, run the stage/message/commit/push steps, choose generated short or long commit messages, type a manual message, create or confirm PR branch names, review generated PR text, and push only after confirmation.
 
 ### Git branch picker
 
@@ -719,7 +719,7 @@ Optional companions:
 
 The Git workflow button runs local git commands in the active Pi working directory. It covers both empty/new projects and existing repositories.
 
-Before first use, run `/git-workflow-setup` in Pi or choose **Common Pi Options → Guided Git Setup** in the browser. Select an exact authenticated `provider/modelId`, a supported reasoning effort, and the workflow defaults described below. The browser preselects the active tab model when possible, but saving is always explicit. Preferences are stored globally in the Pi Web UI settings file (normally `~/.pi/webui/settings.json`), not in browser storage.
+Before first use, run `/git-workflow-setup` in Pi or choose **Common Pi Options → Guided Git Setup** in the browser. Select an exact authenticated primary `provider/modelId`, a supported reasoning effort, and the workflow defaults described below. You may also select a different authenticated fallback model and its separately supported effort, or keep **No fallback**. The browser preselects the active tab model when possible and preserves a valid configured fallback when setup is reopened, but saving is always explicit. Preferences are stored globally in the Pi Web UI settings file (normally `~/.pi/webui/settings.json`), not in browser storage.
 
 For a new project, the browser flow can:
 
@@ -742,19 +742,27 @@ For an existing repository, the workflow can:
 
 The saved setup includes:
 
-- one generation profile reused for commit messages, branch names, and PR descriptions;
+- one required primary generation profile reused for commit messages, branch names, and PR descriptions, plus an optional different fallback profile with its own effort;
 - English or German output, short or long default commit choice, and automatic/never/required Conventional Commit scope;
 - review/select (recommended), preserve-staged, or explicit stage-all behavior;
 - ask/current-branch/PR-worktree delivery highlighting; and
 - optional pre-commit verification reminders.
 
-If the configured model or effort is unavailable, generation stops and asks you to update setup; it never silently substitutes another model. Footer and Guided Git pushes send the active tab's current `HEAD` to the same-named branch on the preferred remote and set that branch as the upstream instead of retaining a potentially mismatched upstream. Guided Git never force-pushes automatically. Git hooks and signing configuration continue to run normally.
+If a configured model or effort is unavailable, setup saving fails closed. During generation, Guided Git lets Pi finish any internal primary retries, then uses the explicitly configured fallback at most once after a final primary generation failure. It never chooses an unconfigured model. The original tab model and effort are restored after the successful attempt settles or both attempts fail. Request validation, staged-content checks, cancellation, Git failures, and Pi process exit/error do not trigger fallback; a dead Pi process cannot run another attempt. Footer and Guided Git pushes send the active tab's current `HEAD` to the same-named branch on the preferred remote and set that branch as the upstream instead of retaining a potentially mismatched upstream. Guided Git never force-pushes automatically. Git hooks and signing configuration continue to run normally.
 
 After the message is generated, **Create PR** asks Pi to generate `dev/COMMIT/staged-branch-name.txt`, lets you confirm or edit the `type/feature-name` branch, then switches with `git switch -c` before committing. In PR mode, choose **Commit short**, **Commit long**, or type a message and use **Commit input**, then **Push and Create PR** pushes the branch, sends `/pr`, shows the generated `dev/PR/<branch>.md` description for editing/confirmation, and creates the pull request with `gh pr create`. Use **Manual branch** to skip agent branch-name generation and type the branch directly.
 
 Use the workflow process buttons to jump directly to **Initialize**, **Stage**, **Message**, **Commit**, **Push**, or PR steps when earlier work was already completed manually. Selecting **Message** lets you either run `/git-staged-msg` or type a commit message and use **Commit input** directly. Selecting **Commit** loads the current generated files from `dev/COMMIT/` before enabling the commit choices. Manual preview remains available for existing files, while an active generation uses bounded single-flight polling so duplicate timer, reconnect, and `agent_end` signals cannot race or surface a stale pair. A yellow dot means that process was selected or is available but its action has not completed in this workflow; green means the process action completed.
 
 This requires `/git-staged-msg` and `/pr` from `@firstpick/pi-prompts-git-pr`; branch-name generation uses `/git-branch-name`. Creating the PR also requires an authenticated GitHub CLI (`gh`). Review the generated commit message, branch name, remote URL, and PR description before committing, pushing, or creating a PR.
+
+### Fallback browser/runtime contract
+
+The persisted `generation.fallback` object always contains `provider`, `modelId`, and `thinkingLevel`; an empty provider/model pair disables fallback. The Guided Git setup client sends the nested fallback object on every save, filters the selected primary out of fallback choices, and sends empty provider/model fields when **No fallback** is selected. Server-side validation remains authoritative for availability, profile equality, and supported effort.
+
+`POST /api/git-workflow/generate` keeps `generation` as the effective profile and allocates one server generation ID for commit, branch, or PR text. An immediate primary dispatch failure that successfully starts fallback also returns `fallbackUsed: true` and `primaryGeneration`; terminal dispatch errors include bounded correlation metadata. Later final-primary failures are server-owned: the browser only observes `webui_git_workflow_generation_fallback_started` and `webui_git_workflow_generation_fallback_failed` tab events. It buffers events that precede the POST response, then requires the exact generation ID for every kind, deduplicates lifecycle output, and never sends a retry.
+
+Both lifecycle events carry the effective `generation`, `primaryGeneration`, `kind`, `tabId`, and `generationId`, plus a curated bounded `reason` or `error`; full provider diagnostics remain server-side. The server retains at most the start and terminal fallback events per tab and replays them on EventSource reconnect. Commit generation keeps its original correlation ID and pre-primary artifact baseline across attempts. Commit, branch, and PR artifact reads require successful terminal settlement of that correlated generation, so failed-primary output cannot become ready while fallback runs. The server—not browser event handling—owns reservation, atomic cancellation, the two-attempt ceiling, and restoration of the original model/effort after success or terminal failure. Validation failures, user aborts, Git command failures, and Pi process exit/error remain ordinary failures and never enter fallback dispatch.
 
 ## Open Issue bot
 

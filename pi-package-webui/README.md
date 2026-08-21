@@ -21,7 +21,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 | **Live agent work** | Follow streaming Markdown with syntax highlighting for code blocks, thinking, tool output, queues, todo progress, managed agent runs, and direct agent-to-agent conversations without leaving the browser. |
 | **Models and controls** | Change models and thinking effort, manage scoped models, configure tools and skills, and use the command palette. |
 | **Files and prompts** | Upload or paste files and images, edit text attachments, use slash-command suggestions, browse project files, and reference project paths with `@`. |
-| **Git workflows** | Inspect changes, switch branches, review diffs, stage work, generate commit messages, push, and prepare pull requests through guided steps. |
+| **Git workflows** | Inspect changes, switch branches, review diffs, stage work, generate commit messages with an optional one-shot fallback model, push, and prepare pull requests through guided steps. |
 | **Project utilities** | Launch detected app runners, manage working directories, search files and transcripts, and customize themes. |
 | **Companion features** | Add stats, remote access, voice, `/btw`, richer Git status, themes, release tools, and other supported Pi packages. |
 | **Desktop and mobile** | Use a full desktop workspace with resizable left and right side panels, or a compact phone layout with touch-friendly navigation and controls. |
@@ -186,7 +186,7 @@ Launch detected development servers, tests, builds, scripts, and project-defined
 
 **Optional feature needed:** `@firstpick/pi-prompts-git-pr` for generated commit messages, branch names, and pull-request content. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate.
 
-Move through review, staging, commit-message generation, commit, push, and pull-request steps with explicit confirmations.
+Move through review, staging, commit-message generation, commit, push, and pull-request steps with explicit confirmations. In **Guided Git Setup**, you can optionally choose a fallback model and its own reasoning effort. If the primary model reaches a final generation failure, Guided Git tries the fallback once, reports the change in the workflow, and restores the tab’s prior model and effort afterward. Validation failures, cancellation, Git command failures, and a stopped Pi process do not trigger fallback.
 
 #### Git branch picker
 

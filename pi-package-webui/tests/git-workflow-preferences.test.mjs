@@ -69,6 +69,12 @@ try {
   assert.equal(migrated.gitWorkflow.stagingPolicy, "review");
   assert.equal(migrated.gitWorkflow.reviewProcessEnabled, true, "legacy settings should preserve the existing review-process behavior");
   assert.equal(migrated.gitWorkflow.generation.thinkingLevel, "low");
+  assert.deepEqual(migrated.gitWorkflow.generation.fallback, {
+    provider: "",
+    modelId: "",
+    thinkingLevel: "low",
+  }, "legacy settings should keep fallback explicitly disabled");
+  assert.equal(isGitWorkflowSetupComplete({ ...migrated.gitWorkflow, generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" } }), true, "fallback must remain optional for setup completeness");
   assert.equal(migrated.uiLayout.version, 3);
   assert.equal(migrated.uiLayout.sidePanel.placement, "right");
   assert.deepEqual(migrated.uiLayout.sidePanel.sectionLayout, { order: ["files", "controls", "git"], leftSectionIds: [] });
@@ -97,7 +103,13 @@ try {
   assert.equal((await readWebuiSettings(settingsFile)).outputModeDefault, "normal", "invalid persisted output modes must fail closed to normal");
 
   const saved = await writeGitWorkflowPreferences({
-    generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", unavailablePolicy: "ask" },
+    generation: {
+      provider: "fake",
+      modelId: "fake-model",
+      thinkingLevel: "off",
+      unavailablePolicy: "ask",
+      fallback: { provider: "other", modelId: "other-model", thinkingLevel: "medium" },
+    },
     commit: { language: "de", defaultVariant: "long", scope: "required" },
     stagingPolicy: "preserve",
     reviewProcessEnabled: false,
@@ -122,6 +134,17 @@ try {
 
   const partiallyUpdated = await writeGitWorkflowPreferences({ deliveryMode: "current" }, settingsFile);
   assert.equal(partiallyUpdated.generation.modelId, "fake-model", "partial updates should preserve the selected model");
+  assert.deepEqual(partiallyUpdated.generation.fallback, {
+    provider: "other",
+    modelId: "other-model",
+    thinkingLevel: "medium",
+  }, "unrelated partial updates should preserve the configured fallback");
+  const fallbackEffortOnly = await writeGitWorkflowPreferences({ generation: { fallback: { thinkingLevel: "high" } } }, settingsFile);
+  assert.deepEqual(fallbackEffortOnly.generation.fallback, {
+    provider: "other",
+    modelId: "other-model",
+    thinkingLevel: "high",
+  }, "nested fallback patches should preserve the selected fallback model");
   assert.equal(partiallyUpdated.commit.language, "de", "partial updates should preserve nested commit preferences");
   assert.equal(partiallyUpdated.deliveryMode, "current");
   assert.equal(partiallyUpdated.reviewProcessEnabled, false, "partial updates should preserve the review-process choice");
@@ -135,12 +158,18 @@ try {
   assert.equal(persisted.remoteAuthEnabled, true);
   assert.equal(persisted.outputModeDefault, "compact-v1", "output-mode default should persist beside existing Web UI settings");
   assert.equal(persisted.gitWorkflow.generation.provider, "fake");
+  assert.deepEqual(persisted.gitWorkflow.generation.fallback, {
+    provider: "other",
+    modelId: "other-model",
+    thinkingLevel: "high",
+  });
   assert.deepEqual(persisted.resourceDefaults.tools.enabledTools, ["read", "write"], "global tool defaults should be normalized and deduplicated");
   assert.deepEqual(persisted.resourceDefaults.skills.enabledSkills, ["repo-explorer", "code-security"], "global skill defaults should persist beside other Web UI settings");
   assert.equal(persisted.interfacePreferences.sidePanelWidth, 612, "the user-scoped Control Deck width should persist beside other Web UI settings");
   assert.equal((await readWebuiSettings(settingsFile)).interfacePreferences.sidePanelWidth, 612);
   const summary = gitWorkflowPreferencesSummary(await readGitWorkflowPreferences(settingsFile));
   assert.match(summary, /fake\/fake-model/);
+  assert.match(summary, /Fallback: other\/other-model · high/);
   assert.match(summary, /Review process: disabled/);
   if (process.platform !== "win32") assert.equal((await stat(settingsFile)).mode & 0o777, 0o600);
 

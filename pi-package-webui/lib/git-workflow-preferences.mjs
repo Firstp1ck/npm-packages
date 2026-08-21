@@ -52,6 +52,11 @@ export function defaultGitWorkflowPreferences() {
       modelId: "",
       thinkingLevel: "low",
       unavailablePolicy: "ask",
+      fallback: {
+        provider: "",
+        modelId: "",
+        thinkingLevel: "low",
+      },
     },
     commit: {
       language: "en",
@@ -69,6 +74,8 @@ export function normalizeGitWorkflowPreferences(value) {
   const defaults = defaultGitWorkflowPreferences();
   const provider = cleanBoundedString(value?.generation?.provider, 160);
   const modelId = cleanBoundedString(value?.generation?.modelId, 512);
+  const fallbackProvider = cleanBoundedString(value?.generation?.fallback?.provider, 160);
+  const fallbackModelId = cleanBoundedString(value?.generation?.fallback?.modelId, 512);
   return {
     setupVersion: provider && modelId ? GIT_WORKFLOW_SETUP_VERSION : 0,
     generation: {
@@ -76,6 +83,11 @@ export function normalizeGitWorkflowPreferences(value) {
       modelId,
       thinkingLevel: choice(value?.generation?.thinkingLevel, GIT_WORKFLOW_THINKING_LEVELS, defaults.generation.thinkingLevel),
       unavailablePolicy: choice(value?.generation?.unavailablePolicy, GIT_WORKFLOW_UNAVAILABLE_POLICIES, defaults.generation.unavailablePolicy),
+      fallback: {
+        provider: fallbackProvider,
+        modelId: fallbackModelId,
+        thinkingLevel: choice(value?.generation?.fallback?.thinkingLevel, GIT_WORKFLOW_THINKING_LEVELS, defaults.generation.fallback.thinkingLevel),
+      },
     },
     commit: {
       language: choice(value?.commit?.language, GIT_WORKFLOW_LANGUAGES, defaults.commit.language),
@@ -94,7 +106,11 @@ export function mergeGitWorkflowPreferences(current, patch) {
   return normalizeGitWorkflowPreferences({
     ...base,
     ...(patch || {}),
-    generation: { ...base.generation, ...(patch?.generation || {}) },
+    generation: {
+      ...base.generation,
+      ...(patch?.generation || {}),
+      fallback: { ...base.generation.fallback, ...(patch?.generation?.fallback || {}) },
+    },
     commit: { ...base.commit, ...(patch?.commit || {}) },
   });
 }
@@ -107,9 +123,13 @@ export function isGitWorkflowSetupComplete(preferences) {
 export function gitWorkflowPreferencesSummary(preferences) {
   const value = normalizeGitWorkflowPreferences(preferences);
   const model = isGitWorkflowSetupComplete(value) ? `${value.generation.provider}/${value.generation.modelId}` : "not configured";
+  const fallback = value.generation.fallback.provider && value.generation.fallback.modelId
+    ? `${value.generation.fallback.provider}/${value.generation.fallback.modelId} · ${value.generation.fallback.thinkingLevel}`
+    : "disabled";
   return [
     `Model: ${model}`,
     `Thinking: ${value.generation.thinkingLevel}`,
+    `Fallback: ${fallback}`,
     `Commit: ${value.commit.language} · ${value.commit.defaultVariant} · scope ${value.commit.scope}`,
     `Staging: ${value.stagingPolicy}`,
     `Review process: ${value.reviewProcessEnabled ? "enabled" : "disabled"}`,

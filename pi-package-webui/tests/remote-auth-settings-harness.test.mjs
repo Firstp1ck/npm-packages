@@ -133,6 +133,11 @@ try {
   assert.equal(initialGitSetup.body?.data?.configured, false, "guided Git should require first-time model setup");
   assert.equal(initialGitSetup.body?.data?.preferences?.stagingPolicy, "review", "review/select should be the safe staging default");
   assert.equal(initialGitSetup.body?.data?.preferences?.reviewProcessEnabled, true, "manual review should remain enabled by default for compatibility");
+  assert.deepEqual(initialGitSetup.body?.data?.preferences?.generation?.fallback, {
+    provider: "",
+    modelId: "",
+    thinkingLevel: "low",
+  }, "existing settings should expose fallback as disabled until explicitly selected");
   assert.equal(initialGitSetup.body?.data?.models?.[0]?.id, "fake-model");
 
   const unsupportedEffort = await request("/api/git-workflow/preferences", {
@@ -140,6 +145,24 @@ try {
     body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "low" } } },
   });
   assert.equal(unsupportedEffort.status, 400, "setup should reject effort levels unsupported by the selected model");
+
+  const sameAsPrimaryFallback = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", fallback: { provider: "fake", modelId: "fake-model", thinkingLevel: "off" } } } },
+  });
+  assert.equal(sameAsPrimaryFallback.status, 400, "setup should reject a fallback equal to the primary model");
+
+  const unavailableFallback = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", fallback: { provider: "fake", modelId: "missing-model", thinkingLevel: "off" } } } },
+  });
+  assert.equal(unavailableFallback.status, 400, "setup should reject unavailable fallback models");
+
+  const invalidFallbackEffort = await request("/api/git-workflow/preferences", {
+    method: "POST",
+    body: { preferences: { generation: { provider: "fake", modelId: "fake-model", thinkingLevel: "off", fallback: { provider: "", modelId: "", thinkingLevel: "extreme" } } } },
+  });
+  assert.equal(invalidFallbackEffort.status, 400, "setup should reject unsupported fallback effort values even while fallback is disabled");
 
   const invalidStagingPolicy = await request("/api/git-workflow/preferences", {
     method: "POST",

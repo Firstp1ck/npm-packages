@@ -3538,6 +3538,12 @@ function createGitWorkflowState() {
     ...resetGitWorkflowManualCommitDefaultPatch(),
     messageRequestedAt: 0,
     messageGenerationId: "",
+    generationId: "",
+    generationKind: "",
+    generationAccepted: false,
+    fallbackStarted: false,
+    fallbackLifecycleKeys: new Set(),
+    pendingFallbackLifecycleEvents: [],
     branchName: "",
     branchNameRequestedAt: 0,
     actionsDone: createGitWorkflowActionsDone(),
@@ -32049,6 +32055,109 @@ function appendGitWorkflowOutput(text, { tabId = activeTabId } = {}) {
   setGitWorkflow({ output: next.slice(-60000) }, { tabId });
 }
 
+function gitWorkflowGenerationProfileText(profile) {
+  const provider = String(profile?.provider || "").trim();
+  const modelId = String(profile?.modelId || "").trim();
+  const thinkingLevel = String(profile?.thinkingLevel || "").trim();
+  if (!provider || !modelId) return "no model";
+  return `${provider}/${modelId}${thinkingLevel ? ` at ${thinkingLevel} effort` : ""}`;
+}
+
+function gitWorkflowFallbackConfigured(preferences) {
+  return !!preferences?.generation?.fallback?.provider && !!preferences?.generation?.fallback?.modelId;
+}
+
+function gitWorkflowConfiguredGenerationText(preferences) {
+  const primary = gitWorkflowGenerationProfileText(preferences?.generation);
+  if (!gitWorkflowFallbackConfigured(preferences)) return `Primary Git-writing model: ${primary}. No fallback is configured.`;
+  return `Primary Git-writing model: ${primary}. Fallback after a final primary generation failure: ${gitWorkflowGenerationProfileText(preferences.generation.fallback)} (one attempt).`;
+}
+
+function gitWorkflowGenerationAcceptedText(generation, subject) {
+  const effective = gitWorkflowGenerationProfileText(generation?.generation);
+  if (generation?.fallbackUsed === true) {
+    const primary = gitWorkflowGenerationProfileText(generation.primaryGeneration);
+    return `The primary Git-writing model ${primary} failed. ${subject} continued with the fallback ${effective}.`;
+  }
+  return `${subject} started with the primary Git-writing model ${effective}.`;
+}
+
+function gitWorkflowFallbackEventMatchesPendingRequest(workflow, event) {
+  if (!workflow?.active || workflow.generationKind !== event?.kind) return false;
+  const expectedSteps = { commit: "generating", branch: "branchNaming", pr: "prGenerating" };
+  return workflow.step === expectedSteps[event.kind] && !!String(event.generationId || "").trim();
+}
+
+function gitWorkflowFallbackEventMatches(workflow, event) {
+  if (!workflow?.generationAccepted || !gitWorkflowFallbackEventMatchesPendingRequest(workflow, event)) return false;
+  return String(event.generationId || "").trim() === String(workflow.generationId || "").trim();
+}
+
+function gitWorkflowFallbackLifecycleKey(workflow, event) {
+  return [event.type, workflow.runId, event.kind, event.generationId || "", event.generation?.provider || "", event.generation?.modelId || ""].join(":");
+}
+
+function applyGitWorkflowFallbackLifecycleEvent(workflow, event, tabId) {
+  if (!gitWorkflowFallbackEventMatches(workflow, event)) return false;
+  const keys = workflow.fallbackLifecycleKeys instanceof Set ? workflow.fallbackLifecycleKeys : new Set();
+  const key = gitWorkflowFallbackLifecycleKey(workflow, event);
+  if (keys.has(key)) return true;
+  keys.add(key);
+  const primary = gitWorkflowGenerationProfileText(event.primaryGeneration);
+  const fallback = gitWorkflowGenerationProfileText(event.generation);
+  if (event.type === "webui_git_workflow_generation_fallback_started") {
+    setGitWorkflow({ fallbackStarted: true, fallbackLifecycleKeys: keys }, { tabId });
+    appendGitWorkflowOutput(`The primary Git-writing model ${primary} failed${event.reason ? `: ${event.reason}` : "."} Generation continued with the fallback ${fallback}.`, { tabId });
+  } else {
+    setGitWorkflow({ fallbackLifecycleKeys: keys }, { tabId });
+    appendGitWorkflowOutput(`The fallback Git-writing model ${fallback} also failed${event.error ? `: ${event.error}` : "."} No additional model retry will run.`, { tabId });
+  }
+  return true;
+}
+
+function flushPendingGitWorkflowFallbackLifecycleEvents(tabId) {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (!workflow?.generationAccepted) return;
+  const pending = Array.isArray(workflow.pendingFallbackLifecycleEvents) ? workflow.pendingFallbackLifecycleEvents : [];
+  setGitWorkflow({ pendingFallbackLifecycleEvents: [] }, { tabId });
+  for (const event of pending) applyGitWorkflowFallbackLifecycleEvent(gitWorkflowForTab(tabId, { create: false }), event, tabId);
+}
+
+function acceptGitWorkflowGenerationCorrelation(generation, tabId) {
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  const generationId = String(generation?.generationId || "").trim();
+  if (!workflow || !generationId || generation?.kind !== workflow.generationKind) return false;
+  setGitWorkflow({
+    generationId,
+    messageGenerationId: generation.kind === "commit" ? generationId : workflow.messageGenerationId,
+    generationAccepted: true,
+  }, { tabId });
+  flushPendingGitWorkflowFallbackLifecycleEvents(tabId);
+  if (generation.fallbackUsed === true) setGitWorkflow({ fallbackStarted: true }, { tabId });
+  return true;
+}
+
+function acceptGitWorkflowGenerationErrorCorrelation(error, tabId) {
+  return acceptGitWorkflowGenerationCorrelation(error?.data?.gitWorkflowGeneration, tabId);
+}
+
+function handleGitWorkflowFallbackLifecycleEvent(event) {
+  if (!["webui_git_workflow_generation_fallback_started", "webui_git_workflow_generation_fallback_failed"].includes(event?.type)) return false;
+  const tabId = event.tabId;
+  const workflow = gitWorkflowForTab(tabId, { create: false });
+  if (!tabId || !gitWorkflowFallbackEventMatchesPendingRequest(workflow, event)) return true;
+  if (!workflow.generationAccepted) {
+    const pending = Array.isArray(workflow.pendingFallbackLifecycleEvents) ? workflow.pendingFallbackLifecycleEvents : [];
+    const key = gitWorkflowFallbackLifecycleKey(workflow, event);
+    if (!pending.some((item) => gitWorkflowFallbackLifecycleKey(workflow, item) === key)) {
+      setGitWorkflow({ pendingFallbackLifecycleEvents: [...pending, event].slice(-4) }, { tabId });
+    }
+    return true;
+  }
+  applyGitWorkflowFallbackLifecycleEvent(workflow, event, tabId);
+  return true;
+}
+
 function formatGitCommandResult(result) {
   if (!result) return "";
   const lines = [`$ ${result.command || "git"}`];
@@ -33126,7 +33235,7 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
     step: "add",
     process: "stage",
     busy: false,
-    output: `${gitWorkflowStagingReadyMessage(preferences)}\n\nGit text will use ${preferences.generation.provider}/${preferences.generation.modelId} at ${preferences.generation.thinkingLevel} effort. The active tab model is restored after generation.`,
+    output: `${gitWorkflowStagingReadyMessage(preferences)}\n\n${gitWorkflowConfiguredGenerationText(preferences)} The active tab model and effort are restored after generation.`,
     error: "",
     githubUsername: "",
     repoName: "",
@@ -33140,6 +33249,12 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
     ...resetGitWorkflowManualCommitDefaultPatch(),
     messageRequestedAt: 0,
     messageGenerationId: "",
+    generationId: "",
+    generationKind: "",
+    generationAccepted: false,
+    fallbackStarted: false,
+    fallbackLifecycleKeys: new Set(),
+    pendingFallbackLifecycleEvents: [],
     branchName: "",
     branchNameRequestedAt: 0,
     actionsDone: createGitWorkflowActionsDone(),
@@ -33580,6 +33695,12 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
     error: "",
     messageRequestedAt: requestedAt,
     messageGenerationId: "",
+    generationId: "",
+    generationKind: "commit",
+    generationAccepted: false,
+    fallbackStarted: false,
+    fallbackLifecycleKeys: new Set(),
+    pendingFallbackLifecycleEvents: [],
     output: "Asking Pi to write the commit message…\n\nCancel stops the request.",
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Generating commit message…");
@@ -33587,9 +33708,8 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "commit", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
     const generationId = String(generation.generationId || "").trim();
-    if (!generationId) throw new Error("The WebUI server did not return a commit-message generation ID. Restart Pi Web UI and regenerate.");
-    setGitWorkflow({ messageGenerationId: generationId }, { tabId });
-    appendGitWorkflowOutput(`Commit message generation started with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for Pi to finish, then the short and long messages will be loaded.`, { tabId });
+    if (!acceptGitWorkflowGenerationCorrelation(generation, tabId)) throw new Error("The WebUI server did not return a commit-message generation ID. Restart Pi Web UI and regenerate.");
+    appendGitWorkflowOutput(`${gitWorkflowGenerationAcceptedText(generation, "Commit message generation")} Waiting for Pi to finish, then the short and long messages will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -33601,6 +33721,7 @@ async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
     }, 2500);
   } catch (error) {
     if (isCurrentGitWorkflowRun(runId, tabId)) {
+      acceptGitWorkflowGenerationErrorCorrelation(error, tabId);
       if (isCurrentTabContext(tabContext)) clearRunIndicatorActivity();
       failGitWorkflow(error, "generate", { tabId });
     }
@@ -33745,13 +33866,20 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
     busy: true,
     error: "",
     branchNameRequestedAt: requestedAt,
+    generationId: "",
+    generationKind: "branch",
+    generationAccepted: false,
+    fallbackStarted: false,
+    fallbackLifecycleKeys: new Set(),
+    pendingFallbackLifecycleEvents: [],
     output: "Sending branch-name request to Pi.\n\nCancel will request Pi abort.",
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending branch-name request to Pi…");
   try {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "branch", ...(expectedStagedContentHash ? { expectedStagedContentHash } : {}) }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput(`Branch-name request accepted with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for Pi to finish, then the branch name will be loaded.`, { tabId });
+    if (!acceptGitWorkflowGenerationCorrelation(generation, tabId)) throw new Error("The WebUI server did not return a branch-name generation ID. Restart Pi Web UI and regenerate.");
+    appendGitWorkflowOutput(`${gitWorkflowGenerationAcceptedText(generation, "Branch-name generation")} Waiting for Pi to finish, then the branch name will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -33762,6 +33890,7 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
     }, 2500);
   } catch (error) {
     if (isCurrentGitWorkflowRun(runId, tabId)) {
+      acceptGitWorkflowGenerationErrorCorrelation(error, tabId);
       if (isCurrentTabContext(tabContext)) clearRunIndicatorActivity();
       failGitWorkflow(error, "message", { tabId });
     }
@@ -33771,8 +33900,11 @@ async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
 async function loadGitWorkflowBranchName({ requireFresh = false, retries = 0, runId, tabId = activeTabId } = {}) {
   const workflow = gitWorkflowForTab(tabId, { create: false });
   const expectedRunId = runId ?? workflow?.runId;
+  const generationId = requireFresh ? String(workflow?.generationId || "").trim() : "";
+  if (requireFresh && !generationId) return;
   try {
-    const branchName = await gitWorkflowRequest("/api/git-workflow/branch-name", { method: "GET", runId: expectedRunId, tabId });
+    const query = generationId ? `?generationId=${encodeURIComponent(generationId)}` : "";
+    const branchName = await gitWorkflowRequest(`/api/git-workflow/branch-name${query}`, { method: "GET", runId: expectedRunId, tabId });
     if (!branchName) return;
     const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
     if (!currentWorkflow) return;
@@ -34088,13 +34220,20 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
     busy: true,
     error: "",
     prRequestedAt: requestedAt,
+    generationId: "",
+    generationKind: "pr",
+    generationAccepted: false,
+    fallbackStarted: false,
+    fallbackLifecycleKeys: new Set(),
+    pendingFallbackLifecycleEvents: [],
     output: `${prefixOutput ? `${prefixOutput}\n\n` : ""}Sending /pr to Pi.\n\nCancel will request Pi abort.`,
   }, { tabId });
   if (isCurrentTabContext(tabContext)) setRunIndicatorActivity("Sending /pr to Pi…");
   try {
     const generation = await gitWorkflowRequest("/api/git-workflow/generate", { body: { kind: "pr" }, runId, tabId });
     if (!generation || !isCurrentGitWorkflowRun(runId, tabId)) return;
-    appendGitWorkflowOutput(`PR text generation started with ${generation.generation.provider}/${generation.generation.modelId} at ${generation.generation.thinkingLevel} effort. Waiting for Pi to finish, then the PR description will be loaded.`, { tabId });
+    if (!acceptGitWorkflowGenerationCorrelation(generation, tabId)) throw new Error("The WebUI server did not return a PR-text generation ID. Restart Pi Web UI and regenerate.");
+    appendGitWorkflowOutput(`${gitWorkflowGenerationAcceptedText(generation, "PR text generation")} Waiting for Pi to finish, then the PR description will be loaded.`, { tabId });
     if (isCurrentTabContext(tabContext)) scheduleRefreshState(120, tabContext);
     setTimeout(() => {
       const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
@@ -34105,6 +34244,7 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
     }, 2500);
   } catch (error) {
     if (isCurrentGitWorkflowRun(runId, tabId)) {
+      acceptGitWorkflowGenerationErrorCorrelation(error, tabId);
       if (isCurrentTabContext(tabContext)) clearRunIndicatorActivity();
       failGitWorkflow(error, "push", { tabId });
     }
@@ -34114,8 +34254,11 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
 async function loadGitWorkflowPr({ requireFresh = false, retries = 0, runId, tabId = activeTabId } = {}) {
   const workflow = gitWorkflowForTab(tabId, { create: false });
   const expectedRunId = runId ?? workflow?.runId;
+  const generationId = requireFresh ? String(workflow?.generationId || "").trim() : "";
+  if (requireFresh && !generationId) return;
   try {
-    const pr = await gitWorkflowRequest("/api/git-workflow/pr-description", { method: "GET", runId: expectedRunId, tabId });
+    const query = generationId ? `?generationId=${encodeURIComponent(generationId)}` : "";
+    const pr = await gitWorkflowRequest(`/api/git-workflow/pr-description${query}`, { method: "GET", runId: expectedRunId, tabId });
     if (!pr) return;
     const currentWorkflow = gitWorkflowForTab(tabId, { create: false });
     if (!currentWorkflow) return;
@@ -42991,6 +43134,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
   }
 
   const configuredModelKey = `${preferences.generation?.provider || ""}/${preferences.generation?.modelId || ""}`;
+  const configuredFallbackKey = `${preferences.generation?.fallback?.provider || ""}/${preferences.generation?.fallback?.modelId || ""}`;
   const activeModelKey = gitWorkflowSetupModelKey(currentState?.model);
   const modelKeys = new Set(models.map(gitWorkflowSetupModelKey));
   const initialModelKey = modelKeys.has(configuredModelKey)
@@ -42998,14 +43142,21 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
     : modelKeys.has(activeModelKey)
       ? activeModelKey
       : gitWorkflowSetupModelKey(models[0]);
+  const initialFallbackKey = modelKeys.has(configuredFallbackKey) && configuredFallbackKey !== initialModelKey ? configuredFallbackKey : "";
   const modelOptions = models.map((model) => ({
     value: gitWorkflowSetupModelKey(model),
     label: `${gitWorkflowSetupModelKey(model)}${model.name && model.name !== model.id ? ` · ${model.name}` : ""}`,
   }));
+  const fallbackModelOptions = (primaryKey) => [
+    { value: "", label: "No fallback" },
+    ...modelOptions.filter((option) => option.value !== primaryKey),
+  ];
 
   const controls = {
-    model: nativeSettingSelect("Git-writing model", initialModelKey, modelOptions, "Exact authenticated provider/model used for commit messages, branch names, and PR descriptions.", { label: "required", tone: "safety" }),
-    thinking: nativeSettingSelect("Reasoning effort", preferences.generation?.thinkingLevel || "low", SETTINGS_THINKING_OPTIONS, "Only levels supported by the selected model are shown. Low is recommended for routine commit messages.", { label: "required", tone: "safety" }),
+    model: nativeSettingSelect("Primary Git-writing model", initialModelKey, modelOptions, "Exact authenticated provider/model normally used for commit messages, branch names, and PR descriptions.", { label: "required", tone: "safety" }),
+    thinking: nativeSettingSelect("Primary reasoning effort", preferences.generation?.thinkingLevel || "low", SETTINGS_THINKING_OPTIONS, "Only levels supported by the primary model are shown. Low is recommended for routine commit messages.", { label: "required", tone: "safety" }),
+    fallbackModel: nativeSettingSelect("Fallback model", initialFallbackKey, fallbackModelOptions(initialModelKey), "Optional. After a final primary model-generation failure, Guided Git tries this different model once.", { label: "optional", tone: "browser" }),
+    fallbackThinking: nativeSettingSelect("Fallback reasoning effort", preferences.generation?.fallback?.thinkingLevel || "low", SETTINGS_THINKING_OPTIONS, "Uses only levels supported by the fallback model and is disabled when No fallback is selected.", { label: "optional", tone: "browser" }),
     language: nativeSettingSelect("Generated language", preferences.commit?.language || "en", [
       { value: "en", label: "English" },
       { value: "de", label: "German" },
@@ -43048,13 +43199,30 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
     const levels = thinkingLevelsForModel(controls.model.select.value);
     replaceNativeSettingSelectOptions(controls.thinking.select, levels, current);
   };
-  controls.model.select.addEventListener("change", syncThinkingLevels);
+  const syncFallbackThinkingLevels = () => {
+    const fallbackKey = controls.fallbackModel.select.value;
+    const current = controls.fallbackThinking.select.value || preferences.generation?.fallback?.thinkingLevel || "low";
+    const levels = fallbackKey ? thinkingLevelsForModel(fallbackKey) : [preferences.generation?.fallback?.thinkingLevel || "low"];
+    replaceNativeSettingSelectOptions(controls.fallbackThinking.select, levels, current);
+    controls.fallbackThinking.select.disabled = !fallbackKey;
+  };
+  const syncFallbackModelOptions = () => {
+    const current = controls.fallbackModel.select.value;
+    replaceNativeSettingSelectOptions(controls.fallbackModel.select, fallbackModelOptions(controls.model.select.value), current);
+    syncFallbackThinkingLevels();
+  };
+  controls.model.select.addEventListener("change", () => {
+    syncThinkingLevels();
+    syncFallbackModelOptions();
+  });
+  controls.fallbackModel.select.addEventListener("change", syncFallbackThinkingLevels);
   syncThinkingLevels();
+  syncFallbackModelOptions();
 
   const body = make("div", "native-settings-panel");
   body.append(
     nativeSettingsNote("Persistence", `Saved globally in ${data.path || "the Pi Web UI settings file"}. Credentials are never stored here.`),
-    nativeSettingsSection("Generation profile", "Required model and effort for generated Git text.", [controls.model, controls.thinking], { open: true }),
+    nativeSettingsSection("Generation profile", "Choose the required primary profile and an optional one-shot fallback with its own effort.", [controls.model, controls.thinking, controls.fallbackModel, controls.fallbackThinking], { open: true }),
     nativeSettingsSection("Commit style", "Conventional Commit output preferences.", [controls.language, controls.defaultVariant, controls.scope], { open: true }),
     nativeSettingsSection("Workflow safety", "Staging, review, delivery, and verification defaults; push and PR confirmation remain mandatory.", [controls.staging, controls.reviewProcess, controls.delivery, controls.verification], { open: true }),
   );
@@ -43067,7 +43235,11 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
     setNativeCommandError("");
     try {
       const selectedModel = models.find((model) => gitWorkflowSetupModelKey(model) === controls.model.select.value);
-      if (!selectedModel) throw new Error("Select an available Git-writing model.");
+      if (!selectedModel) throw new Error("Select an available primary Git-writing model.");
+      const selectedFallback = models.find((model) => gitWorkflowSetupModelKey(model) === controls.fallbackModel.select.value) || null;
+      if (selectedFallback && gitWorkflowSetupModelKey(selectedFallback) === gitWorkflowSetupModelKey(selectedModel)) {
+        throw new Error("Select a fallback model different from the primary model.");
+      }
       const response = await nativeCommandApi("/api/git-workflow/preferences", {
         method: "POST",
         body: {
@@ -43077,6 +43249,11 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
               modelId: selectedModel.id,
               thinkingLevel: controls.thinking.select.value,
               unavailablePolicy: "ask",
+              fallback: {
+                provider: selectedFallback?.provider || "",
+                modelId: selectedFallback?.id || "",
+                thinkingLevel: controls.fallbackThinking.select.value || preferences.generation?.fallback?.thinkingLevel || "low",
+              },
             },
             commit: {
               language: controls.language.select.value,
@@ -43094,7 +43271,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
       addTransientMessage({
         role: "native",
         title: "/git-workflow-setup",
-        content: `Guided Git setup saved for ${gitWorkflowSetupModelKey(selectedModel)} at ${controls.thinking.select.value} effort.`,
+        content: `Guided Git setup saved. Primary: ${gitWorkflowSetupModelKey(selectedModel)} at ${controls.thinking.select.value} effort. ${selectedFallback ? `Fallback: ${gitWorkflowSetupModelKey(selectedFallback)} at ${controls.fallbackThinking.select.value} effort (one attempt after a final primary generation failure).` : "Fallback: none."}`,
         level: "info",
       });
       closeNativeCommandDialog();
@@ -47878,6 +48055,7 @@ function handleEvent(event) {
   // the same run identity semantics as the foreground tab.
   if (event?.type === "agent_start") beginToolBoundaryRun(event);
   if (eventMayAffectSkillUsage(event)) trackSkillsFromEvent(event);
+  if (handleGitWorkflowFallbackLifecycleEvent(event)) return;
   if (!eventTargetsActiveTab(event)) {
     handleInactiveTabEvent(event);
     return;

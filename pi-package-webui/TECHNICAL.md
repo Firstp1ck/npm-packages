@@ -303,6 +303,14 @@ Only participant names or IDs, message text, ordering time, and truncation notic
 
 If an expected tag is absent, confirm that the agents used direct Intercom or native supervisor coordination in the active session branch. Generic child output and independent process logs do not become conversations.
 
+## Guided Git generation profiles
+
+Open **Common Pi Options → Guided Git Setup** or run `/git-workflow-setup` before using generated commit messages, branch names, or pull-request text. Choose the required primary model and its reasoning effort. You may also choose a different fallback model and a separate supported effort, or leave **No fallback** selected. The effort lists follow the capabilities reported for each selected model.
+
+A configured fallback is a strict one-retry policy: Guided Git lets Pi finish the primary model’s own retry lifecycle, then makes at most one fallback attempt after a final primary model-generation failure. The workflow output identifies the primary and configured fallback at startup and reports when generation continues with the fallback. Fallback status is restored when you return to the tab or its live event connection reconnects. Generated commit, branch, or PR text is treated as ready only after the correlated attempt finishes successfully. After successful generation or terminal failure, the tab’s model and reasoning effort are restored to the values it had before Guided Git generation began.
+
+Fallback applies only to model generation. Request validation failures, staged-content checks, busy-state rejection, user cancellation, Git command failures, and a stopped or failed Pi process do not trigger it. A dead Pi process cannot run the fallback; restart or reload the tab and start a new generation request after addressing the failure.
+
 ## Mobile layout
 
 On a phone, tap the current terminal name to open full-screen terminal navigation. Grouped terminals use their title as a dropdown for choosing one terminal or subagent view. Tap **More** to open secondary controls in a full-screen overlay. Git footer **Details** opens full-screen with refresh inside and a top `−` button. Hover-only tooltips stay hidden on touch controls. To reorder the **Control Deck**, tap **Edit**, move sections, then tap **Done**.

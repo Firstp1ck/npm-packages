@@ -1185,12 +1185,17 @@ function makeHttpError(statusCode, message) {
 }
 
 function sendError(res, statusCode, error) {
-  const message = statusCode >= 500 ? sanitizeError(error) : formatCliError(error);
+  const message = error?.gitWorkflowGeneration
+    ? "Guided Git generation failed after the configured model attempts."
+    : statusCode >= 500 ? sanitizeError(error) : formatCliError(error);
   const payload = { ok: false, error: message };
   const isThemeError = typeof error?.code === "string" && error.code.startsWith("THEME_");
   if (isThemeError) payload.code = error.code;
   if (isThemeError && error?.details && typeof error.details === "object") payload.details = error.details;
   if (error?.optionalFeatureInstall) payload.optionalFeatureInstall = error.optionalFeatureInstall;
+  if (error?.gitWorkflowGeneration && typeof error.gitWorkflowGeneration === "object") {
+    payload.gitWorkflowGeneration = error.gitWorkflowGeneration;
+  }
   sendJson(res, statusCode, payload);
 }
 
@@ -2890,6 +2895,7 @@ function requireGitWorkflowBoolean(value, key) {
 async function saveGitWorkflowPreferencesData(tab, body = {}) {
   const submitted = body.preferences && typeof body.preferences === "object" ? body.preferences : body;
   if (submitted.generation?.thinkingLevel !== undefined) requireGitWorkflowChoice(submitted.generation.thinkingLevel, "generation.thinkingLevel", GIT_WORKFLOW_THINKING_LEVELS);
+  if (submitted.generation?.fallback?.thinkingLevel !== undefined) requireGitWorkflowChoice(submitted.generation.fallback.thinkingLevel, "generation.fallback.thinkingLevel", GIT_WORKFLOW_THINKING_LEVELS);
   if (submitted.commit?.language !== undefined) requireGitWorkflowChoice(submitted.commit.language, "commit.language", GIT_WORKFLOW_LANGUAGES);
   if (submitted.commit?.defaultVariant !== undefined) requireGitWorkflowChoice(submitted.commit.defaultVariant, "commit.defaultVariant", GIT_WORKFLOW_DEFAULT_VARIANTS);
   if (submitted.commit?.scope !== undefined) requireGitWorkflowChoice(submitted.commit.scope, "commit.scope", GIT_WORKFLOW_SCOPE_POLICIES);
@@ -2910,6 +2916,19 @@ async function saveGitWorkflowPreferencesData(tab, body = {}) {
   const supportedLevels = supportedGitWorkflowThinkingLevels(model);
   if (!supportedLevels.includes(next.generation.thinkingLevel)) {
     throw makeHttpError(400, `${provider}/${modelId} does not support thinking level ${next.generation.thinkingLevel}`);
+  }
+
+  const fallbackProvider = String(next.generation.fallback?.provider || "").trim();
+  const fallbackModelId = String(next.generation.fallback?.modelId || "").trim();
+  if (!!fallbackProvider !== !!fallbackModelId) throw makeHttpError(400, "Select both a fallback provider and model, or clear both to disable fallback");
+  if (fallbackProvider && fallbackModelId) {
+    if (fallbackProvider === provider && fallbackModelId === modelId) throw makeHttpError(400, "The fallback model must be different from the primary Git-writing model");
+    const fallbackModel = models.find((candidate) => candidate.provider === fallbackProvider && candidate.id === fallbackModelId);
+    if (!fallbackModel) throw makeHttpError(400, `Selected fallback model is not currently available: ${fallbackProvider}/${fallbackModelId}`);
+    const fallbackSupportedLevels = supportedGitWorkflowThinkingLevels(fallbackModel);
+    if (!fallbackSupportedLevels.includes(next.generation.fallback.thinkingLevel)) {
+      throw makeHttpError(400, `${fallbackProvider}/${fallbackModelId} does not support fallback thinking level ${next.generation.fallback.thinkingLevel}`);
+    }
   }
 
   await writeGitWorkflowPreferences(next);
@@ -3095,27 +3114,79 @@ function gitWorkflowGenerationPrompt(kind, preferences) {
   }
 }
 
-async function restoreGitWorkflowGenerationProfile(tab) {
-  const restore = tab?.gitWorkflowGenerationRestore;
-  if (!restore) return;
-  tab.gitWorkflowGenerationRestore = null;
-  try {
-    if (!tab.rpc?.isRunning?.()) return;
-    if (restore.model?.provider && restore.model?.id) {
-      const modelResponse = await tab.rpc.send({ type: "set_model", provider: restore.model.provider, modelId: restore.model.id });
-      if (modelResponse.success === false) throw new Error(modelResponse.error || "Failed to restore model");
-    }
-    if (restore.thinkingLevel) {
-      const thinkingResponse = await setThinkingLevelForTab(tab, restore.thinkingLevel, { allowPending: false });
-      if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || "Failed to restore thinking level");
-    }
-    recordEvent({ type: "git_workflow_generation_profile_restored", tabId: tab.id, tabTitle: tab.title });
-  } catch (error) {
-    recordEvent({ type: "git_workflow_generation_profile_restore_failed", tabId: tab.id, tabTitle: tab.title, error: sanitizeError(error) });
-  }
+function boundedGitWorkflowGenerationError(message, fallback = "Guided Git generation failed") {
+  const text = typeof message === "string" ? message : fallback;
+  return text.replace(/[\r\n]+/g, " ").trim().slice(0, 240) || fallback;
 }
 
-async function createGitWorkflowMessageGeneration(tab) {
+function gitWorkflowGenerationCancellationError() {
+  const error = makeHttpError(409, "Guided Git generation was cancelled");
+  error.code = "GIT_WORKFLOW_CANCELLED";
+  return error;
+}
+
+function assertGitWorkflowGenerationOwnership(tab, record) {
+  if (tab.gitWorkflowGeneration !== record) throw new Error("Guided Git generation is no longer active");
+  if (record.cancelled) throw gitWorkflowGenerationCancellationError();
+}
+
+function attachGitWorkflowGenerationError(error, record) {
+  if (!error || typeof error !== "object" || !record?.generationId || !record.fallbackStarted || record.cancelled || record.processLost) return error;
+  error.gitWorkflowGeneration = {
+    generationId: record.generationId,
+    kind: record.kind,
+    fallbackUsed: record.fallbackStarted === true,
+    generation: publicGitWorkflowGenerationProfile(record.fallbackStarted && record.fallback ? record.fallback : record.primary),
+    primaryGeneration: publicGitWorkflowGenerationProfile(record.primary),
+  };
+  return error;
+}
+
+function gitWorkflowGenerationProfile(provider, modelId, thinkingLevel, models) {
+  const model = models.find((candidate) => candidate.provider === provider && candidate.id === modelId) || null;
+  return { provider, modelId, thinkingLevel, model };
+}
+
+function publicGitWorkflowGenerationProfile(profile) {
+  return {
+    provider: String(profile?.provider || ""),
+    modelId: String(profile?.modelId || ""),
+    thinkingLevel: String(profile?.thinkingLevel || ""),
+  };
+}
+
+async function restoreGitWorkflowGenerationProfile(tab, expectedRecord = tab?.gitWorkflowGeneration) {
+  const record = expectedRecord && tab?.gitWorkflowGeneration === expectedRecord ? expectedRecord : null;
+  const restore = record?.restore || tab?.gitWorkflowGenerationRestore;
+  if (!restore) return;
+  if (record?.restorePromise) return record.restorePromise;
+  const operation = (async () => {
+    try {
+      if (!tab.rpc?.isRunning?.()) return;
+      if (restore.model?.provider && restore.model?.id) {
+        const modelResponse = await tab.rpc.send({ type: "set_model", provider: restore.model.provider, modelId: restore.model.id });
+        if (modelResponse.success === false) throw new Error(modelResponse.error || "Failed to restore model");
+      }
+      if (restore.thinkingLevel) {
+        const thinkingResponse = await setThinkingLevelForTab(tab, restore.thinkingLevel, { allowPending: false });
+        if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || "Failed to restore thinking level");
+      }
+      recordEvent({ type: "git_workflow_generation_profile_restored", tabId: tab.id, tabTitle: tab.title });
+    } catch (error) {
+      console.error(`[guided-git] failed to restore generation profile for ${record?.generationId || tab.id}: ${sanitizeError(error)}`);
+      recordEvent({ type: "git_workflow_generation_profile_restore_failed", tabId: tab.id, tabTitle: tab.title, error: boundedGitWorkflowGenerationError("Guided Git could not restore the previous model profile.") });
+    } finally {
+      if (!record || tab.gitWorkflowGeneration === record) {
+        tab.gitWorkflowGeneration = null;
+        tab.gitWorkflowGenerationRestore = null;
+      }
+    }
+  })();
+  if (record) record.restorePromise = operation;
+  return operation;
+}
+
+async function createGitWorkflowMessageGeneration(tab, generationId) {
   // Keep generation dispatch backward-compatible for tabs whose cwd has not
   // become a repository yet; the Guided Git flow itself still verifies Git
   // state at its staging/review boundaries.
@@ -3123,68 +3194,256 @@ async function createGitWorkflowMessageGeneration(tab) {
   const cwd = gitWorkflowMessageCwd(root, tab.cwd);
   const paths = commitMessagePaths(cwd);
   return {
-    id: randomUUID(),
+    id: generationId,
     kind: "commit",
     root,
     cwd,
     createdAt: Date.now(),
     baseline: await readStableGitMessageArtifactPair(paths),
+    terminal: false,
+    successful: false,
   };
 }
 
-async function startGitWorkflowGeneration(tab, body = {}) {
-  if (tab.gitWorkflowGenerationRestore) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
-  // Browser state is untrusted. When it claims an approved content token,
-  // verify the exact current index again at this server action boundary.
-  await assertExpectedStagedContentHash(tab, body);
-  const preferences = await readGitWorkflowPreferences();
-  if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
-  const kind = String(body.kind || "").trim();
-  const message = gitWorkflowGenerationPrompt(kind, preferences);
+function emitGitWorkflowFallbackLifecycle(tab, record, phase) {
+  const event = {
+    type: `webui_git_workflow_generation_fallback_${phase}`,
+    tabId: tab.id,
+    tabTitle: tab.title,
+    generationId: record.generationId,
+    kind: record.kind,
+    generation: publicGitWorkflowGenerationProfile(record.fallback),
+    primaryGeneration: publicGitWorkflowGenerationProfile(record.primary),
+    ...(phase === "started"
+      ? { reason: boundedGitWorkflowGenerationError("The primary Git-writing model ended with an error.") }
+      : { error: boundedGitWorkflowGenerationError("The fallback Git-writing model ended with an error.") }),
+  };
+  const lifecycle = tab.gitWorkflowFallbackLifecycle;
+  if (lifecycle?.generationId === record.generationId) {
+    lifecycle.events = [...lifecycle.events.filter((item) => item.type !== event.type), event].slice(-2);
+  }
+  broadcastTabEvent(tab, event);
+}
 
-  const state = await currentSessionState(tab);
-  if (stateIsBusyForSettings(state)) throw makeHttpError(409, "Wait for the current agent run to finish before generating Git text");
-  const models = await availableGitWorkflowModels(tab);
-  const selectedModel = models.find((model) => model.provider === preferences.generation.provider && model.id === preferences.generation.modelId);
-  if (!selectedModel) throw makeHttpError(409, `Configured Git-writing model is unavailable: ${preferences.generation.provider}/${preferences.generation.modelId}. Open Guided Git Setup to choose another model.`);
-  const supportedLevels = supportedGitWorkflowThinkingLevels(selectedModel);
-  if (!supportedLevels.includes(preferences.generation.thinkingLevel)) {
-    throw makeHttpError(409, `Configured thinking level ${preferences.generation.thinkingLevel} is unavailable for ${gitWorkflowModelKey(selectedModel)}. Open Guided Git Setup to update it.`);
+function replayGitWorkflowFallbackLifecycle(tab, client) {
+  const lifecycle = tab.gitWorkflowFallbackLifecycle;
+  for (const event of lifecycle?.events || []) sendSseToClient(client, { ...event, replayed: true });
+}
+
+async function finishGitWorkflowGeneration(tab, record, { successful }) {
+  if (tab.gitWorkflowGeneration !== record || record.finishing) return;
+  record.finishing = true;
+  const artifactGeneration = record.artifactGeneration;
+  if (artifactGeneration && tab.gitWorkflowArtifactGeneration === artifactGeneration) {
+    artifactGeneration.terminal = true;
+    artifactGeneration.successful = successful === true && !record.cancelled;
+  }
+  if (!successful && record.messageGeneration && tab.gitWorkflowMessageGeneration?.id === record.messageGeneration.id) {
+    tab.gitWorkflowMessageGeneration = record.previousMessageGeneration;
+  }
+  markTabIdle(tab);
+  await restoreGitWorkflowGenerationProfile(tab, record);
+}
+
+async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attempt) {
+  assertGitWorkflowGenerationOwnership(tab, record);
+  if (!tab.rpc?.isRunning?.()) throw new Error("Pi RPC process is not running");
+  if (!profile.model) throw new Error(`Configured ${attempt} Git-writing model is unavailable: ${profile.provider}/${profile.modelId}`);
+  if (!supportedGitWorkflowThinkingLevels(profile.model).includes(profile.thinkingLevel)) {
+    throw new Error(`Configured ${attempt} thinking level ${profile.thinkingLevel} is unavailable for ${profile.provider}/${profile.modelId}`);
   }
 
-  const restore = { model: state.model || null, thinkingLevel: state.thinkingLevel || "off" };
-  const previousMessageGeneration = tab.gitWorkflowMessageGeneration || null;
-  const messageGeneration = kind === "commit" ? await createGitWorkflowMessageGeneration(tab) : null;
-  tab.gitWorkflowGenerationRestore = restore;
-  if (messageGeneration) tab.gitWorkflowMessageGeneration = messageGeneration;
-  try {
-    if (gitWorkflowModelKey(state.model) !== gitWorkflowModelKey(selectedModel)) {
-      const modelResponse = await tab.rpc.send({ type: "set_model", provider: selectedModel.provider, modelId: selectedModel.id });
-      if (modelResponse.success === false) throw new Error(modelResponse.error || `Failed to select ${gitWorkflowModelKey(selectedModel)}`);
-    }
-    const thinkingResponse = await setThinkingLevelForTab(tab, preferences.generation.thinkingLevel, { allowPending: false });
-    if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || `Failed to select thinking level ${preferences.generation.thinkingLevel}`);
+  record.attempt = attempt;
+  record.attemptRunStarted = false;
+  record.promptAccepted = false;
+  record.pendingSettlement = null;
+  if (record.currentModelKey !== `${profile.provider}/${profile.modelId}`) {
+    const modelResponse = await tab.rpc.send({ type: "set_model", provider: profile.provider, modelId: profile.modelId });
+    assertGitWorkflowGenerationOwnership(tab, record);
+    if (modelResponse.success === false) throw new Error(modelResponse.error || `Failed to select ${profile.provider}/${profile.modelId}`);
+    record.currentModelKey = `${profile.provider}/${profile.modelId}`;
+  }
+  const thinkingResponse = await setThinkingLevelForTab(tab, profile.thinkingLevel, { allowPending: false });
+  assertGitWorkflowGenerationOwnership(tab, record);
+  if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || `Failed to select thinking level ${profile.thinkingLevel}`);
 
-    markTabWorking(tab);
-    const response = await tab.rpc.send({ type: "prompt", message });
-    if (response.success === false) throw new Error(response.error || "Guided Git generation prompt was rejected");
-    return {
-      accepted: true,
-      kind,
-      message,
-      generationId: messageGeneration?.id || "",
-      generation: {
-        provider: selectedModel.provider,
-        modelId: selectedModel.id,
-        thinkingLevel: preferences.generation.thinkingLevel,
-      },
-    };
+  assertGitWorkflowGenerationOwnership(tab, record);
+  markTabWorking(tab);
+  const response = await tab.rpc.send({ type: "prompt", message: record.message });
+  assertGitWorkflowGenerationOwnership(tab, record);
+  if (response.success === false) throw new Error(response.error || "Guided Git generation prompt was rejected");
+  record.promptAccepted = true;
+  const pendingSettlement = record.pendingSettlement;
+  if (pendingSettlement?.attempt === attempt) {
+    record.pendingSettlement = null;
+    void settleGitWorkflowGeneration(tab, record, pendingSettlement);
+  }
+  return {
+    accepted: true,
+    kind: record.kind,
+    message: record.message,
+    generationId: record.generationId,
+    generation: publicGitWorkflowGenerationProfile(profile),
+    fallbackUsed: attempt === "fallback",
+    primaryGeneration: publicGitWorkflowGenerationProfile(record.primary),
+  };
+}
+
+async function startGitWorkflowFallback(tab, record, primaryError) {
+  if (tab.gitWorkflowGeneration !== record || record.fallbackStarted || !record.fallback) return null;
+  if (record.cancelled || !tab.rpc?.isRunning?.()) return null;
+  record.fallbackStarted = true;
+  record.attempt = "fallback";
+  record.attemptRunStarted = false;
+  record.promptAccepted = false;
+  console.error(`[guided-git] primary generation ${record.generationId} failed; starting fallback: ${sanitizeError(primaryError)}`);
+  emitGitWorkflowFallbackLifecycle(tab, record, "started");
+  try {
+    return await dispatchGitWorkflowGenerationAttempt(tab, record, record.fallback, "fallback");
   } catch (error) {
-    if (messageGeneration && tab.gitWorkflowMessageGeneration?.id === messageGeneration.id) {
-      tab.gitWorkflowMessageGeneration = previousMessageGeneration;
+    if (!record.cancelled && tab.gitWorkflowGeneration === record) {
+      console.error(`[guided-git] fallback generation ${record.generationId} failed: ${sanitizeError(error)}`);
+      emitGitWorkflowFallbackLifecycle(tab, record, "failed");
     }
-    markTabIdle(tab);
-    await restoreGitWorkflowGenerationProfile(tab);
+    await finishGitWorkflowGeneration(tab, record, { successful: false });
+    throw error;
+  }
+}
+
+async function settleGitWorkflowGeneration(tab, record, { failed, cancelled }) {
+  if (tab.gitWorkflowGeneration !== record || record.finishing) return;
+  if (cancelled) record.cancelled = true;
+  if (record.attempt === "primary" && failed && !record.cancelled && record.fallback) {
+    try {
+      await startGitWorkflowFallback(tab, record, "The primary Git-writing model ended with an error");
+    } catch {
+      // startGitWorkflowFallback emitted the bounded terminal lifecycle event.
+    }
+    return;
+  }
+  if (record.attempt === "fallback" && failed) {
+    emitGitWorkflowFallbackLifecycle(tab, record, "failed");
+  }
+  await finishGitWorkflowGeneration(tab, record, { successful: !failed && !record.cancelled });
+}
+
+function consumeGitWorkflowGenerationEvent(tab, event, { finalError = false } = {}) {
+  const record = tab.gitWorkflowGeneration;
+  if (!record || record.finishing) return;
+  if ((event?.type === "agent_end" || event?.type === "agent_settled") && event.aborted === true) record.cancelled = true;
+  if (event?.type === "agent_start") {
+    record.attemptRunStarted = true;
+    return;
+  }
+  if (event?.type !== "agent_settled" || !record.attemptRunStarted) return;
+  record.attemptRunStarted = false;
+  const settlement = { attempt: record.attempt, failed: finalError, cancelled: record.cancelled };
+  if (!record.promptAccepted) {
+    record.pendingSettlement = settlement;
+    return;
+  }
+  void settleGitWorkflowGeneration(tab, record, settlement);
+}
+
+async function startGitWorkflowGeneration(tab, body = {}) {
+  if (tab.gitWorkflowGeneration || tab.gitWorkflowGenerationRestore) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
+  const kind = String(body.kind || "").trim();
+  if (!new Set(["commit", "branch", "pr"]).has(kind)) throw makeHttpError(400, "generation kind must be commit, branch, or pr");
+
+  // Reserve the tab synchronously before the first await. All preflight and
+  // profile transitions retain this exact object as their ownership token.
+  const record = {
+    generationId: randomUUID(),
+    kind,
+    message: "",
+    restore: null,
+    previousMessageGeneration: tab.gitWorkflowMessageGeneration || null,
+    messageGeneration: null,
+    artifactGeneration: null,
+    primary: null,
+    fallback: null,
+    fallbackStarted: false,
+    cancelled: false,
+    finishing: false,
+    attempt: "primary",
+    attemptRunStarted: false,
+    promptAccepted: false,
+    pendingSettlement: null,
+    currentModelKey: "",
+  };
+  tab.gitWorkflowGeneration = record;
+  tab.gitWorkflowFallbackLifecycle = { generationId: record.generationId, kind, events: [] };
+
+  try {
+    // Browser state is untrusted. When it claims an approved content token,
+    // verify the exact current index again at this server action boundary.
+    await assertExpectedStagedContentHash(tab, body);
+    assertGitWorkflowGenerationOwnership(tab, record);
+    const preferences = await readGitWorkflowPreferences();
+    assertGitWorkflowGenerationOwnership(tab, record);
+    if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
+    record.message = gitWorkflowGenerationPrompt(kind, preferences);
+
+    const state = await currentSessionState(tab);
+    assertGitWorkflowGenerationOwnership(tab, record);
+    if (stateIsBusyForSettings(state)) throw makeHttpError(409, "Wait for the current agent run to finish before generating Git text");
+    const models = await availableGitWorkflowModels(tab);
+    assertGitWorkflowGenerationOwnership(tab, record);
+    record.primary = gitWorkflowGenerationProfile(
+      preferences.generation.provider,
+      preferences.generation.modelId,
+      preferences.generation.thinkingLevel,
+      models,
+    );
+    const fallbackConfigured = !!preferences.generation.fallback?.provider
+      && !!preferences.generation.fallback?.modelId
+      && (preferences.generation.fallback.provider !== preferences.generation.provider
+        || preferences.generation.fallback.modelId !== preferences.generation.modelId);
+    record.fallback = fallbackConfigured
+      ? gitWorkflowGenerationProfile(
+          preferences.generation.fallback.provider,
+          preferences.generation.fallback.modelId,
+          preferences.generation.fallback.thinkingLevel,
+          models,
+        )
+      : null;
+
+    record.restore = { model: state.model || null, thinkingLevel: state.thinkingLevel || "off" };
+    record.currentModelKey = gitWorkflowModelKey(state.model);
+    tab.gitWorkflowGenerationRestore = record.restore;
+    record.messageGeneration = kind === "commit" ? await createGitWorkflowMessageGeneration(tab, record.generationId) : null;
+    assertGitWorkflowGenerationOwnership(tab, record);
+    record.artifactGeneration = record.messageGeneration || {
+      id: record.generationId,
+      kind,
+      cwd: path.resolve(tab.cwd),
+      createdAt: Date.now(),
+      terminal: false,
+      successful: false,
+    };
+    tab.gitWorkflowArtifactGeneration = record.artifactGeneration;
+    if (record.messageGeneration) tab.gitWorkflowMessageGeneration = record.messageGeneration;
+
+    try {
+      return await dispatchGitWorkflowGenerationAttempt(tab, record, record.primary, "primary");
+    } catch (primaryError) {
+      markTabIdle(tab);
+      if (record.fallback && !record.cancelled && tab.rpc?.isRunning?.()) {
+        try {
+          const fallbackResult = await startGitWorkflowFallback(tab, record, primaryError);
+          if (fallbackResult) return fallbackResult;
+        } catch (fallbackError) {
+          throw attachGitWorkflowGenerationError(fallbackError, record);
+        }
+      }
+      await finishGitWorkflowGeneration(tab, record, { successful: false });
+      throw attachGitWorkflowGenerationError(primaryError, record);
+    }
+  } catch (error) {
+    if (tab.gitWorkflowGeneration === record && !record.finishing) {
+      if (record.restore) await finishGitWorkflowGeneration(tab, record, { successful: false });
+      else tab.gitWorkflowGeneration = null;
+    }
     throw error;
   }
 }
@@ -7404,7 +7663,17 @@ function commitMessagePaths(baseDir) {
   };
 }
 
-async function readGitWorkflowBranchName(cwd) {
+function assertGitWorkflowArtifactGenerationReady(generationId, generation, kind) {
+  if (!generationId) return;
+  if (!generation || generation.id !== generationId || generation.kind !== kind) {
+    throw new Error(`This ${kind} generation is no longer active. Regenerate the artifact.`);
+  }
+  if (!generation.terminal) throw new Error(`The correlated ${kind} generation is still running.`);
+  if (!generation.successful) throw new Error(`The correlated ${kind} generation did not finish successfully. Regenerate the artifact.`);
+}
+
+async function readGitWorkflowBranchName(cwd, { generationId = "", generation = null } = {}) {
+  assertGitWorkflowArtifactGenerationReady(generationId, generation, "branch");
   const root = await getGitRoot(cwd);
   const messageCwd = gitWorkflowMessageCwd(root, cwd);
   const { branchPath } = commitMessagePaths(messageCwd);
@@ -7446,6 +7715,12 @@ async function readGitWorkflowMessages(cwd, { generationId = "", generation = nu
   const paths = commitMessagePaths(messageCwd);
   if (generationId && (!generation || generation.id !== generationId || generation.kind !== "commit" || generation.cwd !== messageCwd)) {
     return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "This commit-message generation is no longer active. Regenerate the message files.", { expired: true });
+  }
+  if (generationId && !generation.terminal) {
+    return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "The correlated commit-message generation is still running.");
+  }
+  if (generationId && !generation.successful) {
+    return gitWorkflowMessagePendingPayload(root, messageCwd, paths, generationId, "The correlated commit-message generation did not finish successfully. Regenerate the message files.", { expired: true });
   }
   try {
     let pair = await readStableGitMessageArtifactPair(paths);
@@ -8189,7 +8464,8 @@ function prDescriptionPath(root, branch) {
   return { base, prPath: target };
 }
 
-async function readGitWorkflowPrDescription(cwd) {
+async function readGitWorkflowPrDescription(cwd, { generationId = "", generation = null } = {}) {
+  assertGitWorkflowArtifactGenerationReady(generationId, generation, "pr");
   const root = await getGitRoot(cwd);
   const branch = await currentGitBranch(root);
   const { prPath } = prDescriptionPath(root, branch);
@@ -8346,14 +8622,18 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
       case "/api/git-workflow/message": {
         const generationId = String(body.generationId || "").trim();
         if (generationId && !tab) throw new Error("Fresh commit-message lookup requires a Web UI tab");
-        return { ok: true, data: await readGitWorkflowMessages(cwd, { generationId, generation: tab?.gitWorkflowMessageGeneration || null }) };
+        return { ok: true, data: await readGitWorkflowMessages(cwd, { generationId, generation: tab?.gitWorkflowArtifactGeneration || null }) };
       }
       case "/api/git-workflow/default-commit-message":
         return { ok: true, data: await readGitWorkflowDefaultCommitMessage(cwd) };
-      case "/api/git-workflow/branch-name":
-        return { ok: true, data: await readGitWorkflowBranchName(cwd) };
-      case "/api/git-workflow/pr-description":
-        return { ok: true, data: await readGitWorkflowPrDescription(cwd) };
+      case "/api/git-workflow/branch-name": {
+        const generationId = String(body.generationId || "").trim();
+        return { ok: true, data: await readGitWorkflowBranchName(cwd, { generationId, generation: tab?.gitWorkflowArtifactGeneration || null }) };
+      }
+      case "/api/git-workflow/pr-description": {
+        const generationId = String(body.generationId || "").trim();
+        return { ok: true, data: await readGitWorkflowPrDescription(cwd, { generationId, generation: tab?.gitWorkflowArtifactGeneration || null }) };
+      }
       case "/api/git-workflow/init":
         await ensureOutsideGitRepository(cwd);
         return gitMutationPayload(await runGitMutationCommand(["init"], { cwd }));
@@ -8486,7 +8766,9 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
         return payload;
       }
       case "/api/git-workflow/cancel": {
-        const cancelled = !!activeGitWorkflowProcess;
+        const generation = tab?.gitWorkflowGeneration || null;
+        if (generation) generation.cancelled = true;
+        const cancelled = !!activeGitWorkflowProcess || !!generation;
         if (activeGitWorkflowProcess) activeGitWorkflowProcess.cancel();
         return { ok: true, data: { cancelled } };
       }
@@ -10997,9 +11279,16 @@ function attachRpcToTab(tab, rpc) {
   tab.rpcUnsubscribe = rpc.onEvent((rawEvent) => {
     const event = tab.thinkingStreamRecovery.ingest(rawEvent);
     if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event) || consumeSessionSummaryRpcEvent(tab, event)) return;
+    const gitWorkflowFinalError = event?.type === "agent_settled" && tab.pendingTurnFailure === true;
     updateTabActivityFromEvent(tab, event);
     let scopedEvent = eventForTabClients(tab, event);
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
+      if (tab.gitWorkflowGeneration) tab.gitWorkflowGeneration.processLost = true;
+      if (tab.gitWorkflowArtifactGeneration) {
+        tab.gitWorkflowArtifactGeneration.terminal = true;
+        tab.gitWorkflowArtifactGeneration.successful = false;
+      }
+      tab.gitWorkflowGeneration = null;
       tab.gitWorkflowGenerationRestore = null;
       tab.gitWorkflowMessageGeneration = null;
       clearPendingExtensionUiRequests(tab);
@@ -11018,7 +11307,7 @@ function attachRpcToTab(tab, rpc) {
     recordEvent(scopedEvent);
     for (const client of tab.sseClients) sendSseToClient(client, scopedEvent);
     if (event?.type === "compaction_end") void flushCompactionQueue(tab, event);
-    if (event?.type === "agent_settled") void restoreGitWorkflowGenerationProfile(tab);
+    consumeGitWorkflowGenerationEvent(tab, event, { finalError: gitWorkflowFinalError });
   });
 }
 
@@ -11036,8 +11325,11 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     lastState: null,
     pendingThinkingLevel: undefined,
     thinkingStreamRecovery: new ThinkingStreamRecovery(),
+    gitWorkflowGeneration: null,
     gitWorkflowGenerationRestore: null,
     gitWorkflowMessageGeneration: null,
+    gitWorkflowArtifactGeneration: null,
+    gitWorkflowFallbackLifecycle: null,
     activity: createTabActivity(createdAt),
     pendingExtensionUiRequests: new Map(),
     extensionStatuses: new Map(),
@@ -16150,6 +16442,7 @@ const server = createServer(async (req, res) => {
       }
       replayExtensionStatuses(tab, client);
       replayExtensionWidgets(tab, client);
+      replayGitWorkflowFallbackLifecycle(tab, client);
       if (tab.sessionSummary) {
         sendSseToClient(client, {
           type: "webui_session_summary",
