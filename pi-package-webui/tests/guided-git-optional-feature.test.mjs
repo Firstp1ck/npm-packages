@@ -26,4 +26,6 @@ test("Optional Features installs the Guided Git extension that bundles its promp
   assert.match(app, /id: "gitWorkflow"[\s\S]*packageName: "@firstpick\/pi-extension-git-guided-workflow"[\s\S]*capabilityLabel: "\/git-guided-workflow"/u);
   assert.match(app, /\["git-guided-workflow", "gitWorkflow"\][\s\S]*\["git-staged-msg", "gitWorkflow"\]/u);
   assert.match(app, /optionalFeatureAvailability\.gitWorkflow = hasAvailableCommand\("git-guided-workflow"\) \|\| hasAvailableCommand\("git-staged-msg"\);/u);
+  assert.match(app, /case "git-workflow": return true;/u, "the browser-owned setup must not depend on a removed prompt command");
+  assert.match(app, /case "git-workflow": return openNativeGitWorkflowSetupDialog\(\);/u, "Setup must open the Guided Git workflow dialog");
 });

@@ -41434,7 +41434,7 @@ function renderOptionalFeatureSection(section, features) {
 
 function optionalFeatureSetupAvailable(feature) {
   switch (feature?.setup) {
-    case "git-workflow": return hasAvailableCommand("git-workflow-setup");
+    case "git-workflow": return true;
     case "workflows": return hasLoadedRpcCommand("workflow-setup");
     case "safety-guard": return hasAvailableCommand("safety-guard-setup");
     case "skills": return hasLoadedRpcCommand("skills");
