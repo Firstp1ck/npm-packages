@@ -18,7 +18,7 @@ Pi Web UI keeps the normal Pi agent experience while giving you more room to man
 | Area | Highlights |
 | --- | --- |
 | **Sessions and workspaces** | Run several isolated Pi sessions, resume prior work, switch projects, preserve per-tab drafts, add another tab directly from the tab strip, and create branch worktrees. |
-| **Live agent work** | Follow streaming Markdown with syntax highlighting for code blocks, thinking, tool output, queues, todo progress, managed agent runs, and direct agent-to-agent conversations without leaving the browser. |
+| **Live agent work** | Follow streaming Markdown with syntax highlighting for code blocks, grouped consecutive thinking, tool output, queues, todo progress, managed agent runs, and direct agent-to-agent conversations without leaving the browser. |
 | **Models and controls** | Change models and thinking effort, manage scoped models, configure tools and skills, and use the command palette. |
 | **Files and prompts** | Upload or paste files and images, edit text attachments, use slash-command suggestions, browse project files, and reference project paths with `@`. |
 | **Git workflows** | Inspect changes, switch branches, review diffs, stage work, generate commit messages with an optional one-shot fallback model, push, and prepare pull requests through guided steps. |
@@ -186,7 +186,7 @@ Launch detected development servers, tests, builds, scripts, and project-defined
 
 ![Pi Web UI guided Git workflow showing staged changes, generated commit messages, and PR controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_GitWorkflow_v0.4.8.png)
 
-**Optional features needed:** `@firstpick/pi-extension-git-guided-workflow` provides the preferred `/git-guided-workflow` launcher. `@firstpick/pi-prompts-git-pr` provides generated commit messages, branch names, and pull-request content. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate.
+**Optional features needed:** `@firstpick/pi-extension-git-guided-workflow` provides the preferred `/git-guided-workflow` launcher and bundles `@firstpick/pi-prompts-git-pr` for generated commit messages, branch names, and pull-request content. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate. The Optional features panel installs and audits the Guided Git extension as one complete feature.
 
 Run `/git-guided-workflow` in the browser composer or use the **Guided Git workflow** button. The extension starts the workflow in the originating tab without sending a repository path, diff, or Git data in its activation request. Existing prompt-only installations retain a temporary compatibility launcher, but installing the workflow extension is the supported path.
 

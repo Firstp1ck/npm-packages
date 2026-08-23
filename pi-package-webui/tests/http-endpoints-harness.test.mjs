@@ -1316,6 +1316,9 @@ try {
   const optionalFeatures = await request("127.0.0.1", "/api/optional-features");
   assert.equal(optionalFeatures.status, 200, "optional feature status should load");
   assert.equal(optionalFeatures.body?.data?.features?.length, 20, "the explicit server catalog should expose every allowlisted feature");
+  const guidedGitFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "gitWorkflow");
+  assert.equal(guidedGitFeature?.packageName, "@firstpick/pi-extension-git-guided-workflow", "Optional Features must install the extension that bundles the prompt companion");
+  assert.equal(guidedGitFeature?.expectedSpec, "^0.1.0");
   const aurReviewFeature = optionalFeatures.body?.data?.features?.find((feature) => feature.featureId === "aurReview");
   assert.equal(aurReviewFeature?.expectedSpec, "^0.1.1", "status should expose the catalog-owned compatibility spec");
   assert.equal(aurReviewFeature?.installed, true, "workspace discovery should find the local pi-extension-aur-review sibling without an npm dependency");

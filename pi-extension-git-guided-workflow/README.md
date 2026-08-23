@@ -34,7 +34,7 @@ In Pi's native terminal interface:
 3. Review the exact message and staged summary, then confirm the commit.
 4. Push to the shown destination, or finish with the commit kept locally.
 
-In a compatible WebUI, the same command asks that WebUI to open its Guided Git workflow for the originating tab. The browser flow keeps its existing staging, generation, commit, push, and optional pull-request controls. Generated commit, branch, and pull-request text in that browser flow still requires `@firstpick/pi-prompts-git-pr`.
+In a compatible WebUI, the same command asks that WebUI to open its Guided Git workflow for the originating tab. The browser flow keeps its existing staging, generation, commit, push, and optional pull-request controls. This package bundles and loads `@firstpick/pi-prompts-git-pr`, which provides the browser flow's generated commit, branch, and pull-request text.
 
 Every Git mutation asks for confirmation. You can choose **Finish** without pushing in the native flow.
 

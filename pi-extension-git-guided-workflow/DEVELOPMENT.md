@@ -41,7 +41,7 @@ RPC activation calls `ctx.ui.setStatus(WEBUI_START_STATUS_KEY, payload)` and the
 
 The common idle guard runs before either supported surface. Busy sessions or sessions with pending messages emit no activation and enter no native workflow. RPC activation must never run Git, call a model, open a TUI component, edit a message, confirm a mutation, commit, or push.
 
-The browser workflow remains implemented by `@firstpick/pi-package-webui`. Generated browser commit, branch, and PR text remains provided by the separate prompt-only `@firstpick/pi-prompts-git-pr` package.
+The browser workflow remains implemented by `@firstpick/pi-package-webui`. Generated browser commit, branch, and PR text is provided by the prompt-only `@firstpick/pi-prompts-git-pr` dependency. The dependency is bundled into this package and its `prompts` directory is included through the Pi manifest; do not copy those prompt files into the extension source.
 
 ## Native state and safety contracts
 
@@ -101,6 +101,6 @@ git diff --check -- pi-extension-git-guided-workflow
 
 ## Package maintenance
 
-The npm tarball includes the extension entry point, pure core, user documentation, contributor guide, and license. Test files are intentionally excluded. The package has Pi API/TUI peer dependencies and no runtime dependency on the Git/PR prompt package.
+The npm tarball includes the extension entry point, pure core, user documentation, contributor guide, license, and bundled `@firstpick/pi-prompts-git-pr` dependency. Test files are intentionally excluded. Keep the prompt package in `dependencies` and `bundledDependencies`, and keep its `node_modules/@firstpick/pi-prompts-git-pr/prompts` path in the Pi manifest so one extension install both installs and registers the prompt resources.
 
 Keep user-visible behavior in README and TECHNICAL. Keep schemas, transport lifecycle, source seams, algorithms, tests, and package maintenance details in this contributor guide.

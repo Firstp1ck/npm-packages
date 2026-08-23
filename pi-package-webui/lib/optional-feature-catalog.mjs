@@ -2,7 +2,7 @@ const entries = [
   ["bangCommandAutocomplete", "@firstpick/pi-extension-bang-command-autocomplete", "^0.2.2"],
   ["fishUserBash", "@firstpick/pi-extension-fish-user-bash", "^0.2.2"],
   ["btwCommand", "@firstpick/pi-extension-btw", "^0.1.4"],
-  ["gitWorkflow", "@firstpick/pi-prompts-git-pr", "^0.1.5"],
+  ["gitWorkflow", "@firstpick/pi-extension-git-guided-workflow", "^0.1.0"],
   ["releaseNpm", "@firstpick/pi-extension-release-npm", "^0.4.4"],
   ["releaseAur", "@firstpick/pi-extension-release-aur", "^0.1.8"],
   ["aurReview", "@firstpick/pi-extension-aur-review", "^0.1.1"],

@@ -12,7 +12,7 @@ Advanced user guidance for the Pi TUI workflow, WebUI activation, safety checks,
 - A normal, non-bare Git worktree on an attached branch for native Git actions
 - A compatible WebUI RPC session for browser activation
 
-The WebUI's generated commit, branch, and pull-request text continues to require `@firstpick/pi-prompts-git-pr`. This extension does not copy or replace that prompt package.
+The package bundles `@firstpick/pi-prompts-git-pr` and exposes its prompt templates through the extension package manifest. Installing this extension therefore provides the generated commit, branch, and pull-request commands used by WebUI without a second Pi package installation.
 
 ## Command and surfaces
 
@@ -94,7 +94,7 @@ A push timeout, connection loss, or other failed push can leave the remote resul
 
 Confirm that the WebUI supports extension status requests, the command is loaded in the originating tab, and Pi is idle with no queued messages. Restart Pi and refresh the WebUI after installing or updating the extension. A browser disconnect can miss the one-shot request; the extension intentionally does not replay it later.
 
-If browser generation controls report missing commands, install or update `@firstpick/pi-prompts-git-pr`. That package remains separate from the workflow launcher.
+If browser generation controls report missing commands, update or reinstall this extension and reload the Pi tab. The bundled `@firstpick/pi-prompts-git-pr` resources should provide `/git-staged-msg`, `/git-branch-name`, and `/pr`; a separately installed copy is not required.
 
 ### The command says the repository is unsupported
 

@@ -2,6 +2,42 @@ const DEFAULT_SURFACE_SELECTOR = "[data-transcript-surface], .markdown-body, .co
 const DESTRUCTIVE_KINDS = new Set(["reconcile", "destructive", "authoritative"]);
 const MUTATION_LOG_LIMIT = 80;
 
+function groupableThinkingText(message) {
+  if (message?.role !== "thinking") return null;
+  if (typeof message.thinking === "string") return message.thinking;
+  return typeof message.content === "string" ? message.content : null;
+}
+
+export function groupConsecutiveThinkingMessages(messages) {
+  const grouped = [];
+  let pending = [];
+
+  const flush = () => {
+    if (pending.length === 1) grouped.push(pending[0]);
+    else if (pending.length > 1) {
+      const first = pending[0];
+      const thinking = pending.map(groupableThinkingText).join("\n\n");
+      grouped.push({
+        ...first,
+        content: thinking,
+        thinking,
+        thinkingSegmentCount: pending.length,
+      });
+    }
+    pending = [];
+  };
+
+  for (const message of messages || []) {
+    if (groupableThinkingText(message) !== null) pending.push(message);
+    else {
+      flush();
+      grouped.push(message);
+    }
+  }
+  flush();
+  return grouped;
+}
+
 function normalizedKey(value, fallback = "") {
   const key = String(value || "").trim();
   return key || fallback;

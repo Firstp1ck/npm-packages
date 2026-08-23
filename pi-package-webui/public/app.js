@@ -8,7 +8,7 @@ import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
-import { createTranscriptRenderer } from "./transcript-renderer.mjs";
+import { createTranscriptRenderer, groupConsecutiveThinkingMessages } from "./transcript-renderer.mjs";
 import { createStreamDerivedOutputState } from "./stream-derived-output.mjs";
 import { advanceStreamingMarkdownTail } from "./stream-markdown-tail.mjs";
 import { createLatestWinsRenderScheduler } from "./stream-render-scheduler.mjs";
@@ -2826,7 +2826,7 @@ const OPTIONAL_FEATURES = [
     label: "Guided Git workflow",
     packageName: "@firstpick/pi-extension-git-guided-workflow",
     capabilityLabel: "/git-guided-workflow",
-    description: "Preferred cross-surface launcher. Browser generation also requires @firstpick/pi-prompts-git-pr.",
+    description: "Cross-surface launcher with bundled commit, branch, and pull-request prompt templates.",
     setup: "git-workflow",
   },
   {
@@ -37088,11 +37088,8 @@ function assistantFailureDisplayMessage(message, base) {
 function assistantDisplayMessages(message) {
   if (message?.role !== "assistant") return [message];
   const failure = assistantFailureDisplayMessage(message, { timestamp: message.timestamp });
-  if (failure) {
-    const rest = assistantDisplayMessagesWithoutFailure({ ...message, stopReason: undefined });
-    return [...rest, failure];
-  }
-  return assistantDisplayMessagesWithoutFailure(message);
+  const displayMessages = assistantDisplayMessagesWithoutFailure(failure ? { ...message, stopReason: undefined } : message);
+  return groupConsecutiveThinkingMessages(failure ? [...displayMessages, failure] : displayMessages);
 }
 
 function assistantDisplayMessagesWithoutFailure(message) {

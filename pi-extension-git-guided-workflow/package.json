@@ -24,12 +24,21 @@
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "prompts": [
+      "./node_modules/@firstpick/pi-prompts-git-pr/prompts"
     ]
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
     "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check src/core.ts"
   },
+  "dependencies": {
+    "@firstpick/pi-prompts-git-pr": "^0.1.6"
+  },
+  "bundledDependencies": [
+    "@firstpick/pi-prompts-git-pr"
+  ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
