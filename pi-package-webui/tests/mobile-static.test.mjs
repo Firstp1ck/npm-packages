@@ -2441,6 +2441,7 @@ assert.match(extension, /if \(openTabSources\.length > 0\) return mergeRestorabl
 assert.match(extension, /return mergeRestorableTabsFromStatusSources\(\[statusData\?\.restorableTabs, existing\.restorableTabs\], options\)/, "launcher should use restorableTabs only as a legacy fallback");
 assert.match(extension, /env\.PI_WEBUI_RESTORE_FILE = \(await createRestoreFile\(agentDir, restoreTabs\)\)\.file/, "launcher should pass restorable tabs through a private read-once file");
 assert.match(extension, /pi\.registerCommand\("webui-start"/, "extension should expose the canonical /webui-start command");
+assert.match(extension, /const child = spawn\(nodeExecutable, args, \{/, "/webui-start should use Node instead of treating a standalone Pi executable as a JavaScript runtime");
 assert.match(extension, /pi\.registerCommand\("webui-tree-navigate"/, "extension should expose the internal Web UI tree navigation command");
 assert.match(extension, /ctx\.navigateTree\(payload\.entryId/, "internal Web UI tree command should call the native session tree navigation API");
 assert.doesNotMatch(extension, /pi\.registerCommand\("start-webui"/, "extension should not expose the older /start-webui alias");

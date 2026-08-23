@@ -30,6 +30,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = __dirname;
 const webuiBin = path.join(packageRoot, "bin", "pi-webui-launcher.mjs");
 const agentDir = process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
+const nodeExecutable = ["node", "node.exe"].includes(path.basename(process.execPath).toLowerCase()) ? process.execPath : "node";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 31415;
@@ -478,7 +479,7 @@ async function startWebui(options: StartWebuiOptions, ctx: ExtensionCommandConte
   const env = { ...process.env };
   if (restoreTabs.length > 0) env.PI_WEBUI_RESTORE_FILE = (await createRestoreFile(agentDir, restoreTabs)).file;
 
-  const child = spawn(process.execPath, args, {
+  const child = spawn(nodeExecutable, args, {
     cwd: ctx.cwd,
     env,
     detached: true,

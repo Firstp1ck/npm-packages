@@ -381,6 +381,8 @@ Examples:
 
 Running `/webui-start` again on the same URL restarts the HTTP server. By default, supervised Pi tabs—including an active model turn—continue in their original Pi processes and reconnect to the replacement server; session-file restoration remains the fallback when no managed tabs exist.
 
+The extension launches its JavaScript bootstrap with the current Node executable when Pi itself runs under Node. For standalone Pi binaries, where `process.execPath` points to Pi rather than Node, it resolves `node` from `PATH`; otherwise Pi would parse the Web UI server flags as its own CLI options.
+
 ### `/webui-status` options
 
 ```text
