@@ -25,7 +25,7 @@ assert.match(server, /operation\.type === "delete"[\s\S]*queue\.splice\(slots\[o
 assert.match(server, /url\.pathname === "\/api\/queue\/mutate" && req\.method === "POST"[\s\S]*request\.source === "webui-compaction"[\s\S]*mutateCompactionFollowUpQueue[\s\S]*status = data\?\.mutated === true \? 200 : conflict \? 409 : 400/, "queue mutation HTTP handling should keep compaction mutations source-specific and map conflicts to 409");
 
 assert.match(app, /function isRunActive\(\) \{\n\s+return !!currentState\?\.isStreaming \|\| !!currentState\?\.isCompacting/, "frontend should treat compaction as an active run for composer controls");
-assert.match(app, /const targetWasCompacting = !!currentState\?\.isCompacting;[\s\S]*const targetWasBusy = targetWasStreaming \|\| targetWasCompacting[\s\S]*if \(targetWasBusy\) body\.streamingBehavior = streamingBehavior \|\| busyBehavior/, "prompt send should use busy behavior while streaming or compacting");
+assert.match(app, /const targetState = targetTabId === activeTabId \? currentState : tabStateCache\.get\(targetTabId\);[\s\S]*const targetWasCompacting = !!targetState\?\.isCompacting;[\s\S]*const targetWasBusy = targetWasStreaming \|\| targetWasCompacting[\s\S]*if \(targetWasBusy\) body\.streamingBehavior = streamingBehavior \|\| busyBehavior/, "prompt send should use the captured target tab's busy behavior while streaming or compacting");
 assert.match(app, /case "webui_compaction_queue_update":[\s\S]*renderQueue\(event\)[\s\S]*queued compaction prompt sent; Pi is resuming/, "frontend should surface compaction queue and resume events");
 
 console.log("compaction-static.test.mjs passed");

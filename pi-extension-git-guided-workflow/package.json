@@ -1,7 +1,7 @@
 {
   "name": "@firstpick/pi-extension-git-guided-workflow",
   "version": "0.1.0",
-  "description": "Native Pi TUI workflow for safely staging, writing, committing, and pushing Git changes.",
+  "description": "Guided Git workflow for Pi TUI and WebUI with explicit commit and push safeguards.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-git-guided-workflow#readme",
@@ -17,7 +17,9 @@
     "extension",
     "git",
     "commit",
-    "tui"
+    "tui",
+    "webui",
+    "rpc"
   ],
   "pi": {
     "extensions": [

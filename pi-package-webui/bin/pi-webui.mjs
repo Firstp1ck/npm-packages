@@ -450,6 +450,12 @@ let optionalFeatureStartupReady = false;
 const UPDATE_PACKAGE_NAMES = [...CORE_UPDATE_PACKAGE_NAMES].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
+const GUIDED_GIT_START_STATUS_KEY = "git-guided-workflow:webui-start";
+const GUIDED_GIT_START_PAYLOAD_TYPE = "firstpick.pi-extension-git-guided-workflow.start";
+const GUIDED_GIT_START_PAYLOAD_VERSION = 1;
+const GUIDED_GIT_LAUNCH_TTL_MS = 15_000;
+const GUIDED_GIT_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const GUIDED_GIT_COMMAND_MESSAGE = /^\/git-guided-workflow(?::\d+)?$/u;
 // Codex subscription Fast mode is owned by the optional @firstpick/pi-extension-codex-fast-mode
 // package. The Web UI never inspects ChatGPT credentials or request payloads; it only mirrors the
 // extension-published status key and drives the package-owned /fast-mode command over RPC.
@@ -10174,6 +10180,65 @@ function extensionStatusMap(tab) {
   return tab.extensionStatuses;
 }
 
+function isGuidedGitWorkflowCommandMessage(message) {
+  return GUIDED_GIT_COMMAND_MESSAGE.test(String(message || "").trim());
+}
+
+function prunePendingGuidedGitLaunch(tab, nowMs = Date.now()) {
+  const pending = tab?.guidedGitPendingLaunch;
+  if (pending && nowMs - pending.acceptedAt > GUIDED_GIT_LAUNCH_TTL_MS) tab.guidedGitPendingLaunch = null;
+  return tab?.guidedGitPendingLaunch || null;
+}
+
+function clearPendingGuidedGitLaunch(tab, launchId) {
+  if (!tab?.guidedGitPendingLaunch) return;
+  if (!launchId || tab.guidedGitPendingLaunch.launchId === launchId) tab.guidedGitPendingLaunch = null;
+}
+
+function validGuidedGitStartStatusText(statusText) {
+  if (typeof statusText !== "string" || !statusText || Buffer.byteLength(statusText, "utf8") > 1024) return false;
+  try {
+    const payload = JSON.parse(statusText);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const keys = Object.keys(payload).sort();
+    if (keys.length !== 4 || keys.join(",") !== "action,requestId,type,version") return false;
+    return payload.type === GUIDED_GIT_START_PAYLOAD_TYPE
+      && payload.version === GUIDED_GIT_START_PAYLOAD_VERSION
+      && payload.action === "start"
+      && GUIDED_GIT_UUID_V4.test(String(payload.requestId || ""));
+  } catch {
+    return false;
+  }
+}
+
+function scopedGuidedGitLaunchEvent(tab, event, nowMs = Date.now()) {
+  if (event?.type !== "extension_ui_request" || event.method !== "setStatus" || event.statusKey !== GUIDED_GIT_START_STATUS_KEY) return event;
+  if (!event.statusText) {
+    clearPendingGuidedGitLaunch(tab);
+    return event;
+  }
+  if (!validGuidedGitStartStatusText(event.statusText)) return event;
+  const pending = prunePendingGuidedGitLaunch(tab, nowMs);
+  if (!pending) return event;
+  tab.guidedGitPendingLaunch = null;
+  return { ...event, guidedGitLaunchId: pending.launchId };
+}
+
+async function authoritativeGuidedGitLaunchAdmission(tab, { launchId = "", reserve = false } = {}) {
+  const pending = prunePendingGuidedGitLaunch(tab);
+  if (pending) throw makeHttpError(409, "A Guided Git activation is already pending for this tab.");
+  if (reserve && !GUIDED_GIT_UUID_V4.test(String(launchId || ""))) throw makeHttpError(400, "guidedGitLaunchId must be a UUID v4");
+  const state = await currentSessionState(tab);
+  if (state.isStreaming) throw makeHttpError(409, "Wait for the current agent run to finish before starting Guided Git.");
+  if (state.isCompacting) throw makeHttpError(409, "Wait for compaction to finish before starting Guided Git.");
+  if (Number(state.pendingMessageCount || 0) > 0 || compactionQueueForTab(tab).length > 0) {
+    throw makeHttpError(409, "Wait for pending messages to finish before starting Guided Git.");
+  }
+  if (prunePendingGuidedGitLaunch(tab)) throw makeHttpError(409, "A Guided Git activation is already pending for this tab.");
+  if (reserve) tab.guidedGitPendingLaunch = { launchId, acceptedAt: Date.now() };
+  return { admitted: true };
+}
+
 function extensionWidgetMap(tab) {
   if (!tab.extensionWidgets) tab.extensionWidgets = new Map();
   return tab.extensionWidgets;
@@ -11281,7 +11346,7 @@ function attachRpcToTab(tab, rpc) {
     if (resolveWebuiHelperResponse(tab, event) || resolveWebuiHelperRpcResponse(tab, event) || rememberWebuiSubagentsStatusEvent(tab, event) || consumeSessionSummaryRpcEvent(tab, event)) return;
     const gitWorkflowFinalError = event?.type === "agent_settled" && tab.pendingTurnFailure === true;
     updateTabActivityFromEvent(tab, event);
-    let scopedEvent = eventForTabClients(tab, event);
+    let scopedEvent = scopedGuidedGitLaunchEvent(tab, eventForTabClients(tab, event));
     if (event?.type === "pi_process_exit" || event?.type === "pi_process_error") {
       if (tab.gitWorkflowGeneration) tab.gitWorkflowGeneration.processLost = true;
       if (tab.gitWorkflowArtifactGeneration) {
@@ -11294,6 +11359,7 @@ function attachRpcToTab(tab, rpc) {
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
       clearExtensionWidgets(tab);
+      clearPendingGuidedGitLaunch(tab);
       clearWebuiSubagents(tab);
       resetNaturalConversationMode(tab);
       resetCodexFastMode(tab);
@@ -11351,6 +11417,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     rpcUnsubscribe: undefined,
     sseClients: new Set(),
     browserPromptRequests: new Map(),
+    guidedGitPendingLaunch: null,
   };
   resetNaturalConversationMode(tab);
   resetCodexFastMode(tab);
@@ -16017,30 +16084,45 @@ async function handlePromptRequest(tab, body, req) {
   if (isNaturalConversationActive(tab) && naturalConversationSlashCommandName(body.message) && !isNaturalConversationSlashCommand(body.message)) {
     blockNaturalConversationAction("slash commands are blocked from the Web UI shell");
   }
-  const nativeResponse = await handleNativeSlashCommand(tab, body, req);
-  if (nativeResponse) {
-    return { status: nativeResponse.success === false ? 400 : 200, payload: responseWithTab(nativeResponse, tab) };
+  const guidedGitLaunch = isGuidedGitWorkflowCommandMessage(body.message);
+  const guidedGitLaunchId = guidedGitLaunch ? String(body.guidedGitLaunchId || "") : "";
+  if (guidedGitLaunch) await authoritativeGuidedGitLaunchAdmission(tab, { launchId: guidedGitLaunchId, reserve: true });
+  const releaseGuidedGitLaunch = () => clearPendingGuidedGitLaunch(tab, guidedGitLaunchId);
+  try {
+    const nativeResponse = await handleNativeSlashCommand(tab, body, req);
+    if (nativeResponse) {
+      if (nativeResponse.success === false) releaseGuidedGitLaunch();
+      return { status: nativeResponse.success === false ? 400 : 200, payload: responseWithTab(nativeResponse, tab) };
+    }
+    const command = commandFromPost("/api/prompt", body);
+    enforceNaturalConversationCommandAllowed(tab, command);
+    const queuedForCompaction = guidedGitLaunch ? null : maybeQueueCommandDuringCompaction(tab, command);
+    if (queuedForCompaction) return { status: 202, payload: responseWithTab(queuedForCompaction, tab) };
+    const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
+    if (naturalConversationSafetyResponse?.success === false) {
+      releaseGuidedGitLaunch();
+      return { status: 400, payload: responseWithTab(naturalConversationSafetyResponse, tab) };
+    }
+    const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
+    if (pendingThinkingResponse?.success === false) {
+      releaseGuidedGitLaunch();
+      return { status: 400, payload: responseWithTab(pendingThinkingResponse, tab) };
+    }
+    const startsVisibleWork = commandStartsVisibleWork(command);
+    if (startsVisibleWork) {
+      maybeNameTabForConversation(tab, command);
+      markTabWorking(tab);
+    }
+    const response = await tab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
+    if (response.success === false) {
+      releaseGuidedGitLaunch();
+      if (startsVisibleWork) markTabIdle(tab);
+    }
+    return { status: response.success === false ? 400 : 200, payload: responseWithTab(response, tab) };
+  } catch (error) {
+    releaseGuidedGitLaunch();
+    throw error;
   }
-  const command = commandFromPost("/api/prompt", body);
-  enforceNaturalConversationCommandAllowed(tab, command);
-  const queuedForCompaction = maybeQueueCommandDuringCompaction(tab, command);
-  if (queuedForCompaction) return { status: 202, payload: responseWithTab(queuedForCompaction, tab) };
-  const naturalConversationSafetyResponse = await ensureNaturalConversationPromptSafety(tab, command);
-  if (naturalConversationSafetyResponse?.success === false) {
-    return { status: 400, payload: responseWithTab(naturalConversationSafetyResponse, tab) };
-  }
-  const pendingThinkingResponse = await applyPendingThinkingBeforePrompt(tab);
-  if (pendingThinkingResponse?.success === false) {
-    return { status: 400, payload: responseWithTab(pendingThinkingResponse, tab) };
-  }
-  const startsVisibleWork = commandStartsVisibleWork(command);
-  if (startsVisibleWork) {
-    maybeNameTabForConversation(tab, command);
-    markTabWorking(tab);
-  }
-  const response = await tab.rpc.send(command, PROMPT_REQUEST_TIMEOUT_MS);
-  if (response.success === false && startsVisibleWork) markTabIdle(tab);
-  return { status: response.success === false ? 400 : 200, payload: responseWithTab(response, tab) };
 }
 
 const server = createServer(async (req, res) => {
@@ -17195,6 +17277,13 @@ const server = createServer(async (req, res) => {
     if (url.pathname === "/api/git-workflow/preferences" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
       sendJson(res, 200, { ok: true, data: await gitWorkflowPreferencesData(tab) });
+      return;
+    }
+
+    if (url.pathname === "/api/git-workflow/launch-admission" && req.method === "POST") {
+      const body = await readJsonBody(req);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await authoritativeGuidedGitLaunchAdmission(tab) });
       return;
     }
 

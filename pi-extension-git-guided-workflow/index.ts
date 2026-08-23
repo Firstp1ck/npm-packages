@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   BorderedLoader,
   DynamicBorder,
@@ -27,6 +28,15 @@ import {
 } from "./src/core.ts";
 
 export const COMMAND_NAME = "git-guided-workflow";
+export const WEBUI_START_STATUS_KEY = "git-guided-workflow:webui-start";
+export const WEBUI_START_PAYLOAD_TYPE = "firstpick.pi-extension-git-guided-workflow.start";
+export const WEBUI_START_PAYLOAD_VERSION = 1;
+export type WebuiStartPayload = {
+  type: typeof WEBUI_START_PAYLOAD_TYPE;
+  version: typeof WEBUI_START_PAYLOAD_VERSION;
+  action: "start";
+  requestId: string;
+};
 const COMMIT_TIMEOUT_MS = 120_000;
 const PUSH_TIMEOUT_MS = 120_000;
 const STAGES = ["Stage", "Message", "Commit", "Push"] as const;
@@ -54,6 +64,33 @@ function isCode(error: unknown, code: string): boolean {
 
 function assertCurrent(active: ActiveWorkflow): void {
   if (active.cancelled) throw new GuidedGitError("WORKFLOW_CANCELLED", "The workflow session ended");
+}
+
+export function createWebuiStartPayload(): WebuiStartPayload {
+  return {
+    type: WEBUI_START_PAYLOAD_TYPE,
+    version: WEBUI_START_PAYLOAD_VERSION,
+    action: "start",
+    requestId: randomUUID(),
+  };
+}
+
+function requestWebuiStart(ctx: ExtensionCommandContext): void {
+  const payload = JSON.stringify(createWebuiStartPayload());
+  try {
+    ctx.ui.setStatus(WEBUI_START_STATUS_KEY, payload);
+  } catch (error) {
+    try { ctx.ui.setStatus(WEBUI_START_STATUS_KEY, undefined); } catch {}
+    ctx.ui.notify(`Guided Git activation could not be requested in WebUI: ${errorMessage(error)} No Git command was run.`, "error");
+    return;
+  }
+  try {
+    ctx.ui.setStatus(WEBUI_START_STATUS_KEY, undefined);
+  } catch (error) {
+    ctx.ui.notify(`Guided Git activation was requested in WebUI, but its transient status could not be cleared: ${errorMessage(error)} WebUI ignores replayed requests. Do not retry automatically.`, "warning");
+    return;
+  }
+  ctx.ui.notify("Requested the Guided Git workflow in WebUI.", "info");
 }
 
 export function progressText(activeStage: StageName): string {
@@ -513,14 +550,23 @@ export default function gitGuidedWorkflow(pi: ExtensionAPI): void {
     activeWorkflow.generationController?.abort();
   });
   pi.registerCommand(COMMAND_NAME, {
-    description: "Guide staged changes through message, commit, and push with explicit confirmations",
-    handler: async (_args, ctx) => {
-      if (ctx.mode !== "tui" || !ctx.hasUI) {
-        ctx.ui.notify("/git-guided-workflow is available only in Pi's interactive TUI. No Git command was run.", "error");
+    description: "Guide staged changes through commit and push in Pi's TUI or request Guided Git in WebUI",
+    handler: async (args, ctx) => {
+      const supportedSurface = ctx.hasUI && (ctx.mode === "tui" || ctx.mode === "rpc");
+      if (!supportedSurface) {
+        ctx.ui.notify("/git-guided-workflow is available only in Pi's interactive TUI or a compatible WebUI RPC session. No Git command was run or WebUI workflow requested.", "error");
+        return;
+      }
+      if (args.trim()) {
+        ctx.ui.notify("/git-guided-workflow accepts no arguments. No Git command was run or WebUI workflow requested.", "error");
         return;
       }
       if (!ctx.isIdle() || ctx.hasPendingMessages()) {
-        ctx.ui.notify("/git-guided-workflow requires an idle Pi session. No Git command was run.", "warning");
+        ctx.ui.notify("/git-guided-workflow requires an idle Pi session with no queued messages. No Git command was run or WebUI workflow requested.", "warning");
+        return;
+      }
+      if (ctx.mode === "rpc") {
+        requestWebuiStart(ctx);
         return;
       }
       if (activeWorkflow) {

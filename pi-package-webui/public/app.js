@@ -1,5 +1,5 @@
 import { aurReviewSafePath as parsedAurReviewSafePath, parseAurReviewPayload as parseValidatedAurReviewPayload } from "./aur-review-payload.mjs";
-import { guidedGitReviewAvailableForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
+import { GUIDED_GIT_START_STATUS_KEY, createGuidedGitActivationController, createGuidedGitLaunchPermitController, guidedGitLaunchBlockedReason, guidedGitLaunchModeForTabCatalog, guidedGitReviewAvailableForTabCatalog, guidedGitWorkflowCommandForTabCatalog, resolveCommandForTabCatalog, resolveRpcSlashCommandForTabCatalog } from "./guided-git-command-state.mjs";
 import { guidedGitReviewCanRequestStagedContent, guidedGitReviewHasApprovedBinding, guidedGitReviewProcessNavigationAllowed, guidedGitReviewProcessSelectionPatch, guidedGitReviewTransition, guidedGitReviewWidgetRemovalTransition } from "./guided-git-review-state.mjs";
 import { createFastOutputLiveState, createSustainedFlushScheduler, fastOutputLiveTextAndThinking, reduceFastOutputLiveEvent, seedFastOutputLiveState, shouldConsumeFastOutputLiveEvent } from "./fast-output-live.mjs";
 import { addLaunchSlot, cloneLaunchSlotRoles, launchSlotRolesEqual, removeLaunchSlot, subagentLaunchSlotSaveState, updateLaunchSlot } from "./subagent-launch-slot-state.mjs";
@@ -1086,6 +1086,7 @@ let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
 let nativeSettingsDirty = false;
+let guidedGitSetupDialogOwner = null;
 let sessionSummaryOverlayTabId = null;
 let sessionSummaryOverlayFocusReturn = null;
 let sessionSummaryOverlayFocusReturnKey = "";
@@ -2823,9 +2824,9 @@ const OPTIONAL_FEATURES = [
   {
     id: "gitWorkflow",
     label: "Guided Git workflow",
-    packageName: "@firstpick/pi-prompts-git-pr",
-    capabilityLabel: "/git-staged-msg",
-    description: "Generate staged commit messages for the guided Git workflow.",
+    packageName: "@firstpick/pi-extension-git-guided-workflow",
+    capabilityLabel: "/git-guided-workflow",
+    description: "Preferred cross-surface launcher. Browser generation also requires @firstpick/pi-prompts-git-pr.",
     setup: "git-workflow",
   },
   {
@@ -3374,6 +3375,7 @@ const OPTIONAL_COMMAND_FEATURES = new Map([
   ["btw", "btwCommand"],
   ["btw-transfer", "btwCommand"],
   ["btw-status", "btwCommand"],
+  ["git-guided-workflow", "gitWorkflow"],
   ["git-staged-msg", "gitWorkflow"],
   ["git-branch-name", "gitWorkflow"],
   ["pr", "gitWorkflow"],
@@ -3564,6 +3566,10 @@ function createGitWorkflowState() {
 
 const gitWorkflowsByTab = new Map();
 const gitWorkflowMessageLoadsByTab = new Map();
+const guidedGitLaunchPermits = createGuidedGitLaunchPermitController();
+const guidedGitActivationController = createGuidedGitActivationController({
+  claimStart: (tabId, _payload, request, now) => guidedGitLaunchPermits.consume(tabId, request?.guidedGitLaunchId, now),
+});
 let gitWorkflow = createGitWorkflowState();
 let gitWorkflowPreferences = null;
 
@@ -3588,6 +3594,8 @@ function gitWorkflowActionTabId() {
 
 function resetGitWorkflowForTab(tabId = activeTabId) {
   if (!tabId) return;
+  guidedGitLaunchPermits.clearTab(tabId);
+  guidedGitActivationController.clearTab(tabId);
   gitWorkflowsByTab.set(tabId, createGitWorkflowState());
   if (tabId === activeTabId) {
     bindGitWorkflowToActiveTab();
@@ -3597,6 +3605,8 @@ function resetGitWorkflowForTab(tabId = activeTabId) {
 
 function clearGitWorkflowForTab(tabId) {
   if (!tabId) return;
+  guidedGitLaunchPermits.clearTab(tabId);
+  guidedGitActivationController.clearTab(tabId);
   gitWorkflowsByTab.delete(tabId);
   if (tabId === activeTabId) {
     bindGitWorkflowToActiveTab();
@@ -33247,10 +33257,10 @@ function renderGitWorkflow() {
     addGitWorkflowAction("Creating PR…", () => {}, "primary", true);
   } else if (gitWorkflow.step === "done") {
     addGitWorkflowAction("Close", () => setGitWorkflow({ active: false }), "primary", false);
-    addGitWorkflowAction("Start another", () => startGitWorkflow(), "", false);
+    addGitWorkflowAction("Start another", () => launchGuidedGitWorkflow(gitWorkflowActionTabId()), "", false);
   } else if (["cancelled", "error"].includes(gitWorkflow.step)) {
     addGitWorkflowAction("Close", () => setGitWorkflow({ active: false }), "primary", false);
-    addGitWorkflowAction("Restart", () => startGitWorkflow(), "", false);
+    addGitWorkflowAction("Restart", () => launchGuidedGitWorkflow(gitWorkflowActionTabId()), "", false);
   }
   restoreGitWorkflowInputFocus(inputFocus);
 }
@@ -33505,14 +33515,108 @@ function reconcileGuidedGitReviewWidgetRemoval(tabId) {
   return true;
 }
 
-async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {}) {
-  if (!tabId) return;
-  if (!isOptionalFeatureEnabled("gitWorkflow")) {
-    const tabContext = activeTabContext(tabId);
-    addEvent(commandUnavailableMessage("git-staged-msg"), "warn");
-    refreshCommands(tabContext).catch((error) => {
-      if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
-    });
+function guidedGitPromptCommandUnavailable(commandName) {
+  return `Guided Git browser generation requires /${commandName} from @firstpick/pi-prompts-git-pr in the originating tab.`;
+}
+
+function guidedGitPromptCompanionAvailable(tabId) {
+  return !isOptionalFeatureDisabled("gitWorkflow") && hasLoadedRpcCommand("git-staged-msg", { tabId });
+}
+
+function reportGuidedGitPromptCompanionUnavailable(tabId) {
+  const tabContext = activeTabContext(tabId);
+  const message = isOptionalFeatureDisabled("gitWorkflow")
+    ? optionalFeatureUnavailableMessage("gitWorkflow")
+    : guidedGitPromptCommandUnavailable("git-staged-msg");
+  addEvent(message, "warn");
+  refreshCommands(tabContext).catch((error) => {
+    if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
+  });
+}
+
+function handleGuidedGitActivationRequest(request) {
+  if (request?.method !== "setStatus" || request.statusKey !== GUIDED_GIT_START_STATUS_KEY) return false;
+  const result = guidedGitActivationController.consume(request, async (tabId, activationIsCurrent) => {
+    if (!guidedGitPromptCompanionAvailable(tabId)) {
+      reportGuidedGitPromptCompanionUnavailable(tabId);
+      return;
+    }
+    await startGitWorkflow(tabId, { activationIsCurrent });
+  });
+  result.promise?.catch((error) => addEvent(`Guided Git could not start: ${error?.message || String(error)}`, "error"));
+  return true;
+}
+
+function guidedGitLaunchStateForTab(tabId) {
+  return tabId === activeTabId ? currentState : tabStateCache.get(tabId) || null;
+}
+
+function guidedGitLaunchRefusalReason(tabId) {
+  if (promptRoutingTabs.has(tabId)) return "pending";
+  return guidedGitLaunchBlockedReason(guidedGitLaunchStateForTab(tabId), queueMessageCount(queuedSnapshotForTab(tabId)));
+}
+
+function reportGuidedGitLaunchRefused(reason) {
+  const detail = reason === "compacting"
+    ? "Pi is compacting context"
+    : reason === "streaming"
+      ? "Pi is running"
+      : reason === "pending"
+        ? "the tab has pending messages"
+        : "the tab state is not ready";
+  addEvent(`Guided Git was not started because ${detail}. Wait until the originating tab is idle with no pending messages, then start it again.`, "warn");
+}
+
+function guidedGitLaunchAdmitted(tabId) {
+  const reason = guidedGitLaunchRefusalReason(tabId);
+  if (!reason) return true;
+  reportGuidedGitLaunchRefused(reason);
+  return false;
+}
+
+async function startLegacyGuidedGitWorkflowFallback(tabId) {
+  if (!guidedGitLaunchAdmitted(tabId)) return;
+  if (!guidedGitPromptCompanionAvailable(tabId)) {
+    addEvent(isOptionalFeatureDisabled("gitWorkflow")
+      ? optionalFeatureUnavailableMessage("gitWorkflow")
+      : "Guided Git is unavailable: install @firstpick/pi-extension-git-guided-workflow. Browser generation also requires @firstpick/pi-prompts-git-pr.", "warn");
+    return;
+  }
+  try {
+    await api("/api/git-workflow/launch-admission", { method: "POST", body: {}, tabId });
+  } catch (error) {
+    reportGuidedGitLaunchRefused("pending");
+    return;
+  }
+  addEvent("Using the temporary prompt-only Guided Git compatibility launcher. Install @firstpick/pi-extension-git-guided-workflow to route future starts through /git-guided-workflow.", "info");
+  await guidedGitActivationController.run(tabId, (_tabId, activationIsCurrent) => startGitWorkflow(tabId, { activationIsCurrent }));
+}
+
+async function launchGuidedGitWorkflow(tabId = activeTabId) {
+  if (!tabId || !guidedGitLaunchAdmitted(tabId)) return;
+  const launchMode = guidedGitLaunchModeForTabCatalog(commandCatalogForTab(tabId), { disabled: isOptionalFeatureDisabled("gitWorkflow") });
+  if (launchMode === "fallback") {
+    await startLegacyGuidedGitWorkflowFallback(tabId);
+    return;
+  }
+  if (launchMode !== "extension") {
+    addEvent(launchMode === "disabled"
+      ? optionalFeatureUnavailableMessage("gitWorkflow")
+      : "Guided Git is unavailable: install @firstpick/pi-extension-git-guided-workflow. Browser generation also requires @firstpick/pi-prompts-git-pr.", "warn");
+    return;
+  }
+  const commandName = resolveAvailableCommandName("git-guided-workflow", { tabId, rpcOnly: true });
+  try {
+    await sendPrompt("prompt", `/${commandName}`, { targetTabId: tabId, throwOnError: true });
+  } catch (error) {
+    addEvent(`Guided Git activation request failed: ${error?.message || String(error)}`, "error");
+  }
+}
+
+async function startGitWorkflow(tabId = activeTabId, { skipSetup = false, activationIsCurrent = () => true } = {}) {
+  if (!tabId || !activationIsCurrent()) return;
+  if (!guidedGitPromptCompanionAvailable(tabId)) {
+    reportGuidedGitPromptCompanionUnavailable(tabId);
     return;
   }
 
@@ -33520,6 +33624,7 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
   try {
     const response = await api("/api/git-workflow/preferences", { tabId });
     setupData = response.data || {};
+    if (!activationIsCurrent()) return;
     gitWorkflowPreferences = setupData.preferences || null;
   } catch (error) {
     addEvent(`guided Git setup could not be loaded: ${error.message || String(error)}`, "error");
@@ -33531,12 +33636,17 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false } = {})
       return;
     }
     addEvent("Complete Guided Git Setup before starting the workflow.", "info");
-    await openNativeGitWorkflowSetupDialog({ onSaved: () => startGitWorkflow(tabId, { skipSetup: true }) });
+    await openNativeGitWorkflowSetupDialog({
+      tabId,
+      activationIsCurrent,
+      onSaved: () => startGitWorkflow(tabId, { skipSetup: true, activationIsCurrent }),
+    });
     return;
   }
 
   const workflow = gitWorkflowForTab(tabId);
   if (workflow.active && !["done", "cancelled", "error"].includes(workflow.step) && !(await appConfirmText("Restart the active git workflow?", { affected: "The active guided Git workflow", confirmLabel: "Restart workflow" }))) return;
+  if (!activationIsCurrent()) return;
   const preferences = setupData.preferences;
   workflow.runId += 1;
   setGitWorkflow({
@@ -33982,6 +34092,10 @@ async function loadGitWorkflowDefaultCommitMessage({ runId, tabId = activeTabId 
 
 async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
+  if (!hasLoadedRpcCommand("git-staged-msg", { tabId })) {
+    failGitWorkflow(new Error(guidedGitPromptCommandUnavailable("git-staged-msg")), "generate", { tabId });
+    return;
+  }
   const targetTab = tabs.find((tab) => tab.id === tabId);
   const targetBusy = tabId === activeTabId ? !!currentState?.isStreaming : activityForTab(targetTab).isWorking;
   if (targetBusy) {
@@ -34155,6 +34269,10 @@ async function createGitPrBranchManually(tabId = gitWorkflowActionTabId()) {
 
 async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
+  if (!hasLoadedRpcCommand("git-branch-name", { tabId })) {
+    failGitWorkflow(new Error(guidedGitPromptCommandUnavailable("git-branch-name")), "message", { tabId });
+    return;
+  }
   const targetTab = tabs.find((tab) => tab.id === tabId);
   const targetBusy = tabId === activeTabId ? !!currentState?.isStreaming : activityForTab(targetTab).isWorking;
   if (targetBusy) {
@@ -34518,8 +34636,8 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
     failGitWorkflow(new Error("Pi is currently running. Wait for it to finish or abort before generating a PR description."), "push", { tabId });
     return;
   }
-  if (!hasAvailableCommand("pr")) {
-    failGitWorkflow(new Error(commandUnavailableMessage("pr")), "push", { tabId });
+  if (!hasLoadedRpcCommand("pr", { tabId })) {
+    failGitWorkflow(new Error(guidedGitPromptCommandUnavailable("pr")), "push", { tabId });
     return;
   }
   const workflow = gitWorkflowForTab(tabId, { create: false });
@@ -41092,7 +41210,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.bangCommandAutocomplete = hasAvailableCommand("bang-status") || hasAvailableCommand("bang-refresh");
   optionalFeatureAvailability.fishUserBash = hasAvailableCommand("user-bash-shell");
   optionalFeatureAvailability.btwCommand = hasAvailableCommand("btw") || optionalFeatureAvailability.btwCommand || statusEntries.has(BTW_WEBUI_STATUS_KEY) || widgets.has(BTW_OUTPUT_WIDGET_KEY);
-  optionalFeatureAvailability.gitWorkflow = hasAvailableCommand("git-staged-msg");
+  optionalFeatureAvailability.gitWorkflow = hasAvailableCommand("git-guided-workflow") || hasAvailableCommand("git-staged-msg");
   optionalFeatureAvailability.releaseNpm = hasAvailableCommand("release-npm");
   optionalFeatureAvailability.releaseAur = hasAvailableCommand("release-aur");
   optionalFeatureAvailability.aurReview = hasAvailableCommand("aur-review") || optionalFeatureAvailability.aurReview || widgets.has(AUR_REVIEW_RPC_WIDGET_KEY);
@@ -43419,21 +43537,50 @@ async function openNativeSessionSummarySetupDialog({ initialData = null, onSaved
   }, "primary");
 }
 
-async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
+async function openNativeGitWorkflowSetupDialog({ onSaved, tabId = activeTabId, activationIsCurrent = () => true } = {}) {
+  if (!tabId || !activationIsCurrent()) return "stale";
+  nativeCommandTabId = tabId;
   openNativeCommandDialog({
     title: "/git-workflow-setup",
     message: "Configure the dedicated model and safe defaults used by Guided Git. The selected generation profile is applied only while commit, branch, or PR text is generated.",
   });
   renderNativeLoading("Loading guided Git preferences and available models…");
 
+  const setupOwner = Symbol(tabId);
+  guidedGitSetupDialogOwner = setupOwner;
+  const setupOwnsDialog = () => guidedGitSetupDialogOwner === setupOwner;
+  const closeOwnedSetupDialog = () => {
+    if (setupOwnsDialog()) closeNativeCommandDialog({ force: true });
+  };
+  let setupSettled = false;
+  let saveInFlight = false;
+  let resolveSetup;
+  const setupSettlement = new Promise((resolve) => { resolveSetup = resolve; });
+  const settleSetup = (status) => {
+    if (setupSettled) return;
+    setupSettled = true;
+    if (setupOwnsDialog()) guidedGitSetupDialogOwner = null;
+    elements.nativeCommandDialog.removeEventListener("close", handleSetupClose);
+    resolveSetup(status);
+  };
+  const handleSetupClose = () => {
+    if (!saveInFlight) settleSetup("cancelled");
+  };
+  elements.nativeCommandDialog.addEventListener("close", handleSetupClose);
+
   let data;
   try {
-    const response = await nativeCommandApi("/api/git-workflow/preferences");
+    const response = await nativeCommandApi("/api/git-workflow/preferences", { tabId });
     data = response.data || {};
   } catch (error) {
     setNativeCommandError(error.message || String(error));
     elements.nativeCommandBody.replaceChildren();
-    return;
+    return setupSettlement;
+  }
+  if (!activationIsCurrent()) {
+    closeOwnedSetupDialog();
+    settleSetup("stale");
+    return setupSettlement;
   }
 
   const preferences = data.preferences || {};
@@ -43441,12 +43588,13 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
   if (!models.length) {
     setNativeCommandError("No authenticated Pi models are available. Run /login or configure a provider first.");
     elements.nativeCommandBody.replaceChildren();
-    return;
+    return setupSettlement;
   }
 
   const configuredModelKey = `${preferences.generation?.provider || ""}/${preferences.generation?.modelId || ""}`;
   const configuredFallbackKey = `${preferences.generation?.fallback?.provider || ""}/${preferences.generation?.fallback?.modelId || ""}`;
-  const activeModelKey = gitWorkflowSetupModelKey(currentState?.model);
+  const targetState = tabId === activeTabId ? currentState : tabStateCache.get(tabId);
+  const activeModelKey = gitWorkflowSetupModelKey(targetState?.model);
   const modelKeys = new Set(models.map(gitWorkflowSetupModelKey));
   const initialModelKey = modelKeys.has(configuredModelKey)
     ? configuredModelKey
@@ -43542,9 +43690,15 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
   addNativeCommandAction("Cancel", closeNativeCommandDialog);
 
   const save = addNativeCommandAction("Save setup", async () => {
+    saveInFlight = true;
     setNativeActionBusy(save, true, "Saving…");
     setNativeCommandError("");
     try {
+      if (!activationIsCurrent()) {
+        closeOwnedSetupDialog();
+        settleSetup("stale");
+        return;
+      }
       const selectedModel = models.find((model) => gitWorkflowSetupModelKey(model) === controls.model.select.value);
       if (!selectedModel) throw new Error("Select an available primary Git-writing model.");
       const selectedFallback = models.find((model) => gitWorkflowSetupModelKey(model) === controls.fallbackModel.select.value) || null;
@@ -43553,6 +43707,7 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
       }
       const response = await nativeCommandApi("/api/git-workflow/preferences", {
         method: "POST",
+        tabId,
         body: {
           preferences: {
             generation: {
@@ -43578,6 +43733,11 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
           },
         },
       });
+      if (!activationIsCurrent()) {
+        closeOwnedSetupDialog();
+        settleSetup("stale");
+        return;
+      }
       gitWorkflowPreferences = response.data?.preferences || null;
       addTransientMessage({
         role: "native",
@@ -43585,14 +43745,25 @@ async function openNativeGitWorkflowSetupDialog({ onSaved } = {}) {
         content: `Guided Git setup saved. Primary: ${gitWorkflowSetupModelKey(selectedModel)} at ${controls.thinking.select.value} effort. ${selectedFallback ? `Fallback: ${gitWorkflowSetupModelKey(selectedFallback)} at ${controls.fallbackThinking.select.value} effort (one attempt after a final primary generation failure).` : "Fallback: none."}`,
         level: "info",
       });
-      closeNativeCommandDialog();
-      if (typeof onSaved === "function") await onSaved(gitWorkflowPreferences);
+      nativeSettingsDirty = false;
+      closeOwnedSetupDialog();
+      if (typeof onSaved === "function" && activationIsCurrent()) {
+        try {
+          await onSaved(gitWorkflowPreferences);
+        } catch (error) {
+          addEvent(`Guided Git could not continue after setup: ${error?.message || String(error)}`, "error");
+        }
+      }
+      settleSetup(activationIsCurrent() ? "saved" : "stale");
     } catch (error) {
       setNativeCommandError(error.message || String(error));
     } finally {
+      saveInFlight = false;
       setNativeActionBusy(save, false);
+      if (!elements.nativeCommandDialog.open) settleSetup("cancelled");
     }
   }, "primary");
+  return setupSettlement;
 }
 
 function normalizedWorkflowPolicyList(value) {
@@ -46762,7 +46933,7 @@ function commandPaletteCoreItems() {
     { kind: "Pi", label: "/tools", description: "Manage active tools", keywords: "capabilities", run: () => runNativeCommandMenu("/tools") },
     { kind: "Pi", label: "/skills", description: "Manage active skills", keywords: "system prompt", run: () => runNativeCommandMenu("/skills") },
     { kind: "Pi", label: "/theme", description: "Choose the Web UI theme", keywords: "dark light colors appearance", run: () => openNativeThemeSelector() },
-    { kind: "Git", label: "Guided Git workflow", description: "Stage, commit, push, or open a pull request step by step", keywords: "git commit push pr publish", run: () => startGitWorkflow() },
+    { kind: "Git", label: "Guided Git workflow", description: "Stage, commit, push, or open a pull request step by step", keywords: "git commit push pr publish", run: () => launchGuidedGitWorkflow() },
     { kind: "Git", label: "Git changes", description: "Review and stage local changes with diffs", keywords: "git diff stage unstage discard status", run: () => openGitChangesDialog() },
     { kind: "Action", label: "Files panel", description: "Open the Files section of the Control Deck", keywords: "tree browse project explorer", run: () => revealSidePanelSectionById("files") },
     { kind: "Action", label: "Git panel", description: "Open the Git section of the Control Deck", keywords: "repository status history", run: () => revealSidePanelSectionById("git") },
@@ -47508,6 +47679,17 @@ function createBrowserPromptRequestId() {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+function createBrowserGuidedGitLaunchId() {
+  const generated = globalThis.crypto?.randomUUID?.();
+  if (generated) return generated;
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 async function retryMobileFailedSend() {
   const pending = mobileFailedSend;
   if (!pending || pending.retrying) return;
@@ -47568,8 +47750,24 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     return;
   }
 
-  const targetWasStreaming = !!currentState?.isStreaming;
-  const targetWasCompacting = !!currentState?.isCompacting;
+  const guidedGitExtensionLaunch = kind === "prompt"
+    && attachments.length === 0
+    && guidedGitWorkflowCommandForTabCatalog(commandCatalogForTab(targetTabId), originalMessage);
+  let guidedGitPermitGranted = false;
+  let guidedGitLaunchId = "";
+  if (guidedGitExtensionLaunch) {
+    if (!guidedGitLaunchAdmitted(targetTabId)) return;
+    guidedGitLaunchId = createBrowserGuidedGitLaunchId();
+    if (!guidedGitLaunchPermits.grant(targetTabId, guidedGitLaunchId)) {
+      addEvent("Guided Git activation is already pending for this tab.", "warn");
+      return;
+    }
+    guidedGitPermitGranted = true;
+  }
+
+  const targetState = targetTabId === activeTabId ? currentState : tabStateCache.get(targetTabId);
+  const targetWasStreaming = !!targetState?.isStreaming;
+  const targetWasCompacting = !!targetState?.isCompacting;
   const targetWasBusy = targetWasStreaming || targetWasCompacting;
   const busyBehavior = normalizeBusyPromptBehavior(busyPromptBehavior);
   const startsRun = kind === "prompt" && !targetWasBusy;
@@ -47600,6 +47798,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
     // targetTabId. This implementation intentionally never retries an
     // ambiguous mutation automatically.
     if (kind === "prompt") bodyBase.requestId = createBrowserPromptRequestId();
+    if (guidedGitLaunchId) bodyBase.guidedGitLaunchId = guidedGitLaunchId;
     if (prepared.images.length) bodyBase.images = prepared.images;
     if (!message.startsWith("/")) {
       rememberPromptHistory(message, { tabId: targetTabId });
@@ -47649,6 +47848,7 @@ async function sendPrompt(kind = "prompt", explicitMessage, { targetTabId = acti
       scheduleRefreshTabs(300);
     }
   } catch (error) {
+    if (guidedGitPermitGranted) guidedGitLaunchPermits.clearTab(targetTabId);
     restorePromptInputAfterRoutingError(inputMessage, { usesPromptInput, targetTabId, tabContext });
     if (dispatchedRequest?.kind === "prompt" && dispatchedRequest.body?.requestId && error?.backendOffline === true && isMobileShellV2Active()) {
       mobileFailedSend = { ...dispatchedRequest, retrying: false };
@@ -47693,6 +47893,7 @@ function removeQueuedDialogRequests(ids = []) {
 }
 
 function handleExtensionUiRequest(request) {
+  if (handleGuidedGitActivationRequest(request)) return;
   request.tabId ||= activeTabId;
   switch (request.method) {
     case "notify": {
@@ -48256,6 +48457,7 @@ function scheduleSupervisorContinuityRefresh(event, { gap = false } = {}) {
 }
 
 function handleInactiveTabEvent(event) {
+  if (handleGuidedGitActivationRequest(event)) return;
   if (event.type === "extension_ui_request" && EXTENSION_UI_BLOCKING_METHODS.has(event.method)) {
     if (!event.replayed) notifyBlockedTab(event.tabId, { request: event, count: event.pendingExtensionUiRequestCount });
     renderTabs();
@@ -49009,7 +49211,7 @@ elements.commandPaletteButton?.addEventListener("click", () => openCommandPalett
 elements.workspaceDashboardToggleButton?.addEventListener("click", () => setWorkspaceDashboardCollapsed(!workspaceDashboardCollapsed));
 elements.gitWorkflowButton.addEventListener("click", () => {
   setComposerActionsOpen(false);
-  startGitWorkflow();
+  launchGuidedGitWorkflow();
 });
 const publishMenuContainer = elements.publishButton.parentElement;
 elements.publishButton.addEventListener("click", () => {

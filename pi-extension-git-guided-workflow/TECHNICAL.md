@@ -1,25 +1,28 @@
 # Guided Git workflow: technical reference
 
-Advanced user guidance for the native Pi TUI command, safety checks, limits, and recovery.
+Advanced user guidance for the Pi TUI workflow, WebUI activation, safety checks, limits, and recovery.
 
 [Back to README](README.md) · [Contributor guide](DEVELOPMENT.md)
 
 ## Requirements
 
-- Pi with native TUI extension support
+- Pi with extension support
 - Node.js 22.19 or newer
-- Git available on `PATH`
-- A normal, non-bare Git worktree on an attached branch
+- Git available on `PATH` for the native workflow
+- A normal, non-bare Git worktree on an attached branch for native Git actions
+- A compatible WebUI RPC session for browser activation
 
-The command is intentionally unavailable in RPC, JSON, and print modes. It also refuses to start while Pi is busy, while messages are queued, or while another guided workflow is active.
+The WebUI's generated commit, branch, and pull-request text continues to require `@firstpick/pi-prompts-git-pr`. This extension does not copy or replace that prompt package.
 
-## Command
+## Command and surfaces
 
 ```text
 /git-guided-workflow
 ```
 
-The command accepts no options. Its stages are always:
+The command accepts no options and refuses to start while Pi is busy or while messages are queued.
+
+In Pi's native TUI, its stages are always:
 
 ```text
 Stage → Message → Commit → Push
@@ -27,9 +30,13 @@ Stage → Message → Commit → Push
 
 Press Escape to cancel the current action list. Choose **Finish** to leave the workflow at a defined stopping point.
 
+In a compatible WebUI RPC session, the command requests the existing browser Guided Git workflow for the originating tab. The activation itself runs no Git command, opens no native editor or confirmation, calls no model, and sends no repository path, staged diff, preferences, or Git state. The request is transient and is not an acknowledgement that the browser opened successfully. If delivery is uncertain, the extension does not retry automatically.
+
+JSON, print, RPC sessions without compatible UI support, and other non-interactive modes remain unsupported. They perform no Git action and request no WebUI workflow.
+
 ## Stage behavior
 
-The Stage screen reports staged, unstaged, untracked, and conflicted counts. You can:
+The native Stage screen reports staged, unstaged, untracked, and conflicted counts. You can:
 
 - preserve the current staged set; or
 - confirm **Stage all changes**, which includes tracked changes, deletions, and untracked files.
@@ -47,7 +54,7 @@ The staged snapshot includes the complete staged diff and is bound to stable ind
 
 ## Message behavior and privacy
 
-Manual entry uses Pi’s native editor and works with no active model.
+Manual entry uses Pi's native editor and works with no active model.
 
 Generation is optional. Only selecting **Generate short and long candidates** sends the complete staged diff to the active model provider. No staged content is sent merely by opening the workflow or choosing manual entry. Direct generation does not claim the same usage accounting or reasoning-effort behavior as a normal agent turn.
 
@@ -63,7 +70,7 @@ The long candidate begins with the exact short subject. Manual subjects also hav
 
 ## Commit behavior
 
-The Commit screen shows the exact selected message and staged summary. Confirmation is required before Git runs.
+The native Commit screen shows the exact selected message and staged summary. Confirmation is required before Git runs.
 
 The workflow rechecks repository root, branch, HEAD, operation state, and staged binding immediately before commit. Normal Git hooks and signing are enabled. Git cannot make the final staged comparison and commit atomic, and hooks may modify files or the index after that comparison.
 
@@ -71,7 +78,7 @@ HEAD is inspected after every commit command result, including errors and timeou
 
 ## Push behavior
 
-Push is available only while HEAD still equals the commit created by the current workflow. The destination is selected from:
+Native push is available only while HEAD still equals the commit created by the current workflow. The destination is selected from:
 
 1. a matching configured upstream;
 2. the only configured remote; or
@@ -83,13 +90,19 @@ A push timeout, connection loss, or other failed push can leave the remote resul
 
 ## Troubleshooting
 
+### The browser workflow does not open
+
+Confirm that the WebUI supports extension status requests, the command is loaded in the originating tab, and Pi is idle with no queued messages. Restart Pi and refresh the WebUI after installing or updating the extension. A browser disconnect can miss the one-shot request; the extension intentionally does not replay it later.
+
+If browser generation controls report missing commands, install or update `@firstpick/pi-prompts-git-pr`. That package remains separate from the workflow launcher.
+
 ### The command says the repository is unsupported
 
 Finish any merge, rebase, cherry-pick, revert, or bisect operation, resolve conflicts, and attach HEAD to a branch. Bare repositories are not supported.
 
 ### Generation is unavailable
 
-Select an active model if you want generation. Otherwise choose manual entry. If the diff exceeds 1 MiB or is not UTF-8, manual entry remains available.
+Select an active model if you want native generation. Otherwise choose manual entry. If the diff exceeds 1 MiB or is not UTF-8, manual entry remains available.
 
 ### Push is unavailable
 
@@ -107,4 +120,4 @@ Remove the extension with:
 pi remove npm:@firstpick/pi-extension-git-guided-workflow
 ```
 
-Restart Pi afterward. Removing the extension does not undo local commits or remote pushes. Use repository-appropriate Git recovery for history already created or published.
+Restart Pi and refresh connected WebUI tabs afterward. Removing the extension does not undo local commits or remote pushes. Use repository-appropriate Git recovery for history already created or published.

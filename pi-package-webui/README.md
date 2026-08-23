@@ -186,7 +186,9 @@ Launch detected development servers, tests, builds, scripts, and project-defined
 
 ![Pi Web UI guided Git workflow showing staged changes, generated commit messages, and PR controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_GitWorkflow_v0.4.8.png)
 
-**Optional feature needed:** `@firstpick/pi-prompts-git-pr` for generated commit messages, branch names, and pull-request content. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate.
+**Optional features needed:** `@firstpick/pi-extension-git-guided-workflow` provides the preferred `/git-guided-workflow` launcher. `@firstpick/pi-prompts-git-pr` provides generated commit messages, branch names, and pull-request content. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate.
+
+Run `/git-guided-workflow` in the browser composer or use the **Guided Git workflow** button. The extension starts the workflow in the originating tab without sending a repository path, diff, or Git data in its activation request. Existing prompt-only installations retain a temporary compatibility launcher, but installing the workflow extension is the supported path.
 
 Move through review, staging, commit-message generation, commit, push, and pull-request steps with explicit confirmations. In **Guided Git Setup**, you can optionally choose a fallback model and its own reasoning effort. If the primary model reaches a final generation failure, Guided Git tries the fallback once, reports the change in the workflow, and restores the tab’s prior model and effort afterward. Validation failures, cancellation, Git command failures, and a stopped Pi process do not trigger fallback.
 

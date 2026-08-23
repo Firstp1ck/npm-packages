@@ -21,6 +21,8 @@
 //   records with an isolated transcript fixture; dynamic/scripted messages still append.
 // - FAKE_PI_INTERCOM_LIVE=1: accept the isolated "fixture modal transport live"
 //   prompt and emit a generic Intercom tool stream with visible unrelated output.
+// - FAKE_PI_GUIDED_GIT_ACTIVATION=1: advertise the Guided Git extension and
+//   prompt companion, then emit its exact transient set/clear activation status.
 import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
@@ -94,6 +96,9 @@ const largePayloadsEnabled = process.env.FAKE_PI_LARGE_PAYLOADS === "1";
 const sseFloodEnabled = process.env.FAKE_PI_SSE_FLOOD === "1";
 const statsPromptContextEnabled = process.env.FAKE_PI_STATS_PROMPT_CONTEXT === "1";
 const intercomLiveEnabled = process.env.FAKE_PI_INTERCOM_LIVE === "1";
+const guidedGitActivationEnabled = process.env.FAKE_PI_GUIDED_GIT_ACTIVATION === "1";
+const guidedGitStateMode = String(process.env.FAKE_PI_GUIDED_GIT_STATE || "").trim();
+const guidedGitActivationDelayMs = Math.max(0, Number.parseInt(process.env.FAKE_PI_GUIDED_GIT_ACTIVATION_DELAY_MS || "0", 10) || 0);
 const fakeTranscriptMessages = (() => {
   const source = process.env.FAKE_PI_TRANSCRIPT_JSON;
   if (!source) return null;
@@ -370,6 +375,25 @@ function runIntercomLiveScript() {
       emitScriptedEvent({ type: "agent_settled" });
     } },
   ]);
+}
+
+function handleGuidedGitActivationPrompt(command, base) {
+  if (!guidedGitActivationEnabled || !/^\/git-guided-workflow(?::\d+)?$/u.test(String(command.message || "").trim())) return false;
+  respond({ ...base, data: { output: "Guided Git WebUI activation requested" } });
+  const statusKey = "git-guided-workflow:webui-start";
+  const statusText = JSON.stringify({
+    type: "firstpick.pi-extension-git-guided-workflow.start",
+    version: 1,
+    action: "start",
+    requestId: randomUUID(),
+  });
+  const emitActivation = () => {
+    emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey, statusText });
+    emitEvent({ type: "extension_ui_request", id: randomUUID(), method: "setStatus", statusKey });
+  };
+  if (guidedGitActivationDelayMs > 0) setTimeout(emitActivation, guidedGitActivationDelayMs);
+  else emitActivation();
+  return true;
 }
 
 function handleIntercomLivePrompt(command, base) {
@@ -1535,8 +1559,8 @@ rl.on("line", (line) => {
         data: {
           model: { provider: "fake", id: "fake-model" },
           thinkingLevel,
-          isStreaming: scriptedStreaming,
-          isCompacting: false,
+          isStreaming: scriptedStreaming || guidedGitStateMode === "streaming",
+          isCompacting: guidedGitStateMode === "compacting",
           steeringMode: "one-at-a-time",
           followUpMode: "one-at-a-time",
           sessionFile,
@@ -1544,7 +1568,7 @@ rl.on("line", (line) => {
           sessionName: "fake",
           autoCompactionEnabled: false,
           messageCount: 0,
-          pendingMessageCount: 0,
+          pendingMessageCount: guidedGitStateMode === "pending" ? 1 : 0,
         },
       });
       return;
@@ -1574,6 +1598,12 @@ rl.on("line", (line) => {
             { name: "conversation", source: "extension", description: "Natural Conversation Mode alias" },
             { name: "fast-mode", source: "extension", description: "Toggle Codex subscription Fast mode" },
             { name: "workflow", source: "extension", description: "Run and inspect JavaScript workflows" },
+            ...(guidedGitActivationEnabled ? [
+              { name: "git-guided-workflow", source: "extension", description: "Start Guided Git" },
+              { name: "git-staged-msg", source: "prompt", description: "Generate commit messages" },
+              { name: "git-branch-name", source: "prompt", description: "Generate branch names" },
+              { name: "pr", source: "prompt", description: "Generate PR text" },
+            ] : []),
             ...(statsPromptContextEnabled ? [{ name: "stats-webui", source: "extension", description: "Publish fixture stats dashboard" }] : []),
           ],
         },
@@ -1597,6 +1627,7 @@ rl.on("line", (line) => {
       return;
     }
     case "prompt":
+      if (handleGuidedGitActivationPrompt(command, base)) return;
       if (handleIntercomLivePrompt(command, base)) return;
       if (handleFeatureDecisionFixturePrompt(command, base)) return;
       if (handleStatsPromptContextFixturePrompt(command, base)) return;

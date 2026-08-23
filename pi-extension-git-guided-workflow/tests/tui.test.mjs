@@ -6,7 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import gitGuidedWorkflow, { COMMAND_NAME, progressText, showActionScreen } from "../index.ts";
+import gitGuidedWorkflow, {
+  COMMAND_NAME,
+  WEBUI_START_PAYLOAD_TYPE,
+  WEBUI_START_PAYLOAD_VERSION,
+  WEBUI_START_STATUS_KEY,
+  createWebuiStartPayload,
+  progressText,
+  showActionScreen,
+} from "../index.ts";
 
 initTheme(undefined, false);
 
@@ -54,8 +62,10 @@ function createContext(root, options = {}) {
   const confirmations = [];
   const notifications = [];
   const renders = [];
+  const statusUpdates = [];
   let customOpen = false;
   let customCount = 0;
+  let statusCallCount = 0;
   const ctx = {
     cwd: root,
     mode: options.mode ?? "tui",
@@ -67,6 +77,12 @@ function createContext(root, options = {}) {
     ui: {
       theme: fakeTheme(),
       notify(message, type) { notifications.push({ message, type }); },
+      setStatus(statusKey, statusText) {
+        const call = statusCallCount;
+        statusCallCount += 1;
+        if (options.setStatusErrorAt === call) throw new Error(options.setStatusError ?? `status delivery ${call} failed`);
+        statusUpdates.push({ statusKey, statusText });
+      },
       async confirm(title, message) {
         assert.equal(customOpen, false, "custom screen must finish before confirmation opens");
         confirmations.push({ title, message });
@@ -123,7 +139,7 @@ function createContext(root, options = {}) {
       },
     },
   };
-  return { ctx, confirmations, notifications, renders, remainingActions: actionMoves };
+  return { ctx, confirmations, notifications, renders, statusUpdates, statusCallCount: () => statusCallCount, remainingActions: actionMoves };
 }
 
 async function stageTracked(root, content = "changed\n") {
@@ -170,22 +186,89 @@ test("action screens use a cancellable native list and stay within narrow widths
   assert.equal(typeof component.handleInput, "function");
 });
 
-test("rejects non-TUI, busy, and queued starts without opening UI or mutating Git", async () => {
+test("idle RPC invocation emits one exact one-shot WebUI activation and no Git, model, or TUI side effect", async () => {
+  const root = await repository("rpc-activation");
+  await stageTracked(root);
+  const beforeHead = git(root, "rev-parse", "HEAD");
+  const beforeIndex = git(root, "diff", "--cached");
+  let modelCalls = 0;
+  const modelRegistry = { async complete() { modelCalls += 1; throw new Error("model must not be called"); } };
+  const requestIds = [];
+
+  for (let invocation = 0; invocation < 2; invocation += 1) {
+    const { commands } = extensionRegistration();
+    const harness = createContext(root, { mode: "rpc", hasUI: true, model: { id: "unused", provider: "test" }, modelRegistry });
+    await commands.get(COMMAND_NAME).handler("", harness.ctx);
+    assert.deepEqual(harness.statusUpdates.map(({ statusKey }) => statusKey), [WEBUI_START_STATUS_KEY, WEBUI_START_STATUS_KEY]);
+    assert.equal(harness.statusUpdates[1].statusText, undefined, "activation status must be cleared immediately");
+    const payload = JSON.parse(harness.statusUpdates[0].statusText);
+    assert.deepEqual(Object.keys(payload).sort(), ["action", "requestId", "type", "version"]);
+    assert.equal(payload.type, WEBUI_START_PAYLOAD_TYPE);
+    assert.equal(payload.version, WEBUI_START_PAYLOAD_VERSION);
+    assert.equal(payload.action, "start");
+    assert.match(payload.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    requestIds.push(payload.requestId);
+    assert.equal(harness.renders.length, 0);
+    assert.equal(harness.confirmations.length, 0);
+    assert.match(harness.notifications[0].message, /Requested the Guided Git workflow in WebUI/u);
+  }
+
+  assert.notEqual(requestIds[0], requestIds[1], "each activation must use a unique request ID");
+  const directPayload = createWebuiStartPayload();
+  assert.equal(directPayload.type, WEBUI_START_PAYLOAD_TYPE);
+  assert.equal(modelCalls, 0);
+  assert.equal(git(root, "rev-parse", "HEAD"), beforeHead);
+  assert.equal(git(root, "diff", "--cached"), beforeIndex);
+});
+
+test("rejects arguments, unsupported surfaces, busy starts, and queued starts without activation or Git mutation", async () => {
   const root = await repository("refusals");
   await stageTracked(root);
-  const before = git(root, "rev-parse", "HEAD");
-  for (const options of [
-    { mode: "rpc", hasUI: true },
-    { idle: false },
-    { pending: true },
+  const beforeHead = git(root, "rev-parse", "HEAD");
+  const beforeIndex = git(root, "diff", "--cached");
+  for (const { options, args = "" } of [
+    { options: { mode: "json", hasUI: false } },
+    { options: { mode: "rpc", hasUI: false } },
+    { options: { mode: "rpc", idle: false } },
+    { options: { mode: "rpc", pending: true } },
+    { options: { mode: "tui", idle: false } },
+    { options: { mode: "tui", pending: true } },
+    { options: { mode: "rpc" }, args: "unexpected" },
   ]) {
     const { commands } = extensionRegistration();
     const harness = createContext(root, options);
-    await commands.get(COMMAND_NAME).handler("", harness.ctx);
+    await commands.get(COMMAND_NAME).handler(args, harness.ctx);
     assert.equal(harness.renders.length, 0);
-    assert.match(harness.notifications[0].message, /No Git command was run/u);
+    assert.equal(harness.statusUpdates.length, 0);
+    assert.match(harness.notifications[0].message, /No Git command was run or WebUI workflow requested/u);
   }
-  assert.equal(git(root, "rev-parse", "HEAD"), before);
+  assert.equal(git(root, "rev-parse", "HEAD"), beforeHead);
+  assert.equal(git(root, "diff", "--cached"), beforeIndex);
+});
+
+test("RPC activation bounds status delivery failures without retrying or running Git", async () => {
+  const root = await repository("rpc-delivery-failure");
+  await stageTracked(root);
+  const beforeHead = git(root, "rev-parse", "HEAD");
+  const beforeIndex = git(root, "diff", "--cached");
+  const { commands } = extensionRegistration();
+
+  const setFailure = createContext(root, { mode: "rpc", setStatusErrorAt: 0, setStatusError: "set failed\nwith controls\u001b[31m" });
+  await commands.get(COMMAND_NAME).handler("", setFailure.ctx);
+  assert.equal(setFailure.statusCallCount(), 2, "a failed set gets one best-effort clear and no retry");
+  assert.deepEqual(setFailure.statusUpdates, [{ statusKey: WEBUI_START_STATUS_KEY, statusText: undefined }]);
+  assert.match(setFailure.notifications[0].message, /could not be requested in WebUI: set failed\nwith controls No Git command was run/u);
+  assert.doesNotMatch(setFailure.notifications[0].message, /\u001b/u);
+
+  const clearFailure = createContext(root, { mode: "rpc", setStatusErrorAt: 1, setStatusError: "clear failed" });
+  await commands.get(COMMAND_NAME).handler("", clearFailure.ctx);
+  assert.equal(clearFailure.statusCallCount(), 2, "a failed clear must not trigger an automatic retry");
+  assert.equal(clearFailure.statusUpdates.length, 1);
+  assert.match(clearFailure.notifications[0].message, /was requested in WebUI, but its transient status could not be cleared/u);
+  assert.match(clearFailure.notifications[0].message, /Do not retry automatically/u);
+
+  assert.equal(git(root, "rev-parse", "HEAD"), beforeHead);
+  assert.equal(git(root, "diff", "--cached"), beforeIndex);
 });
 
 test("manual no-model flow commits in a temporary repository and offers Finish when push is unavailable", async () => {
@@ -531,10 +614,15 @@ test("package metadata and documentation expose only the approved package contra
   assert.deepEqual(pkg.pi.extensions, ["./index.ts"]);
   assert.deepEqual(pkg.files, ["index.ts", "src/core.ts", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]);
   assert.equal(pkg.peerDependencies["@earendil-works/pi-tui"], "*");
+  assert.match(pkg.description, /TUI and WebUI/u);
   assert.match(readme, /pi install npm:@firstpick\/pi-extension-git-guided-workflow/u);
   assert.match(readme, /only after you select message generation/u);
+  assert.match(readme, /same command asks that WebUI/u);
   assert.match(technical, /1 MiB/u);
+  assert.match(technical, /compatible WebUI RPC session/u);
   assert.match(development, /tests\/tui\.test\.mjs/u);
+  assert.match(development, /firstpick\.pi-extension-git-guided-workflow\.start/u);
+  assert.match(development, /setStatus/u);
   assert.match(catalog, /pi-extension-git-guided-workflow\/README\.md/u);
   for (const nonGoal of ["Create PR", "branch creation", "repository publication"]) assert.doesNotMatch(readme, new RegExp(nonGoal, "iu"));
 });

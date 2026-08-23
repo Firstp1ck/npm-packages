@@ -52,9 +52,9 @@ assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation-du
 assert.match(css, /body\.terminal-tabs-left \.main-output-surface \{ grid-row: 4; \}/, "sidebar tab placement should keep the stable output surface in the transcript grid row");
 assert.match(css, /body\.subagent-terminal-active \.main-output-surface,/, "the main output surface should stay hidden in the dedicated subagent view");
 
-assert.match(html, /styles\.css\?v=140/, "the stylesheet cache query should advance");
-assert.match(html, /app\.js\?v=169/, "the app cache query should advance");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v136"/, "the PWA cache identity should advance with browser assets");
+assert.match(html, /styles\.css\?v=142/, "the stylesheet cache query should advance");
+assert.match(html, /app\.js\?v=172/, "the app cache query should advance");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v139"/, "the PWA cache identity should advance with browser assets");
 assert.match(readme, /Loading agent output/, "user documentation should describe the visible loading feedback");
 assert.match(development, /main output loading/i, "developer documentation should preserve the request-ownership contract");
 

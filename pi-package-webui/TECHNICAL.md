@@ -313,6 +313,14 @@ Only participant names or IDs, message text, ordering time, and truncation notic
 
 If an expected tag is absent, confirm that the agents used direct Intercom or native supervisor coordination in the active session branch. Generic child output and independent process logs do not become conversations.
 
+## Guided Git launcher
+
+Install `@firstpick/pi-extension-git-guided-workflow` to make `/git-guided-workflow` the preferred launcher in both Pi's terminal interface and WebUI. In WebUI, typing the command or selecting the Guided Git action requests the browser workflow for the originating tab. Only the browser client that sent the command consumes the live activation. The request is one-shot: a disconnected browser can miss it, but WebUI will not replay it later and unexpectedly restart Git work.
+
+The browser keeps a temporary direct-launch fallback for installations that have `@firstpick/pi-prompts-git-pr` but not the workflow extension. This compatibility path will be removed after the migration period, so install the extension rather than relying on the fallback. The prompt package remains separately required for generated commit messages, branch names, and pull-request text.
+
+The launcher refuses immediately while the originating tab is running, compacting context, or has pending messages; it does not queue Guided Git for later. If the command does not open the workflow, confirm that the tab is idle, has no queued messages, and lists both `/git-guided-workflow` and `/git-staged-msg`. Restart or reload the Pi tab after installing or updating either package. Retrying after an uncertain activation is a manual decision; WebUI does not retry it automatically.
+
 ## Guided Git generation profiles
 
 Open **Common Pi Options → Guided Git Setup** or run `/git-workflow-setup` before using generated commit messages, branch names, or pull-request text. Choose the required primary model and its reasoning effort. You may also choose a different fallback model and a separate supported effort, or leave **No fallback** selected. The effort lists follow the capabilities reported for each selected model.
