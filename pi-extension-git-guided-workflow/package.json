@@ -1,0 +1,47 @@
+{
+  "name": "@firstpick/pi-extension-git-guided-workflow",
+  "version": "0.1.0",
+  "description": "Native Pi TUI workflow for safely staging, writing, committing, and pushing Git changes.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-git-guided-workflow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-extension-git-guided-workflow"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "git",
+    "commit",
+    "tui"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check src/core.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "files": [
+    "index.ts",
+    "src/core.ts",
+    "README.md",
+    "TECHNICAL.md",
+    "DEVELOPMENT.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

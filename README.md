@@ -50,6 +50,7 @@ Extensions add commands, tools, interface elements, or automatic behavior to Pi.
 - **[Feature System Prompt for Pi](pi-extension-feature-system-prompt/README.md)** — Recognizes feature requests and loads the feature workflow only when it is actually needed.
 - **[Fish User Bash for Pi](pi-extension-fish-user-bash/README.md)** — Runs Pi’s `!` and `!!` commands through Fish instead of the default shell.
 - **[Git Footer Status for Pi](pi-extension-git-footer-status/README.md)** — Shows Git state, token use, context use, and model information in Pi’s footer.
+- **[Guided Git workflow for Pi](pi-extension-git-guided-workflow/README.md)** — Guides staged changes through message, commit, and push with explicit safety checks and confirmations.
 - **[Grill Me for Pi](pi-extension-grill-me/README.md)** — Turns an early idea into a focused design interview so important decisions are made before implementation.
 - **[Hyprland Wiki Local for Pi](pi-extension-hyprland-wiki-local/README.md)** — Lets Pi search a local copy of the official Hyprland Wiki first.
 - **[NixOS Wiki Local for Pi](pi-extension-nixos-wiki-local/README.md)** — Lets Pi search local NixOS and Nix documentation before using the public web.
