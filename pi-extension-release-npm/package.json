@@ -23,7 +23,7 @@
   },
   "scripts": {
     "check": "npm test",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/process-tree.test.mjs && node tests/npm-pack-json.test.mjs"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/process-tree.test.mjs && node tests/npm-pack-json.test.mjs && node tests/bundled-dependencies.test.mjs"
   },
   "dependencies": {
     "@firstpick/pi-utils": "^0.2.4"

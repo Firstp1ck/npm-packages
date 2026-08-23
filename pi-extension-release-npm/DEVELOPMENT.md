@@ -107,14 +107,14 @@ Readiness checks require or verify:
 - `keywords` containing `pi-package` is recommended for discoverability
 - `LICENSE` is recommended
 
-`/release-npm` runs `./dev/scripts/release-workflow.sh --plan --all` first. The plan step writes publish candidates from version planning to a temporary target list, applies planned version bumps in a temporary workspace, and runs publish checks only for those candidate directories. After confirmation it publishes only the package directories detected in that plan with `./dev/scripts/release-workflow.sh --publish --target <dir>`.
+`/release-npm` runs `./dev/scripts/release-workflow.sh --plan --all` first. The plan step writes publish candidates from version planning to a temporary target list, applies planned version bumps in a temporary workspace, materializes missing `bundledDependencies` there with dependency scripts disabled, and runs publish checks only for those candidate directories. After confirmation, the publish step materializes missing bundles in each selected source package before calling `publish-packages.sh`.
 
 Publishable-content comparison keeps a script-free `npm pack --dry-run` fast path for ordinary packages. Packages declaring `prepare`, `prepack`, or `postpack` are instead packed into a temporary tarball with lifecycle scripts enabled and compared artifact-to-artifact against npm, preventing generated files from causing false release candidates.
 
 ## Commands
 
 - `/release-npm-setup` — prompts for an npm token with Pi native input, saves it using `npm config set //registry.npmjs.org/:_authToken <token>`, then verifies with `npm whoami`.
-- `/release-npm` — checks `npm whoami` first, runs `./dev/scripts/release-workflow.sh --plan --all`, shows the planned version/publish summary plus exact package targets, prompts for confirmation, then runs `./dev/scripts/release-workflow.sh --publish --target <dir>` only for those detected targets. It does not install packages after publishing.
+- `/release-npm` — checks `npm whoami` first, runs `./dev/scripts/release-workflow.sh --plan --all`, shows the planned version/publish summary plus exact package targets, prompts for confirmation, then runs `./dev/scripts/release-workflow.sh --publish --target <dir>` only for those detected targets. Missing bundled dependencies are prepared before validation and publication; it does not install released packages into Pi afterward.
 - `/release-toggle` — toggles active release output between compact and expanded mode (`Ctrl+O` also toggles in TUI).
 - `/release-abort` — aborts the active release subprocess (`Ctrl+C` also aborts in TUI while the release subprocess is active).
 - `/release-npm-logs` — select a saved release run and display it above the editor; press `Esc`/`q` in TUI or run `/release-npm-logs close` to close it.

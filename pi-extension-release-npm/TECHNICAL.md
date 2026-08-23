@@ -29,6 +29,8 @@ Release readiness expects:
 - valid Pi extension entries when the package provides extensions; and
 - the files referenced by the package metadata.
 
+When a candidate declares `bundledDependencies`, the workflow installs any missing bundled packages before validating its npm artifact. Planning does this only in the temporary workspace; publishing prepares the selected source package. Dependency lifecycle scripts remain disabled during this preparation.
+
 Nested package folders are not discovered.
 
 ## Commands
@@ -55,6 +57,7 @@ The release output stays visible while Pi remains usable. Reports are stored und
 - Nothing is published before confirmation.
 - Failed checks remain visible and block unsafe candidates.
 - The package list is fixed before confirmation instead of being rediscovered during publishing.
+- Preparing a missing bundled dependency requires npm registry access, but runs with dependency lifecycle scripts disabled.
 - This extension is designed for this repository’s package layout, not every possible npm workspace.
 - Stopping a release may leave already published packages published; inspect the saved report before retrying.
 

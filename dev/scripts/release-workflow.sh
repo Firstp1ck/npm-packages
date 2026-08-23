@@ -131,6 +131,89 @@ if [[ ! -x "$PUBLISH_SCRIPT" ]]; then
   exit 1
 fi
 
+missing_bundled_dependencies() {
+  local pkg_dir="$1"
+  node - "$pkg_dir/package.json" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const manifestPath = process.argv[2];
+const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+const bundled = manifest.bundledDependencies ?? manifest.bundleDependencies ?? [];
+if (!Array.isArray(bundled)) {
+  console.error(`ERROR: bundledDependencies must be an array in ${manifestPath}`);
+  process.exit(2);
+}
+const packageDir = path.dirname(manifestPath);
+for (const name of bundled) {
+  if (typeof name !== "string" || !name) continue;
+  const installedManifest = path.join(packageDir, "node_modules", ...name.split("/"), "package.json");
+  if (!fs.existsSync(installedManifest)) console.log(name);
+}
+NODE
+}
+
+prepare_package_bundled_dependencies() {
+  local pkg_dir="$1"
+  local missing remaining
+  missing="$(missing_bundled_dependencies "$pkg_dir")"
+  [[ -n "$missing" ]] || return 0
+
+  echo "Materializing bundled dependencies for $(basename "$pkg_dir"): $(printf '%s' "$missing" | paste -sd ', ' -)"
+  (
+    cd "$pkg_dir"
+    npm install --ignore-scripts --omit=dev --omit=peer --no-save --package-lock=false
+  )
+
+  remaining="$(missing_bundled_dependencies "$pkg_dir")"
+  if [[ -n "$remaining" ]]; then
+    echo "ERROR: bundled dependencies remain unavailable for $(basename "$pkg_dir"): $(printf '%s' "$remaining" | paste -sd ', ' -)" >&2
+    return 1
+  fi
+}
+
+prepare_bundled_dependencies_from_targets_file() {
+  local root_dir="$1"
+  local targets_file="$2"
+  local raw target pkg_dir
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    target="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -z "$target" || "$target" == \#* ]] && continue
+    if [[ "$target" = /* ]]; then
+      pkg_dir="$target"
+    else
+      pkg_dir="$root_dir/$target"
+    fi
+    if [[ ! -f "$pkg_dir/package.json" ]]; then
+      echo "ERROR: package '$target' not found under $root_dir" >&2
+      return 1
+    fi
+    prepare_package_bundled_dependencies "$pkg_dir"
+  done < "$targets_file"
+}
+
+prepare_bundled_dependencies_for_target() {
+  local root_dir="$1"
+  local target="$2"
+  local pkg_dir
+  if [[ "$target" != "all" ]]; then
+    if [[ "$target" = /* ]]; then
+      pkg_dir="$target"
+    else
+      pkg_dir="$root_dir/$target"
+    fi
+    if [[ ! -f "$pkg_dir/package.json" ]]; then
+      echo "ERROR: package '$target' not found under $root_dir" >&2
+      return 1
+    fi
+    prepare_package_bundled_dependencies "$pkg_dir"
+    return
+  fi
+
+  while IFS= read -r pkg_dir; do
+    prepare_package_bundled_dependencies "$pkg_dir"
+  done < <(find "$root_dir" -mindepth 2 -maxdepth 2 -type f -name package.json -printf '%h\n' | sort)
+}
+
 case "$MODE" in
   check)
     check_cmd=("$CHECK_SCRIPT" --target "$TARGET" --publisher "$PUBLISHER")
@@ -182,6 +265,9 @@ case "$MODE" in
     PI_NPM_PACKAGES_ROOT="$workspace_root" "$BUMP_SCRIPT" --targets-file "$candidate_targets_file" --apply
     echo
 
+    prepare_bundled_dependencies_from_targets_file "$workspace_root" "$candidate_targets_file"
+    echo
+
     cmd=("$PUBLISH_SCRIPT" --targets-file "$candidate_targets_file" --publisher "$PUBLISHER" --access "$ACCESS")
     if [[ $STRICT_AUTH -eq 1 ]]; then
       cmd+=(--strict-auth)
@@ -194,6 +280,9 @@ case "$MODE" in
     bump_cmd=("$BUMP_SCRIPT" --target "$TARGET" --apply)
     echo "Applying required version bumps: ${bump_cmd[*]}"
     "${bump_cmd[@]}"
+    echo
+
+    prepare_bundled_dependencies_for_target "$ROOT_DIR" "$TARGET"
     echo
 
     cmd=("$PUBLISH_SCRIPT" --target "$TARGET" --publisher "$PUBLISHER" --access "$ACCESS" --apply)
