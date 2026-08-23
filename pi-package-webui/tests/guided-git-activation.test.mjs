@@ -12,6 +12,7 @@ import {
   guidedGitWorkflowCommandForTabCatalog,
   parseGuidedGitStartPayload,
   resolveCommandForTabCatalog,
+  resolveRpcSlashCommandForTabCatalog,
 } from "../public/guided-git-command-state.mjs";
 
 const ids = [
@@ -200,6 +201,28 @@ test("originating tab stays authoritative across an active-tab switch", async ()
   await start.promise;
   assert.equal(activeTabId, "tab-b");
   assert.equal(startedTabId, "tab-a", "the transport envelope tab, not the active browser tab, owns activation");
+});
+
+test("RPC resolution falls back to extension aliases when native commands own the base names", () => {
+  const catalog = {
+    raw: [
+      { name: "skills", source: "native", invokeName: "skills" },
+      { name: "skills:1", source: "extension", invokeName: "skills:1" },
+      { name: "tools", source: "native", invokeName: "tools" },
+      { name: "tools:1", source: "extension", invokeName: "tools:1" },
+    ],
+    available: [
+      { name: "skills", source: "native", invokeName: "skills" },
+      { name: "skills:1", source: "extension", invokeName: "skills:1" },
+      { name: "tools", source: "native", invokeName: "tools" },
+      { name: "tools:1", source: "extension", invokeName: "tools:1" },
+    ],
+  };
+
+  assert.equal(resolveCommandForTabCatalog(catalog, "skills", { rpcOnly: true })?.name, "skills:1");
+  assert.equal(resolveCommandForTabCatalog(catalog, "tools", { rpcOnly: true })?.name, "tools:1");
+  assert.equal(resolveRpcSlashCommandForTabCatalog(catalog, "/skills"), "/skills:1");
+  assert.equal(resolveRpcSlashCommandForTabCatalog(catalog, "/tools list"), "/tools:1 list");
 });
 
 test("tab catalog resolves the duplicate-suffixed command and the exact fallback eligibility", () => {

@@ -17,7 +17,9 @@ export function resolveCommandForTabCatalog(catalog, name, { rpcOnly = false } =
   const commands = (rpcOnly ? raw : available).filter((command) => !rpcOnly || command.source !== "native");
   const exact = commands.find((command) => command.name === requested || command.invokeName === requested || command.duplicateNames?.includes(requested));
   if (exact) return exact;
-  const canUseBaseAlias = available.some((command) => commandBaseName(command.name) === requested && command.invokeName && command.duplicateCount > 1);
+  const nativeOwnsBaseName = rpcOnly && raw.some((command) => command.source === "native" && command.name === requested);
+  const canUseBaseAlias = nativeOwnsBaseName
+    || available.some((command) => commandBaseName(command.name) === requested && command.invokeName && command.duplicateCount > 1);
   return canUseBaseAlias ? commands.find((command) => commandNameMatches(command?.name, requested)) || null : null;
 }
 
