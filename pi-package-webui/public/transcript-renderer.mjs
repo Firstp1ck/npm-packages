@@ -38,6 +38,32 @@ export function groupConsecutiveThinkingMessages(messages) {
   return grouped;
 }
 
+export function groupConsecutiveThinkingItems(items, thinkingMessageForItem = (item) => item?.message) {
+  const grouped = [];
+  let pending = [];
+
+  const flush = () => {
+    if (pending.length === 1) grouped.push(pending[0].item);
+    else if (pending.length > 1) {
+      const first = pending[0].item;
+      const message = groupConsecutiveThinkingMessages(pending.map((entry) => entry.message))[0];
+      grouped.push({ ...first, message, thinkingGroupSourceCount: pending.length });
+    }
+    pending = [];
+  };
+
+  for (const item of items || []) {
+    const message = thinkingMessageForItem(item);
+    if (groupableThinkingText(message) !== null) pending.push({ item, message });
+    else {
+      flush();
+      grouped.push(item);
+    }
+  }
+  flush();
+  return grouped;
+}
+
 function normalizedKey(value, fallback = "") {
   const key = String(value || "").trim();
   return key || fallback;

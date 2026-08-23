@@ -8,7 +8,7 @@ import { groupConsecutiveWorkflowStatusItems, isCompletedWorkflowStatusExecution
 import { buildIssuePayload, createIssueWizardCatalog, createIssueWizardState, getCompatibleTemplates, isIssueWizardStepValid, issueClipboardText, reduceIssueWizardState } from "./issue-wizard-state.mjs";
 import { createIssueBotClient, readIssueBotRuntimeConfig } from "./issue-bot-client.mjs";
 import { MOBILE_SHELL_STORAGE_KEY, TABLET_SHELL_STORAGE_KEY, createMobileShellState, isMobileShellV2Enabled, mobileNavigationTargetFromSearch, normalizeMobileNavigationTarget, reduceMobileShellState, resolveMobileShellFeatureMode, resolveTabletShellFeatureMode } from "./mobile-shell-state.mjs";
-import { createTranscriptRenderer, groupConsecutiveThinkingMessages } from "./transcript-renderer.mjs";
+import { createTranscriptRenderer, groupConsecutiveThinkingItems, groupConsecutiveThinkingMessages } from "./transcript-renderer.mjs";
 import { createStreamDerivedOutputState } from "./stream-derived-output.mjs";
 import { advanceStreamingMarkdownTail } from "./stream-markdown-tail.mjs";
 import { createLatestWinsRenderScheduler } from "./stream-render-scheduler.mjs";
@@ -39155,6 +39155,24 @@ function groupWorkflowStatusTranscriptItems(items, toolResults) {
   return groupConsecutiveWorkflowStatusItems(projected);
 }
 
+function transcriptItemThinkingMessage(item) {
+  if (!thinkingOutputVisible) return null;
+  const message = item?.message;
+  const displayMessages = message?.role === "assistant" ? assistantDisplayMessages(message) : [message];
+  if (displayMessages.length !== 1 || displayMessages[0]?.role !== "thinking") return null;
+  const candidate = displayMessages[0];
+  const thinking = visibleThinkingText(candidate.thinking || textFromContent(candidate.content));
+  return thinking ? { ...candidate, content: thinking, thinking } : null;
+}
+
+function groupConsecutiveThinkingTranscriptItems(items) {
+  return groupConsecutiveThinkingItems(items, transcriptItemThinkingMessage).map((item) => {
+    if (!(item.thinkingGroupSourceCount > 1)) return item;
+    const sourceKey = item.transcriptKey || `${item.transient ? "t" : "m"}:${item.messageIndex}:${item.order}`;
+    return { ...item, messageIndex: -1, transcriptKey: `thinking-group:${sourceKey}` };
+  });
+}
+
 function orderedTranscriptItems() {
   const items = compactOutputActive() ? compactStoredTranscriptItems() : [];
   const assistantToolCallIds = buildAssistantToolCallIdSet(latestMessages);
@@ -39180,7 +39198,8 @@ function orderedTranscriptItems() {
     }
   }
   const ordered = items.sort((a, b) => a.timestampMs - b.timestampMs || a.order - b.order);
-  return groupWorkflowStatusTranscriptItems(ordered, toolResults);
+  const groupedThinking = compactOutputActive() ? ordered : groupConsecutiveThinkingTranscriptItems(ordered);
+  return groupWorkflowStatusTranscriptItems(groupedThinking, toolResults);
 }
 
 /**

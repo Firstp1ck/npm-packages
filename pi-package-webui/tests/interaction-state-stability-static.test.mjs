@@ -186,7 +186,7 @@ const coordinatedTextPoint = functionBody("textPoint", renderer);
 const logMutation = functionBody("logMutation", renderer);
 
 // Coordinator import and initialization.
-assert.match(app, /import \{ createTranscriptRenderer, groupConsecutiveThinkingMessages \} from "\.\/transcript-renderer\.mjs";/, "app must import the transcript mutation coordinator and thinking-group helper");
+assert.match(app, /import \{ createTranscriptRenderer, groupConsecutiveThinkingItems, groupConsecutiveThinkingMessages \} from "\.\/transcript-renderer\.mjs";/, "app must import the transcript mutation coordinator and thinking-group helpers");
 assert.match(app, /const transcriptRenderer = createTranscriptRenderer\(\{[\s\S]*?chat: elements\.chat[\s\S]*?contextKey: \(\) => chatTextSelectionContextKey\(\)[\s\S]*?\}\);/, "the coordinator must be initialized once against #chat with the transcript context key");
 assert.doesNotMatch(renderer, /^\s*import\s/m, "the transcript renderer must stay dependency-free");
 assert.match(renderer, /export function createTranscriptRenderer\(/, "the coordinator must be the module's exported factory");

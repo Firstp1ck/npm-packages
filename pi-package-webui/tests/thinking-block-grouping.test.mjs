@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { groupConsecutiveThinkingMessages } from "../public/transcript-renderer.mjs";
+import { groupConsecutiveThinkingItems, groupConsecutiveThinkingMessages } from "../public/transcript-renderer.mjs";
 
 function thinking(content, timestamp) {
   return { role: "thinking", title: "thinking", content, thinking: content, timestamp };
@@ -40,9 +40,40 @@ assert.deepEqual(
   "non-text thinking payloads should not be stringified or merged",
 );
 
+function assistantItem(index, content) {
+  return {
+    message: { role: "assistant", timestamp: `2026-08-23T13:00:0${index}Z`, content: [{ type: "thinking", thinking: content }] },
+    messageIndex: index,
+    order: index,
+  };
+}
+
+const separateAssistantMessages = [
+  assistantItem(1, "first assistant message"),
+  assistantItem(2, "second assistant message"),
+  assistantItem(3, "third assistant message"),
+];
+const groupedItems = groupConsecutiveThinkingItems(separateAssistantMessages, (item) => {
+  const part = item.message.content[0];
+  return thinking(part.thinking, item.message.timestamp);
+});
+assert.equal(groupedItems.length, 1, "thinking-only assistant messages should collapse after transcript ordering");
+assert.equal(groupedItems[0].message.thinking, "first assistant message\n\nsecond assistant message\n\nthird assistant message");
+assert.equal(groupedItems[0].thinkingGroupSourceCount, 3, "the transcript aggregate should retain its source item count");
+
+const finalOutputItem = { message: { role: "assistant", content: [{ type: "text", text: "answer" }] }, messageIndex: 4, order: 4 };
+const itemBoundary = groupConsecutiveThinkingItems(
+  [assistantItem(1, "before"), finalOutputItem, assistantItem(2, "after")],
+  (item) => item.message.content[0]?.type === "thinking" ? thinking(item.message.content[0].thinking) : null,
+);
+assert.deepEqual(itemBoundary.map((item) => item.message.role), ["assistant", "assistant", "assistant"], "a rendered final-output item should keep separate thinking runs apart");
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const app = await readFile(join(root, "public", "app.js"), "utf8");
-assert.match(app, /import \{ createTranscriptRenderer, groupConsecutiveThinkingMessages \} from "\.\/transcript-renderer\.mjs";/, "the browser should import the grouping helper from the transcript renderer");
-assert.match(app, /function assistantDisplayMessages\(message\)[\s\S]*?const displayMessages = assistantDisplayMessagesWithoutFailure[\s\S]*?return groupConsecutiveThinkingMessages\(failure \? \[\.\.\.displayMessages, failure\] : displayMessages\);/, "assistant display projection should group adjacent thinking before creating transcript cards");
+assert.match(app, /import \{ createTranscriptRenderer, groupConsecutiveThinkingItems, groupConsecutiveThinkingMessages \} from "\.\/transcript-renderer\.mjs";/, "the browser should import both grouping helpers from the transcript renderer");
+assert.match(app, /function assistantDisplayMessages\(message\)[\s\S]*?const displayMessages = assistantDisplayMessagesWithoutFailure[\s\S]*?return groupConsecutiveThinkingMessages\(failure \? \[\.\.\.displayMessages, failure\] : displayMessages\);/, "assistant display projection should group adjacent thinking inside one assistant message");
+assert.match(app, /function transcriptItemThinkingMessage\(item\)[\s\S]*?assistantDisplayMessages\(message\)[\s\S]*?displayMessages\.length !== 1[\s\S]*?role !== "thinking"/, "only transcript items that render as one thinking card should be eligible for cross-message grouping");
+assert.match(app, /function groupConsecutiveThinkingTranscriptItems\(items\)[\s\S]*?groupConsecutiveThinkingItems\(items, transcriptItemThinkingMessage\)[\s\S]*?transcriptKey: `thinking-group:\$\{sourceKey\}`/, "cross-message groups should receive one stable transcript identity");
+assert.match(app, /const groupedThinking = compactOutputActive\(\) \? ordered : groupConsecutiveThinkingTranscriptItems\(ordered\);[\s\S]*?groupWorkflowStatusTranscriptItems\(groupedThinking, toolResults\)/, "normal transcripts should group thinking after complete chronological ordering");
 
 console.log("thinking-block-grouping.test.mjs passed");
