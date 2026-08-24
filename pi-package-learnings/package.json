@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-package-learnings",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "File-based troubleshooting LEARNINGS archive for Pi agents, with retrieval workflow, summary prompts, and sync scripts.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-learnings#readme",

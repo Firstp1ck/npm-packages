@@ -1,6 +1,6 @@
 {
   "name": "@firstpick/pi-extension-aur-review",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Deterministic manual AUR review gate bound to the exact Git working-tree snapshot.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-extension-aur-review#readme",
