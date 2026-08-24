@@ -14672,12 +14672,19 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   color: var(--ctp-teal);
   border-color: rgba(148, 226, 213, 0.30);
 }
+.path-picker-path-row,
 .path-picker-create-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.45rem;
+}
+.path-picker-path-row {
+  margin: 0.72rem 0 0;
+}
+.path-picker-create-row {
   margin: 0 0 0.72rem;
 }
+.path-picker-path-input,
 .path-picker-create-input {
   min-width: 0;
   width: 100%;
@@ -14686,11 +14693,14 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   border-color: rgba(137, 180, 250, 0.20);
   background: rgba(var(--ctp-surface-rgb), 0.38);
 }
+.path-picker-path-button,
 .path-picker-create-button {
   align-self: stretch;
   color: var(--ctp-blue);
   border-color: rgba(137, 180, 250, 0.32);
 }
+.path-picker-path-button:hover,
+.path-picker-path-button:focus-visible,
 .path-picker-create-button:hover,
 .path-picker-create-button:focus-visible {
   color: #11111b;
@@ -14701,7 +14711,7 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.45rem;
-  margin: 0 0 0.38rem;
+  margin: 0.72rem 0 0.38rem;
 }
 .path-picker-search-input {
   min-width: 0;
@@ -16307,9 +16317,11 @@ button.git-workflow-step { min-height: 1.9rem; }
   .app-runner-stdin-send,
   .app-runner-stdin-eof { width: 100%; }
   .path-picker-current-row,
+  .path-picker-path-row,
   .path-picker-create-row,
   .path-picker-search-row { grid-template-columns: 1fr; }
   .path-picker-add-fast-pick,
+  .path-picker-path-button,
   .path-picker-create-button,
   .path-picker-clear-search-button { width: 100%; }
   .path-picker-fast-pick { grid-template-columns: minmax(0, 1fr) 44px; }

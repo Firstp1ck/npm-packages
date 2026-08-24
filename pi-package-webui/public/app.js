@@ -541,6 +541,8 @@ const elements = {
   pathPickerTitle: $("#pathPickerTitle"),
   pathPickerCurrent: $("#pathPickerCurrent"),
   pathPickerAddFastPickButton: $("#pathPickerAddFastPickButton"),
+  pathPickerPathInput: $("#pathPickerPathInput"),
+  pathPickerPathButton: $("#pathPickerPathButton"),
   pathPickerCreateNameInput: $("#pathPickerCreateNameInput"),
   pathPickerCreateButton: $("#pathPickerCreateButton"),
   pathPickerSearchInput: $("#pathPickerSearchInput"),
@@ -24390,6 +24392,22 @@ function setPathPickerError(message) {
   elements.pathPickerError.hidden = !message;
 }
 
+function pathPickerEnteredPath() {
+  return elements.pathPickerPathInput.value.trim();
+}
+
+function updatePathPickerPathControls() {
+  const loading = !!pathPickerState?.loading;
+  elements.pathPickerPathInput.disabled = !pathPickerState || loading;
+  elements.pathPickerPathButton.disabled = !pathPickerState || loading || !pathPickerEnteredPath();
+}
+
+async function openPathPickerEnteredPath() {
+  const cwd = pathPickerEnteredPath();
+  if (!cwd || pathPickerState?.loading) return;
+  await loadPathPickerDirectory(cwd);
+}
+
 function pathPickerCreateName() {
   return elements.pathPickerCreateNameInput.value.trim();
 }
@@ -24612,9 +24630,11 @@ function renderPathPicker(data) {
   elements.pathPickerCurrent.title = data.cwd;
   elements.pathPickerChooseButton.disabled = false;
   elements.pathPickerChooseButton.textContent = "Use this directory";
+  elements.pathPickerPathInput.value = "";
   elements.pathPickerCreateNameInput.value = "";
   elements.pathPickerSearchInput.value = "";
   setPathPickerError(data.truncated ? "Showing the first 500 directories." : "");
+  updatePathPickerPathControls();
   updateCreateDirectoryControls();
   renderFastPicks();
 
@@ -24637,6 +24657,7 @@ async function loadPathPickerDirectory(cwd) {
   elements.pathPickerChooseButton.disabled = true;
   elements.pathPickerCurrent.textContent = "Loading…";
   elements.pathPickerSearchStatus.textContent = "";
+  updatePathPickerPathControls();
   updateCreateDirectoryControls();
   updatePathPickerSearchControls();
   setPathPickerError("");
@@ -24652,6 +24673,7 @@ async function loadPathPickerDirectory(cwd) {
     elements.pathPickerChooseButton.disabled = false;
     elements.pathPickerCurrent.textContent = pathPickerState.cwd || "Unable to load directory";
     setPathPickerError(error.message);
+    updatePathPickerPathControls();
     updateCreateDirectoryControls();
     updatePathPickerSearchControls();
     updateAddFastPickButton();
@@ -24711,6 +24733,7 @@ function pickCwd(tab, initialCwd, { title } = {}) {
     pathPickerState = { tabId: pickerTab.id, cwd: initialCwd, requestId: 0, loading: false, creatingDirectory: false, directories: [], filteredDirectories: [], resolve };
     elements.pathPickerTitle.textContent = title || `Choose CWD for ${pickerTab.title}`;
     elements.pathPickerCurrent.textContent = "Loading…";
+    elements.pathPickerPathInput.value = "";
     elements.pathPickerCreateNameInput.value = "";
     elements.pathPickerSearchInput.value = "";
     elements.pathPickerSearchStatus.textContent = "";
@@ -24720,6 +24743,7 @@ function pickCwd(tab, initialCwd, { title } = {}) {
     setPathPickerError("");
     elements.pathPickerAddFastPickButton.disabled = true;
     elements.pathPickerChooseButton.disabled = true;
+    updatePathPickerPathControls();
     updateCreateDirectoryControls();
     updatePathPickerSearchControls();
     initializeFastPicks().catch((error) => addEvent(`failed to initialize path fast picks: ${error.message}`, "error"));
@@ -51046,6 +51070,13 @@ elements.fileSelectionCommentInput?.addEventListener("keydown", (event) => {
   event.preventDefault();
   sendFileSelectionToSession();
 });
+elements.pathPickerPathInput.addEventListener("input", updatePathPickerPathControls);
+elements.pathPickerPathInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  openPathPickerEnteredPath().catch((error) => addEvent(error.message, "error"));
+});
+elements.pathPickerPathButton.addEventListener("click", () => openPathPickerEnteredPath().catch((error) => addEvent(error.message, "error")));
 elements.pathPickerCreateNameInput.addEventListener("input", updateCreateDirectoryControls);
 elements.pathPickerCreateNameInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;

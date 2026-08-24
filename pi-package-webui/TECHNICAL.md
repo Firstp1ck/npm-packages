@@ -89,6 +89,8 @@ A short interruption is possible during restart; zero downtime is not promised.
 
 ## Session continuity
 
+The working-directory picker accepts a direct path for first, new, and split terminals and for cwd changes. On Windows, enter a rooted drive path such as `C:/` or `D:/project` to switch drives. Web UI loads and validates that directory before it can be selected; an invalid or unavailable path remains in the field so you can correct it.
+
 When tabs span multiple working directories, a directory with one tab stays a normal, non-dropdown tab. Hover over it—or focus controls within it—to reveal **+ Tab** directly below, matching the placement used by grouped terminal menus without repeating the current tab. Directories with multiple tabs continue to use the grouped terminal menu.
 
 Restarting only the Web UI normally keeps managed Pi tabs, working folders, saved sessions, and active work connected to the replacement server.
