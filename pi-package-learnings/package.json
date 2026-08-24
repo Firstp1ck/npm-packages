@@ -30,6 +30,9 @@
       "./prompts"
     ]
   },
+  "dependencies": {
+    "@firstpick/pi-utils": "^0.2.7"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",

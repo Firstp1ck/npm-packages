@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import path from "node:path";
+import { delay } from "@firstpick/pi-utils";
 import { AUR_REVIEW_MAX_DISPLAY_PATH_LENGTH, AUR_REVIEW_SCHEMA_VERSION, type ChangeStats, type ChangedFile, type ReportCandidate, type ReviewSnapshot } from "./types.ts";
 
 const MAX_CHANGED_FILE_SUMMARIES = 500;
@@ -246,10 +247,6 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 async function releaseReviewLock(lock: string, token: string): Promise<void> {
   try {
     const raw = await readFile(path.join(lock, "owner.json"), "utf8");
@@ -331,7 +328,7 @@ async function acquireReviewLock(repoRoot: string): Promise<() => Promise<void>>
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for the repository review lock after ${Math.ceil(REVIEW_LOCK_WAIT_MS / 1000)} seconds.`);
       }
-      await sleep(REVIEW_LOCK_RETRY_MS + Math.floor(Math.random() * REVIEW_LOCK_RETRY_MS));
+      await delay(REVIEW_LOCK_RETRY_MS + Math.floor(Math.random() * REVIEW_LOCK_RETRY_MS));
     }
   }
 }

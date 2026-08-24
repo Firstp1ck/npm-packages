@@ -1,3 +1,5 @@
+import { truncate } from "@firstpick/pi-utils";
+
 export type CommandRuleLike = {
   pattern: RegExp;
 };
@@ -28,7 +30,8 @@ function testLine(rule: CommandRuleLike, line: string): boolean {
 
 function truncateContextLine(line: string): string {
   if (line.length <= CONTEXT_LINE_MAX_CHARS) return line;
-  return `${line.slice(0, CONTEXT_LINE_MAX_CHARS)} … [truncated ${line.length - CONTEXT_LINE_MAX_CHARS} chars]`;
+  const excerpt = truncate(line, CONTEXT_LINE_MAX_CHARS, { collapseWhitespace: false, ellipsis: "", trimEnd: false });
+  return `${excerpt} … [truncated ${line.length - CONTEXT_LINE_MAX_CHARS} chars]`;
 }
 
 function normalizeContextLineCount(value: number | undefined): number {

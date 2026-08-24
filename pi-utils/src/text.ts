@@ -9,6 +9,11 @@ export type TruncateOptions = {
   trimEnd?: boolean;
 };
 
+export type TruncateResult = {
+  text: string;
+  truncated: boolean;
+};
+
 export type FormatBytesOptions = {
   binary?: boolean;
   precision?: number;
@@ -59,21 +64,25 @@ export function stripHtml(html: string | undefined): string {
   return decodeXmlEntities(String(html ?? "").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
 }
 
-export function truncate(value: unknown, maxChars: number, options: TruncateOptions = {}): string {
+export function truncateWithFlag(value: unknown, maxChars: number, options: TruncateOptions = {}): TruncateResult {
   const ellipsis = options.ellipsis ?? "…";
   const limit = Math.max(0, Math.trunc(maxChars));
-  if (limit === 0) return "";
   let text = String(value ?? "");
   if (options.collapseWhitespace ?? true) text = text.replace(/\s+/g, " ").trim();
-  if (text.length <= limit) return text;
+  if (limit === 0) return { text: "", truncated: text.length > 0 };
+  if (text.length <= limit) return { text, truncated: false };
   const trimEnd = options.trimEnd ?? true;
   if (!ellipsis) {
     const sliced = text.slice(0, limit);
-    return trimEnd ? sliced.trimEnd() : sliced;
+    return { text: trimEnd ? sliced.trimEnd() : sliced, truncated: true };
   }
-  if (ellipsis.length >= limit) return ellipsis.slice(0, limit);
+  if (ellipsis.length >= limit) return { text: ellipsis.slice(0, limit), truncated: true };
   const sliced = text.slice(0, limit - ellipsis.length);
-  return `${trimEnd ? sliced.trimEnd() : sliced}${ellipsis}`;
+  return { text: `${trimEnd ? sliced.trimEnd() : sliced}${ellipsis}`, truncated: true };
+}
+
+export function truncate(value: unknown, maxChars: number, options: TruncateOptions = {}): string {
+  return truncateWithFlag(value, maxChars, options).text;
 }
 
 export const truncateText = truncate;

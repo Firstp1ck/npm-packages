@@ -1,4 +1,9 @@
+import { mkdirSync } from "node:fs";
 import fs from "node:fs/promises";
+
+export function ensureDir(directory: string, options: { mode?: number } = {}): void {
+  mkdirSync(directory, { recursive: true, mode: options.mode });
+}
 
 export async function syncFile(filePath: string): Promise<void> {
   const handle = await fs.open(filePath, "r+");

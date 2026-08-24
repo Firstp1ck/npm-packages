@@ -3,10 +3,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { syncDirectory, syncFile } from "../src/filesystem.ts";
+import { ensureDir, syncDirectory, syncFile } from "../src/filesystem.ts";
 import { crc32, sha256Bytes, sha256File, sha256Text, shortHash } from "../src/hash.ts";
 import { fetchJsonWithTimeout, combinedSignal } from "../src/http.ts";
-import { writeJsonFileAtomic, writeJsonFileAtomicSync } from "../src/json.ts";
+import { readJsonSafe, writeJsonFileAtomic, writeJsonFileAtomicSync } from "../src/json.ts";
 import { pathExists, samePath, xdgConfigHome, xdgDataHome } from "../src/paths.ts";
 import { detachChildProcess, isProcessRunning, killGracefully, readLines, terminateProcessTree } from "../src/process.ts";
 import { normalizeTimestampMs } from "../src/time.ts";
@@ -21,6 +21,7 @@ import {
   stripQuotes,
   titleCaseFromSlug,
   truncate,
+  truncateWithFlag,
 } from "../src/text.ts";
 
 assert.equal(escapeRegExp("a+b[1]?"), "a\\+b\\[1\\]\\?");
@@ -33,6 +34,9 @@ assert.equal(stripHtml("<p>Hello&nbsp;<b>world</b></p>"), "Hello world");
 
 assert.equal(truncate(" one\n two   three ", 9), "one two…");
 assert.equal(truncate("abcdef", 3, { ellipsis: "" }), "abc");
+assert.deepEqual(truncateWithFlag("short", 8), { text: "short", truncated: false });
+assert.deepEqual(truncateWithFlag("abcdef", 4), { text: "abc…", truncated: true });
+assert.deepEqual(truncateWithFlag("hidden", 0), { text: "", truncated: true });
 assert.equal(pluralize(1, "item"), "item");
 assert.equal(pluralize(2, "item"), "items");
 assert.equal(titleCaseFromSlug("hello-world_test"), "Hello World Test");
@@ -63,9 +67,15 @@ assert.equal(await pathExists(path.join(os.tmpdir(), `pi-utils-missing-${Date.no
 
 const tmpDir = await mkdtemp(path.join(os.tmpdir(), "pi-utils-"));
 try {
+  const ensuredDir = path.join(tmpDir, "ensured", "nested");
+  ensureDir(ensuredDir);
+  assert.equal(await pathExists(ensuredDir), true);
+
   const syncJsonFile = path.join(tmpDir, "sync.json");
   writeJsonFileAtomicSync(syncJsonFile, { ok: true }, { mode: 0o600 });
   assert.equal(await readFile(syncJsonFile, "utf8"), "{\n  \"ok\": true\n}\n");
+  assert.deepEqual(readJsonSafe(syncJsonFile, {}), { ok: true });
+  assert.deepEqual(readJsonSafe(path.join(tmpDir, "missing.json"), { fallback: true }), { fallback: true });
 
   const asyncFile = path.join(tmpDir, "nested", "async.json");
   await writeJsonFileAtomic(asyncFile, [1, 2]);

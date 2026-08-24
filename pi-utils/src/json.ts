@@ -19,6 +19,15 @@ export function readJsonIfExists<T>(filePath: string, fallback: T): T {
   return readJsonFile<T>(filePath);
 }
 
+/** Read JSON with a fallback for missing, unreadable, or malformed files. */
+export function readJsonSafe<T>(filePath: string, fallback: T): T {
+  try {
+    return readJsonFile<T>(filePath);
+  } catch {
+    return fallback;
+  }
+}
+
 export function writeJsonFile(filePath: string, data: unknown, options: { mode?: number } = {}): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, { encoding: "utf8", mode: options.mode });

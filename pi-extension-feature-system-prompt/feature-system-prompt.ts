@@ -10,6 +10,7 @@ import {
 	type ExtensionContext,
 	type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
+import { truncate } from "@firstpick/pi-utils";
 
 export const REQUEST_KINDS = [
 	"feature_lightweight",
@@ -84,8 +85,7 @@ export interface ClassifierPromptInput {
 }
 
 function truncateClassifierPrompt(value: string): string {
-	if (value.length <= MAX_CLASSIFIER_PROMPT_CHARS) return value;
-	return `${value.slice(0, MAX_CLASSIFIER_PROMPT_CHARS - 1)}…`;
+	return truncate(value, MAX_CLASSIFIER_PROMPT_CHARS, { collapseWhitespace: false, trimEnd: false });
 }
 
 /**

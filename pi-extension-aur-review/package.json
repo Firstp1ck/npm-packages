@@ -28,6 +28,9 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check src/git.ts && node --experimental-strip-types --check src/storage.ts && node --experimental-strip-types --check src/review.ts"
   },
+  "dependencies": {
+    "@firstpick/pi-utils": "^0.2.7"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"

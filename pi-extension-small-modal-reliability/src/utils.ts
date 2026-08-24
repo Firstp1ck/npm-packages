@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { readJsonSafe, stripAnsi as stripAnsiBase, truncate as truncateBase, writeJsonFile as writeJsonFileBase } from "@firstpick/pi-utils";
 import { redactSensitiveText } from "./redaction.ts";
 
 export function nowIso(): string {
@@ -8,17 +7,11 @@ export function nowIso(): string {
 }
 
 export function readJsonFile<T>(filePath: string): T | undefined {
-  try {
-    if (!existsSync(filePath)) return undefined;
-    return JSON.parse(readFileSync(filePath, "utf8")) as T;
-  } catch {
-    return undefined;
-  }
+  return readJsonSafe<T | undefined>(filePath, undefined);
 }
 
 export function writeJsonFile(filePath: string, value: unknown, mode = 0o600): void {
-  mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode });
+  writeJsonFileBase(filePath, value, { mode });
 }
 
 export function sanitizeText(value: string): string {
@@ -27,8 +20,7 @@ export function sanitizeText(value: string): string {
 
 export function truncate(value: string, maxChars: number): string {
   const clean = sanitizeText(value.replace(/\s+/g, " ").trim());
-  if (clean.length <= maxChars) return clean;
-  return `${clean.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+  return truncateBase(clean, maxChars, { collapseWhitespace: false });
 }
 
 export function stableStringify(value: unknown): string {
@@ -66,7 +58,7 @@ export function firstLines(text: string, limit = 6): string[] {
 }
 
 export function stripAnsi(value: string): string {
-  return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  return stripAnsiBase(value);
 }
 
 export function contentToText(content: unknown): string {

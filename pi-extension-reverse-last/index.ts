@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, normalizeTimestampMs, resolvePathFromAgentDir } from "@firstpick/pi-utils";
+import { ensureDir, getAgentDir, normalizeTimestampMs, resolvePathFromAgentDir } from "@firstpick/pi-utils";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { matchesKey } from "@earendil-works/pi-tui";
@@ -39,10 +39,6 @@ function getStateDir(): string {
 
 function getStatePath(sessionId: string): string {
   return path.join(getStateDir(), `${sessionId}.json`);
-}
-
-function ensureDir(dir: string): void {
-  fs.mkdirSync(dir, { recursive: true });
 }
 
 function readTextFile(absPath: string): string | undefined {

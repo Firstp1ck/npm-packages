@@ -20,7 +20,7 @@ Shared helper utilities used by `@firstpick/pi-extension-*` packages.
 - `resolveEnvValue(key, options?)`
 - `quoteEnvValue(value)`
 - `upsertEnvValue(filePath, key, value)`
-- `slugify(input, options?)`
+- `slugify(input, options?)` / `truncate(value, maxChars, options?)` / `truncateWithFlag(value, maxChars, options?)`
 - `formatTokens(count)`
 - `estimateTokensFromCharCount(charCount)`
 - `estimateTokensFromText(text)`
@@ -31,12 +31,12 @@ Shared helper utilities used by `@firstpick/pi-extension-*` packages.
 - `appendInitialPromptCalibrationRecord(appendEntry, record)`
 - `delay(ms)`
 - `tokenizeArgs(input)` / `takeValue(tokens, index, flag)`
-- `readJsonFile(path)` / `readJsonIfExists(path, fallback)` / `writeJsonFile(path, data)`
+- `readJsonFile(path)` / `readJsonIfExists(path, fallback)` / `readJsonSafe(path, fallback)` / `writeJsonFile(path, data)`
 - `runCommand(command, args, options?)` / `runShellCommand(cwd, command, options?)`
 - `shellQuote(value)` / `stripAnsi(input)` / `resolveExecutableFromPath(name)`
 - `detachChildProcess(child)` / `killGracefully(target, options?)` / `terminateProcessTree(target, signal?)`
 - `sha256Bytes(data)` / `sha256Text(value)` / `sha256File(path)` / `shortHash(value, length?)` / `crc32(data)`
-- `syncFile(path)` / `syncDirectory(path)`
+- `ensureDir(path, options?)` / `syncFile(path)` / `syncDirectory(path)`
 - `normalizeTimestampMs(timestamp)`
 - `jsonToolResult(payload)` / `textToolResult(text, details?)`
 - `createRunLog(cwd)` / `appendRunLog(log, chunk)` / `saveRunLog(log, options)` / `listRunLogs(dir)`

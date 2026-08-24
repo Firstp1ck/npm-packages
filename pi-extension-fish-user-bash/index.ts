@@ -3,13 +3,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createLocalBashOperations, type BashOperations, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveExecutableFromPath } from "@firstpick/pi-utils";
+import { resolveExecutableFromPath, shellQuote } from "@firstpick/pi-utils";
 
 const DISABLED_VALUES = new Set(["0", "false", "no", "off"]);
-
-function shellQuote(value: string): string {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
-}
 
 function truthyEnvDefaultTrue(value: string | undefined): boolean {
   const normalized = String(value || "").trim().toLowerCase();

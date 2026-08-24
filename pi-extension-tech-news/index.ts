@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { extractXmlTag as getXmlTag, getAgentEnvPath, resolveEnvValue, upsertEnvValue, withExtensionWorkingIndicator, type ExtensionWorkingIndicator } from "@firstpick/pi-utils";
+import { extractXmlTag as getXmlTag, getAgentEnvPath, resolveEnvValue, truncate, upsertEnvValue, withExtensionWorkingIndicator, type ExtensionWorkingIndicator } from "@firstpick/pi-utils";
 import { Type } from "typebox";
 
 const HN_BASE_URL = "https://hacker-news.firebaseio.com/v0";
@@ -927,10 +927,7 @@ function formatDate(value: string | undefined): string | undefined {
 }
 
 function truncateText(value: string | undefined, maxLength: number): string | undefined {
-  if (!value) return undefined;
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) return normalized;
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+  return value ? truncate(value, maxLength) : undefined;
 }
 
 function truncateAtSentence(value: string | undefined, minLength: number, softMaxLength: number, overflowLength = 0): string | undefined {

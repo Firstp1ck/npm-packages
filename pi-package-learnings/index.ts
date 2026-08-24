@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { getSettingsListTheme, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Container, Input, Key, matchesKey, type SettingItem, SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { isPathInside, slugify } from "@firstpick/pi-utils";
 
 const DEFAULT_DIR = "/mnt/SSD_NVME/LEARNINGS";
 const DEFAULT_TIMER = "20:00";
@@ -318,11 +319,6 @@ function resolveLearningsDir(): ResolvedLearningsDir {
   return { dir: normalizeDir(DEFAULT_DIR), source: "default" };
 }
 
-function isPathInside(base: string, candidate: string): boolean {
-  const rel = path.relative(base, candidate);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
 function safeResolveInLearningsDir(rootDir: string, reference: string): string {
   const root = normalizeDir(rootDir);
   const candidate = normalizeDir(path.isAbsolute(reference) ? reference : path.join(root, reference));
@@ -378,14 +374,6 @@ function extractReferencedMarkdownPaths(text: string): string[] {
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) refs.add(match[1]);
   return [...refs];
-}
-
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-{2,}/g, "-") || `learning-${new Date().toISOString().slice(0, 10)}`;
 }
 
 async function runLearningsSummary(): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -648,7 +636,7 @@ export default function learningsExtension(pi: ExtensionAPI): void {
       const root = resolved.dir;
       fs.mkdirSync(root, { recursive: true });
 
-      const slug = slugify(titleOrSlug);
+      const slug = slugify(titleOrSlug, { fallback: `learning-${new Date().toISOString().slice(0, 10)}` });
       const notePath = safeResolveInLearningsDir(root, `${slug}.md`);
       const exists = fs.existsSync(notePath);
       const content = [
