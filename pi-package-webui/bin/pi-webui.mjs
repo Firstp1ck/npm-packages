@@ -59,6 +59,12 @@ import {
   findWindowsReservedGitPath,
   windowsReservedGitPathFailure,
 } from "../lib/git-command-errors.mjs";
+import {
+  WINDOWS_DRIVES_PICKER_PATH,
+  createWindowsDriveRootDiscovery,
+  isWindowsDriveRoot,
+  windowsDrivesPickerData,
+} from "../lib/windows-drive-roots.mjs";
 import { ComponentUpdateState, sanitizeComponentUpdateError, validateComponentUpdateRequest, validateUpdateApplyRequest, validateUpdatePlanRequest } from "../lib/component-update-state.mjs";
 import { resolveCanonicalPiRuntime, resolveWebuiRuntimeIdentity } from "../lib/update/resolver.mjs";
 import { bundledPackageOwnership, packageOwnerRoot } from "../lib/update/package-layout.mjs";
@@ -5641,7 +5647,37 @@ function pathPickerRoots(activeCwd, viewedCwd) {
   ]);
 }
 
+const discoverWindowsDriveRoots = createWindowsDriveRootDiscovery({ runCommand });
+
+function knownWindowsDrivePaths(activeCwd) {
+  return [
+    activeCwd,
+    options.cwd,
+    process.env.USERPROFILE,
+    process.env.HOME,
+    process.env.HOMEDRIVE,
+    process.env.SystemDrive,
+    process.env.SystemRoot,
+  ];
+}
+
+function windowsDriveDiscoveryCwd() {
+  return process.env.SystemRoot || process.env.WINDIR || path.dirname(process.execPath);
+}
+
+async function getWindowsDrivesPickerData(activeCwd) {
+  const driveRoots = await discoverWindowsDriveRoots({
+    cwd: windowsDriveDiscoveryCwd(),
+    knownPaths: knownWindowsDrivePaths(activeCwd),
+  });
+  return windowsDrivesPickerData(driveRoots, pathPickerRoots(activeCwd, activeCwd));
+}
+
 async function getDirectoryPickerData(viewPath, activeCwd) {
+  if (platform() === "win32" && viewPath === WINDOWS_DRIVES_PICKER_PATH) {
+    return getWindowsDrivesPickerData(activeCwd);
+  }
+
   const cwd = await resolveCwd(viewPath || activeCwd, activeCwd);
   let entries;
   try {
@@ -5658,11 +5694,14 @@ async function getDirectoryPickerData(viewPath, activeCwd) {
     return { name: entry.name, cwd: entryPath, displayCwd: displayPath(entryPath), hidden: entry.name.startsWith(".") };
   });
   const parent = path.dirname(cwd);
+  const parentPath = platform() === "win32" && isWindowsDriveRoot(cwd)
+    ? WINDOWS_DRIVES_PICKER_PATH
+    : parent === cwd ? null : parent;
 
   return {
     cwd,
     displayCwd: displayPath(cwd),
-    parent: parent === cwd ? null : parent,
+    parent: parentPath,
     roots: pathPickerRoots(activeCwd, cwd),
     directories,
     truncated: directoryEntries.length > directories.length,

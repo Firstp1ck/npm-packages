@@ -24423,8 +24423,9 @@ function pathPickerCreateValidationError(name = pathPickerCreateName()) {
 function updateCreateDirectoryControls() {
   const busy = !!pathPickerState?.creatingDirectory;
   const loading = !!pathPickerState?.loading;
-  const canCreate = !!pathPickerState?.cwd && !loading && !busy && !!pathPickerCreateName();
-  elements.pathPickerCreateNameInput.disabled = !pathPickerState || loading || busy;
+  const canEdit = !!pathPickerState?.cwd && pathPickerState.selectable !== false && !loading && !busy;
+  const canCreate = canEdit && !!pathPickerCreateName();
+  elements.pathPickerCreateNameInput.disabled = !canEdit;
   elements.pathPickerCreateButton.disabled = !canCreate;
   elements.pathPickerCreateButton.textContent = busy ? "Creating…" : "Create directory";
 }
@@ -24435,9 +24436,9 @@ function pathPickerSearchQuery() {
 
 function updatePathPickerSearchControls() {
   const loading = !!pathPickerState?.loading;
-  const hasDirectory = !!pathPickerState?.cwd;
+  const canSearch = !!pathPickerState && (pathPickerState.selectable === false || !!pathPickerState.cwd);
   const hasQuery = !!pathPickerSearchQuery();
-  elements.pathPickerSearchInput.disabled = !pathPickerState || loading || !hasDirectory;
+  elements.pathPickerSearchInput.disabled = loading || !canSearch;
   elements.pathPickerClearSearchButton.hidden = !hasQuery;
   elements.pathPickerClearSearchButton.disabled = loading || !hasQuery;
 }
@@ -24471,7 +24472,8 @@ function renderPathPickerDirectoryList() {
   }
 
   for (const directory of matches) {
-    const button = pathPickerButton(`${directory.name}/`, directory.cwd, () => loadPathPickerDirectory(directory.cwd), `path-picker-directory${directory.hidden ? " hidden-directory" : ""}`);
+    const label = /[\\/]$/.test(directory.name) ? directory.name : `${directory.name}/`;
+    const button = pathPickerButton(label, directory.cwd, () => loadPathPickerDirectory(directory.cwd, { focusAfterLoad: true }), `path-picker-directory${directory.hidden ? " hidden-directory" : ""}`);
     button.setAttribute("role", "option");
     elements.pathPickerList.append(button);
   }
@@ -24570,7 +24572,7 @@ function fastPickLabel(pick) {
 }
 
 function currentFastPick() {
-  if (!pathPickerState?.cwd) return null;
+  if (!pathPickerState?.cwd || pathPickerState.selectable === false) return null;
   return { cwd: pathPickerState.cwd, displayCwd: elements.pathPickerCurrent.textContent || pathPickerState.cwd };
 }
 
@@ -24602,7 +24604,7 @@ function renderFastPicks() {
 
   for (const pick of picks) {
     const item = make("span", "path-picker-fast-pick");
-    const jump = pathPickerButton(fastPickLabel(pick), pick.cwd, () => loadPathPickerDirectory(pick.cwd), "path-picker-fast-pick-button");
+    const jump = pathPickerButton(fastPickLabel(pick), pick.cwd, () => loadPathPickerDirectory(pick.cwd, { focusAfterLoad: true }), "path-picker-fast-pick-button");
     const remove = pathPickerButton("×", `Unpin ${pick.cwd}`, async () => {
       await saveFastPicks(loadFastPicks().filter((item) => item.cwd !== pick.cwd));
     }, "path-picker-fast-pick-remove");
@@ -24622,13 +24624,15 @@ async function addCurrentFastPick() {
 
 function renderPathPicker(data) {
   if (!pathPickerState) return;
-  pathPickerState.cwd = data.cwd;
+  pathPickerState.cwd = data.cwd || "";
+  pathPickerState.displayCwd = data.displayCwd || pathPickerState.cwd;
+  pathPickerState.selectable = data.selectable !== false;
   pathPickerState.loading = false;
   pathPickerState.directories = Array.isArray(data.directories) ? data.directories : [];
   pathPickerState.filteredDirectories = pathPickerState.directories;
-  elements.pathPickerCurrent.textContent = data.displayCwd || data.cwd;
-  elements.pathPickerCurrent.title = data.cwd;
-  elements.pathPickerChooseButton.disabled = false;
+  elements.pathPickerCurrent.textContent = pathPickerState.displayCwd;
+  elements.pathPickerCurrent.title = pathPickerState.cwd || pathPickerState.displayCwd;
+  elements.pathPickerChooseButton.disabled = !pathPickerState.selectable || !pathPickerState.cwd;
   elements.pathPickerChooseButton.textContent = "Use this directory";
   elements.pathPickerPathInput.value = "";
   elements.pathPickerCreateNameInput.value = "";
@@ -24640,16 +24644,16 @@ function renderPathPicker(data) {
 
   elements.pathPickerRoots.replaceChildren();
   if (data.parent) {
-    elements.pathPickerRoots.append(pathPickerButton("↑ Parent", data.parent, () => loadPathPickerDirectory(data.parent), "path-picker-root-button"));
+    elements.pathPickerRoots.append(pathPickerButton("↑ Parent", data.parent, () => loadPathPickerDirectory(data.parent, { focusAfterLoad: true }), "path-picker-root-button"));
   }
   for (const root of data.roots || []) {
-    elements.pathPickerRoots.append(pathPickerButton(root.label, root.cwd, () => loadPathPickerDirectory(root.cwd), "path-picker-root-button"));
+    elements.pathPickerRoots.append(pathPickerButton(root.label, root.cwd, () => loadPathPickerDirectory(root.cwd, { focusAfterLoad: true }), "path-picker-root-button"));
   }
 
   renderPathPickerDirectoryList();
 }
 
-async function loadPathPickerDirectory(cwd) {
+async function loadPathPickerDirectory(cwd, { focusAfterLoad = false } = {}) {
   if (!pathPickerState) return;
   const requestId = ++pathPickerState.requestId;
   pathPickerState.loading = true;
@@ -24667,11 +24671,13 @@ async function loadPathPickerDirectory(cwd) {
     const response = await api(`/api/directories${query}`);
     if (!pathPickerState || pathPickerState.requestId !== requestId) return;
     renderPathPicker(response.data || {});
+    if (focusAfterLoad) elements.pathPickerSearchInput.focus({ preventScroll: true });
   } catch (error) {
     if (!pathPickerState || pathPickerState.requestId !== requestId) return;
     pathPickerState.loading = false;
-    elements.pathPickerChooseButton.disabled = false;
-    elements.pathPickerCurrent.textContent = pathPickerState.cwd || "Unable to load directory";
+    elements.pathPickerChooseButton.disabled = !pathPickerState.selectable || !pathPickerState.cwd;
+    elements.pathPickerCurrent.textContent = pathPickerState.displayCwd || pathPickerState.cwd || "Unable to load directory";
+    elements.pathPickerCurrent.title = pathPickerState.cwd || pathPickerState.displayCwd || "";
     setPathPickerError(error.message);
     updatePathPickerPathControls();
     updateCreateDirectoryControls();
@@ -24730,7 +24736,7 @@ function pickCwd(tab, initialCwd, { title } = {}) {
 
   return new Promise((resolve) => {
     const pickerTab = tab || { id: "path-picker", title: "tab" };
-    pathPickerState = { tabId: pickerTab.id, cwd: initialCwd, requestId: 0, loading: false, creatingDirectory: false, directories: [], filteredDirectories: [], resolve };
+    pathPickerState = { tabId: pickerTab.id, cwd: initialCwd, displayCwd: initialCwd, selectable: true, requestId: 0, loading: false, creatingDirectory: false, directories: [], filteredDirectories: [], resolve };
     elements.pathPickerTitle.textContent = title || `Choose CWD for ${pickerTab.title}`;
     elements.pathPickerCurrent.textContent = "Loading…";
     elements.pathPickerPathInput.value = "";

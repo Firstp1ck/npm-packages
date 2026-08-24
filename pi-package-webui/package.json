@@ -56,6 +56,8 @@
     "tests",
     "lib/WEBUI_TUI_NATIVE_PARITY.json",
     "README.md",
+    "TECHNICAL.md",
+    "DEVELOPMENT.md",
     "LICENSE"
   ],
   "engines": {
