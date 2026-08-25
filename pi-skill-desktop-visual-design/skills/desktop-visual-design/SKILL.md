@@ -23,12 +23,13 @@ Do not trigger for server-side work, CLI output formatting, compositor configura
 ## Principles
 
 1. **Inspect before styling.** Existing theme files, token objects, shared controls, and first-party surfaces are the source of truth.
-2. **Use semantic roles.** Components depend on foreground, background, accent, urgent, muted, and named surface roles instead of literal palette colors.
-3. **Define every interaction state.** Cover idle, hover, keyboard cursor, focus, selected, pressed, disabled, and urgent states where they apply.
-4. **Keep geometry stable.** Reserve border and focus-ring space so interaction never shifts layout.
-5. **Use one scale.** Derive spacing and typography from named tokens and a documented base size.
-6. **Retheme through one path.** Parse, validate, and publish an atomic theme snapshot. Theme changes must not leave mixed old and new values on screen.
-7. **Match existing motion.** Prefer short, cubic ease-out transitions and honor reduced-motion settings.
+2. **Honor the active color scheme.** Standalone apps must read the toolkit, portal, or host-shell light or dark preference before choosing a built-in palette. For Linux Qt apps, prefer an explicit XDG portal result at startup because Qt platform-theme environment can differ between launchers; use Qt style hints as the fallback and live-change input. Automatic mode must update when its authoritative preference changes.
+3. **Use semantic roles.** Components depend on foreground, background, accent, urgent, muted, and named surface roles instead of literal palette colors.
+4. **Define every interaction state.** Cover idle, hover, keyboard cursor, focus, selected, pressed, disabled, and urgent states where they apply.
+5. **Keep geometry stable.** Reserve border and focus-ring space so interaction never shifts layout.
+6. **Use one scale.** Derive spacing and typography from named tokens and a documented base size.
+7. **Retheme through one path.** Parse, validate, and publish an atomic theme snapshot. Theme changes must not leave mixed old and new values on screen.
+8. **Match existing motion.** Prefer short, cubic ease-out transitions and honor reduced-motion settings.
 
 ## Token model
 
@@ -79,13 +80,13 @@ Use 120ms for state-color transitions, about 140ms for popup opacity, 160 to 180
 
 ## Workflow
 
-1. **Confirm the target.** Identify the toolkit, host shell or app, supported interaction methods, scale factors, and light or dark modes. Completion: the runtime and visual comparison target are explicit.
-2. **Inventory the visual contract.** Find palette sources, theme objects, token modules, shared controls, font settings, geometry sources, motion constants, and first-party reference surfaces. Completion: each planned value has an owner or is marked as a fallback.
-3. **Choose the integration path.** Inside a host project, reuse its theme and control modules. For a standalone app, define a user-configurable theme input and portable loader. Read the matching reference file.
-4. **Create semantic tokens.** Map source values into palette, surface, state, spacing, typography, border, geometry, and motion roles. Completion: UI components do not own repeated design literals.
+1. **Confirm the target.** Identify the toolkit, host shell or app, supported interaction methods, scale factors, supported theme modes, and the current system color-scheme preference. Completion: the runtime, active preference, and visual comparison target are explicit.
+2. **Inventory the visual contract.** Find palette sources, color-scheme signals, theme objects, token modules, shared controls, font settings, geometry sources, motion constants, and first-party reference surfaces. Completion: each planned value has an owner or is marked as a fallback.
+3. **Choose the integration path.** Inside a host project, reuse its theme and control modules. For a standalone app, define source precedence for automatic mode and an explicit app-owned input only for user overrides. A Linux Qt app should prefer a valid XDG portal light or dark result, then fall back to Qt style hints. Read the matching reference file.
+4. **Create semantic tokens.** Map source values into complete light and dark palette, surface, state, spacing, typography, border, geometry, and motion roles. Keep literal fallback colors in the theme owner. Completion: UI components own no palette literals.
 5. **Implement complete states.** Add pointer, keyboard, focus, selected, pressed, disabled, and urgent behavior as needed. Completion: keyboard use is visible and layout remains stable.
-6. **Wire theme changes.** Watch the authoritative input or subscribe to the toolkit's theme signal. Debounce reloads, validate the full update, and retain the last valid snapshot on failure.
-7. **Verify.** Compare the result with first-party surfaces, switch themes, test scaling and input modes, scan for hardcoded palette values, and run the project's checks.
+6. **Wire theme changes.** Subscribe to the toolkit, portal, host-shell, or validated file signal that owns the preference. Publish all changed tokens together and retain the last valid snapshot on input failure.
+7. **Verify.** Force light and dark branches, return to automatic mode, change the live system preference, compare first-party surfaces, test scaling and input modes, scan components for palette literals, and run the project's checks.
 
 ## Invocation design
 
@@ -101,11 +102,13 @@ Use 120ms for state-color transitions, about 140ms for popup opacity, 160 to 180
 
 ## Verification
 
-- Search changed UI files for literal palette colors and justify any remaining values.
+- Search changed UI components for literal palette colors. Keep fallback literals only in the theme owner and justify any exception.
 - Test pointer and keyboard focus, selected, pressed, disabled, and urgent states.
-- Switch between supported themes and confirm all semantic colors update together.
+- Force both light and dark branches, then run a separate automatic-mode acceptance check with no test override and confirm it matches the desktop preference.
+- Test no-preference, malformed, and unavailable source results plus any disagreement precedence between toolkit and portal values.
+- Change the live desktop preference and confirm every semantic color tied to the live source updates together without restarting the app.
 - Test supported scale factors, font changes, and bar or panel edges.
-- Compare screenshots beside existing first-party surfaces.
+- Compare screenshots beside existing first-party surfaces. For Quickshell windows, confirm the visual root belongs to `contentItem` and that intended opaque surfaces do not reveal the windows behind them.
 - Run the target project's documented formatting, type, and UI checks.
 
 ## Safety and failure modes
@@ -114,6 +117,7 @@ Use 120ms for state-color transitions, about 140ms for popup opacity, 160 to 180
 - Do not edit desktop settings or theme sources when the request only covers an app or component.
 - Treat theme files and environment values as untrusted input. Validate colors, numbers, paths, and width lists.
 - Use argument arrays for external commands. Never build shell commands from theme values.
+- A missing or unknown system color-scheme preference uses the toolkit palette or a documented neutral fallback. It must not silently force light mode.
 - Missing theme data uses a documented fallback and reports that fallback once.
 - Invalid reloads retain the last valid theme instead of partially applying values.
 - Make targeted edits to files containing private-use or Nerd Font glyphs.

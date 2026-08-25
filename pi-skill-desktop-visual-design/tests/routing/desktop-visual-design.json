@@ -3,6 +3,7 @@
   "should_trigger": [
     "Build a Quickshell volume popup that looks native next to my existing bar.",
     "Make this Tauri app follow my desktop theme and retint when it changes.",
+    "Fix this Qt Quick app so it stops forcing light mode and follows my system dark preference.",
     "Why does my custom panel widget look inconsistent with the rest of my desktop?",
     "Write a notification card for my Hyprland setup using its current radius and gaps.",
     "Style this QML panel with coherent hover, focus, selected, and pressed states.",

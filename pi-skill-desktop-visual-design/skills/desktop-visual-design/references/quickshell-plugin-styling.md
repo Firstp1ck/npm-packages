@@ -14,6 +14,26 @@ Before editing, identify:
 
 Do not assume singleton or import names. Examples below use `Theme`, `Tokens`, and `Ui` as placeholders for the host project's actual modules.
 
+## Window content ownership
+
+A Quickshell `QsWindow` or `FloatingWindow` stores ordinary child objects in its default `data` list. A visual root must belong to `window.contentItem`; otherwise the window can exist while its background and controls do not render. For an intentionally opaque application window, set an opaque window color and request an opaque surface before the window becomes visible.
+
+```qml
+FloatingWindow {
+  id: window
+  color: Theme.background
+  surfaceFormat.opaque: true
+
+  Rectangle {
+    parent: window.contentItem
+    anchors.fill: parent
+    color: Theme.background
+  }
+}
+```
+
+Verify the rendered window itself instead of treating a successful QML load or process start as visual proof.
+
 ## Rules for native-looking components
 
 1. Use the host border component or helper rather than literal `Rectangle.border` values.

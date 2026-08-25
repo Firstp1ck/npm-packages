@@ -5,14 +5,14 @@ Style desktop apps, Quickshell components, and system surfaces so they fit the u
 ## Helpful when
 
 - You are building a widget, panel, popup, launcher, or notification surface that should match an existing desktop.
-- You are writing a QML, GTK, Tauri, Electron, or web-view app that should follow live theme changes.
+- You are writing a QML, GTK, Tauri, Electron, or web-view app that should detect and follow the desktop's light or dark preference.
 - A custom interface has inconsistent colors, borders, spacing, typography, focus states, or motion.
 
 ## What to share with Pi
 
 - The UI code and the toolkit or shell it runs in.
 - Screenshots or paths to existing components that define the target visual language.
-- Available theme files, token objects, desktop settings, and any light or dark mode requirements.
+- Available theme files, token objects, desktop settings, the current system color scheme, and any explicit light or dark override requirements.
 
 ## Try asking
 
@@ -22,7 +22,7 @@ Style desktop apps, Quickshell components, and system surfaces so they fit the u
 
 - A short inventory of the existing visual rules and reusable theme inputs.
 - UI code built from named palette, state, spacing, typography, border, geometry, and motion tokens.
-- Checks for hardcoded palette values, missing interaction states, theme-switch behavior, and visual consistency.
+- Checks for component-owned palette literals, missing interaction states, forced light and dark modes, live switching, and visual consistency.
 
 ## Keep in mind
 

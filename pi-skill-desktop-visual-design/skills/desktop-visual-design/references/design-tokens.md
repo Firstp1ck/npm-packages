@@ -12,7 +12,7 @@ Use this reference profile only when the target project has no complete token sy
 | `urgent` | errors and critical attention | a validated error color |
 | `muted` | placeholders, dividers, metadata | foreground at reduced alpha |
 
-Keep palette roles semantic. Components should never depend on color names such as blue or gray.
+Keep palette roles semantic. Components should never depend on color names such as blue or gray. A standalone app needs complete light and dark values for every role, selected by the toolkit or desktop color-scheme signal in automatic mode. Keep those literal fallback values in the theme owner rather than in components.
 
 ## Interactive states
 

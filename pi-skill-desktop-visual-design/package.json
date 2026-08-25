@@ -26,12 +26,16 @@
       "./skills"
     ]
   },
+  "scripts": {
+    "test": "node --test tests/skill-contract.test.mjs"
+  },
   "files": [
     "skills/desktop-visual-design/SKILL.md",
     "skills/desktop-visual-design/references/design-tokens.md",
     "skills/desktop-visual-design/references/quickshell-plugin-styling.md",
     "skills/desktop-visual-design/references/portable-theme-loading.md",
     "tests/routing/desktop-visual-design.json",
+    "tests/skill-contract.test.mjs",
     "README.md",
     "TECHNICAL.md",
     "LICENSE"

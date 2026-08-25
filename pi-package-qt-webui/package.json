@@ -1,0 +1,49 @@
+{
+  "name": "@firstpick/pi-package-qt-webui",
+  "version": "0.1.0",
+  "description": "A small Quickshell and Qt Quick desktop client for the Pi coding agent.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-qt-webui#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-package-qt-webui"
+  },
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "quickshell",
+    "qt-quick",
+    "wayland",
+    "desktop"
+  ],
+  "bin": {
+    "qt-webui": "./bin/qt-webui.mjs"
+  },
+  "scripts": {
+    "check": "node --check bin/qt-webui.mjs && node --check lib/launcher.mjs && node tests/run-all.mjs",
+    "dev": "node ./bin/qt-webui.mjs dev",
+    "test": "node tests/run-all.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.0"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "qml",
+    "tests",
+    "README.md",
+    "TECHNICAL.md",
+    "DEVELOPMENT.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "os": [
+    "linux"
+  ]
+}

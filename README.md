@@ -30,6 +30,7 @@ Packages bundle larger features, prompt collections, themes, or related tools.
 - **[Remote access for Pi Web UI](pi-package-remote-webui/README.md)** — Open an existing Pi Web UI safely to devices on a trusted local network.
 - **[Skill lifecycle tools for Pi](pi-package-skill-lifecycle/README.md)** — Bundles the tools used to review, create, organize, and improve Pi skills.
 - **[Theme bundle for Pi](pi-package-themes-bundle/README.md)** — Adds a collection of familiar color themes to Pi.
+- **[Qt WebUI](pi-package-qt-webui/README.md)** — Use Pi in a small Linux desktop window built with Quickshell and Qt Quick.
 - **[Pi Web UI](pi-package-webui/README.md)** — Use Pi from a local browser with tabs, streaming responses, uploads, model controls, Git helpers, and optional companion features.
 
 ### Extensions

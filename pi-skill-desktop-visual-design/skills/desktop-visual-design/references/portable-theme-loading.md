@@ -16,6 +16,14 @@ A portable integration should define these inputs:
 
 Do not invent a global Linux theme path. Let users configure the source, validate it, and retain the last valid theme when reloading fails.
 
+## System color-scheme selection
+
+Automatic mode is the default for a standalone desktop app. Define which available source wins instead of accepting whichever one is easiest to read. Do not infer dark mode from one unrelated environment variable or silently choose light mode when the preference is unknown.
+
+For standalone Linux Qt and Qt Quick apps, read the XDG desktop portal's explicit `org.freedesktop.appearance` `color-scheme` value at startup when available. Value `1` means dark, `2` means light, and `0` means no preference. Prefer a valid portal result because Qt platform-theme environment can differ between launchers and terminals. Fall back to `Qt.styleHints.colorScheme` for no preference, portal failure, and live Qt theme changes. Document how disagreement is resolved.
+
+Keep complete light and dark fallback palettes in one theme owner. UI components receive semantic roles and must not contain literal palette colors. A user-selected override may choose light or dark, but automatic mode must remain available. Test automatic mode without a forced test value so an override cannot hide a missing integration path.
+
 ## Loading order
 
 1. Start with safe built-in values that keep text legible.
@@ -38,11 +46,15 @@ import QtQuick
 QtObject {
   id: root
 
-  property color foreground: "#cacccc"
-  property color background: "#101315"
-  property color accent: foreground
-  property color urgent: "#a55555"
-  property color muted: "#707880"
+  // The app validates and normalizes this from the XDG portal at startup.
+  property string systemMode: "unknown"
+  readonly property bool dark: systemMode === "dark"
+    || (systemMode !== "light" && Qt.styleHints.colorScheme === Qt.Dark)
+  readonly property color foreground: dark ? "#e5e7eb" : "#111827"
+  readonly property color background: dark ? "#111827" : "#f9fafb"
+  readonly property color accent: dark ? "#60a5fa" : "#2563eb"
+  readonly property color urgent: dark ? "#f87171" : "#b91c1c"
+  readonly property color muted: dark ? "#9ca3af" : "#6b7280"
   property int cornerRadius: 0
   property int edgeGap: 5
   property int fontBase: 12
@@ -71,7 +83,7 @@ QtObject {
 }
 ```
 
-A separate loader should parse the configured source, validate color and numeric ranges, query optional desktop settings, and update this object atomically.
+A separate loader should parse configured palette files, validate color and numeric ranges, query optional desktop settings, and update this object atomically. If the app has no external palette file, the live `dark` binding still selects the complete built-in fallback palette.
 
 ## Hyprland geometry
 

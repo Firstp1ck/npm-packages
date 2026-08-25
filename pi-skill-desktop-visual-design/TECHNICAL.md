@@ -14,6 +14,7 @@ The skill starts with the target project's existing theme contract. Useful input
 | Surface and control tokens | project token modules, style configuration, reusable components |
 | Geometry | compositor settings, project configuration, or measured existing surfaces |
 | Typography | toolkit settings, fontconfig aliases, and project font tokens |
+| Color-scheme preference | toolkit style hints, desktop portal settings, or the host shell's theme service |
 | Theme changes | file watches, toolkit notifications, a theme service, or an application reload hook |
 | Visual reference | screenshots and existing first-party components |
 
@@ -30,7 +31,9 @@ These reads are non-destructive. The skill must identify which source owns each 
 
 A portable app may accept an explicit theme directory or file path from its own configuration. Keep that path app-owned and user-configurable instead of assuming a distribution-specific location.
 
-For live retheming, watch only the authoritative theme inputs. Debounce reloads, validate parsed values, and retain the last valid theme when a read fails.
+For live retheming, watch only the authoritative theme inputs. Debounce file reloads, validate parsed values, and retain the last valid theme when a read fails. Toolkit color-scheme signals should update semantic tokens directly.
+
+Automatic mode is the default for a standalone desktop app. The app must read the toolkit or desktop preference before selecting its built-in light or dark palette. On Linux Qt, prefer a valid XDG portal result at startup and use Qt style hints when the portal has no preference or cannot be read. An explicit override is appropriate only when the app exposes that choice to the user, and tests must exercise automatic mode without that override.
 
 ## Limitations
 
