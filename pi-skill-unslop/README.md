@@ -40,6 +40,10 @@ pi install npm:@firstpick/pi-skill-unslop
 
 Restart Pi if the skill does not appear in your current session.
 
+## Source
+
+This skill is adapted from Lauren Tan's [`unslop` skill in Cursor's `pstack` plugin](https://github.com/cursor/plugins/blob/main/pstack/skills/unslop/SKILL.md). The upstream work is available under the [MIT License](https://github.com/cursor/plugins/blob/main/pstack/LICENSE).
+
 ## Technical details
 
 See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-skill-unslop/TECHNICAL.md) for advanced usage, configuration, compatibility, and limitations.
