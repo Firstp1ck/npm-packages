@@ -1,0 +1,39 @@
+{
+  "skill": "desktop-visual-design",
+  "should_trigger": [
+    "Build a Quickshell volume popup that looks native next to my existing bar.",
+    "Make this Tauri app follow my desktop theme and retint when it changes.",
+    "Why does my custom panel widget look inconsistent with the rest of my desktop?",
+    "Write a notification card for my Hyprland setup using its current radius and gaps.",
+    "Style this QML panel with coherent hover, focus, selected, and pressed states.",
+    "Review this desktop plugin's QML for visual consistency and accessible focus states."
+  ],
+  "should_not_trigger": [
+    "Change my Hyprland screenshot keybind.",
+    "Create a marketing website from our brand guide.",
+    "Write a pacman hook that cleans the package cache.",
+    "Fix the race condition in this shell script.",
+    "Change the backend API response schema.",
+    "Optimize this database query."
+  ],
+  "ambiguous": [
+    {
+      "prompt": "Make my app match my system theme.",
+      "candidate_skills": [
+        "desktop-visual-design"
+      ],
+      "decision": "Trigger for a desktop app when the target system or project exposes theme inputs or visual references.",
+      "reason": "The skill can map existing desktop theme data into application tokens, but it should not invent unavailable values.",
+      "review_status": "reviewed"
+    },
+    {
+      "prompt": "Create a new desktop theme.",
+      "candidate_skills": [
+        "desktop-visual-design"
+      ],
+      "decision": "Use the skill to define the visual token system and component states, then follow the target desktop's own packaging and installation workflow.",
+      "reason": "Theme design is in scope, while distribution-specific installation and release steps require separate guidance.",
+      "review_status": "reviewed"
+    }
+  ]
+}

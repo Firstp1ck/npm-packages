@@ -1,0 +1,39 @@
+{
+  "name": "@firstpick/pi-skill-desktop-visual-design",
+  "version": "0.1.0",
+  "description": "Portable Agent Skill for designing system-native desktop apps, Quickshell components, panels, popups, and widgets with reusable palette, state, spacing, typography, border, and motion tokens.",
+  "license": "MIT",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-desktop-visual-design#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-skill-desktop-visual-design"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "skill",
+    "agent-skill",
+    "desktop",
+    "quickshell",
+    "hyprland",
+    "theming",
+    "design-system"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "skills/desktop-visual-design/SKILL.md",
+    "skills/desktop-visual-design/references/design-tokens.md",
+    "skills/desktop-visual-design/references/quickshell-plugin-styling.md",
+    "skills/desktop-visual-design/references/portable-theme-loading.md",
+    "tests/routing/desktop-visual-design.json",
+    "README.md",
+    "TECHNICAL.md",
+    "LICENSE"
+  ]
+}
