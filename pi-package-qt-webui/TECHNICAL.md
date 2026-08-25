@@ -15,6 +15,8 @@ Other operating systems, X11-only sessions, and Quickshell releases older than 0
 
 Qt WebUI reads the XDG desktop portal's color-scheme preference at startup, then falls back to Qt's current preference when the portal has no answer. It uses the built-in dark palette when the desktop asks for dark mode and the built-in light palette when the desktop asks for light mode. Qt preference changes update the open window without restarting Pi.
 
+The launcher defaults `QT_NO_XDG_DESKTOP_PORTAL=1` for Quickshell because this app does not use Qt's desktop-services portal bridge. This prevents Qt's host-registry startup warning without hiding other `qt.qpa.services` warnings. The launcher still reads the portal's color scheme before Quickshell starts. A custom QML build that needs Qt's portal bridge can opt back in with `QT_NO_XDG_DESKTOP_PORTAL=0 qt-webui`.
+
 ## Install and commands
 
 Install the standalone command with npm:
@@ -32,6 +34,8 @@ npm install -g @firstpick/pi-package-qt-webui
 The launcher accepts no other options. Start it after changing to the project directory you want Pi to use. Spaces in directory names are supported.
 
 Development mode does not add a separate file watcher or restart loop. Quickshell watches the selected source configuration and performs its native reload when QML changes.
+
+After Pi reports that it is ready, the header shows the active provider and model ID followed by the thinking effort, for example `openai-codex/gpt-5.6-sol · thinking high`. The line is hidden while model information is unavailable and cleared when Pi restarts or exits. Long values are shortened visually to fit the window.
 
 ## Runtime and security behavior
 

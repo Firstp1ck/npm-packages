@@ -8,10 +8,15 @@ Scope {
     readonly property int maxTranscriptRows: 80
     readonly property int maxMessageCharacters: 8192
     readonly property int maxErrorCharacters: 512
+    readonly property int maxRuntimeInfoCharacters: 160
     readonly property int promptReconciliationMilliseconds: 150
     readonly property int startupReadinessMilliseconds: 2000
     readonly property bool smokeMode: Quickshell.env("QT_WEBUI_SMOKE_MODE") === "1"
     readonly property string callerCwd: String(Quickshell.env("QT_WEBUI_CALLER_CWD") || "")
+    readonly property string runtimeInfoText: currentProvider.length > 0
+        && currentModelId.length > 0 && currentThinkingLevel.length > 0
+        ? currentProvider + "/" + currentModelId + " · thinking " + currentThinkingLevel
+        : ""
 
     property alias transcriptModel: transcript
     property bool ready: false
@@ -20,6 +25,9 @@ Scope {
     property string statusKind: "stopped"
     property string statusText: "Starting…"
     property string visibleError: ""
+    property string currentProvider: ""
+    property string currentModelId: ""
+    property string currentThinkingLevel: ""
     property int requestSerial: 0
     property string pendingPromptId: ""
     property bool promptLifecycleStarted: false
@@ -46,6 +54,27 @@ Scope {
     function boundedError(value) {
         const text = typeof value === "string" ? value : String(value ?? "Unknown error")
         return text.length <= maxErrorCharacters ? text : text.slice(0, maxErrorCharacters - 1) + "…"
+    }
+
+    function boundedRuntimeInfoValue(value) {
+        if (typeof value !== "string") return ""
+        const text = value.trim()
+        return text.length <= maxRuntimeInfoCharacters
+            ? text
+            : text.slice(0, maxRuntimeInfoCharacters - 1) + "…"
+    }
+
+    function clearRuntimeInfo() {
+        currentProvider = ""
+        currentModelId = ""
+        currentThinkingLevel = ""
+    }
+
+    function updateRuntimeInfo(data) {
+        const model = data && data.model && typeof data.model === "object" ? data.model : null
+        currentProvider = boundedRuntimeInfoValue(model ? model.provider : "")
+        currentModelId = boundedRuntimeInfoValue(model ? model.id : "")
+        currentThinkingLevel = boundedRuntimeInfoValue(data ? data.thinkingLevel : "")
     }
 
     function showError(value) {
@@ -122,6 +151,7 @@ Scope {
         preserveRunError = false
         streamingRow = -1
         visibleError = ""
+        clearRuntimeInfo()
         statusKind = "stopped"
         statusText = "Restarting…"
         if (rpcProcess.running) {
@@ -153,6 +183,7 @@ Scope {
             if (event.success !== true) {
                 ready = false
                 active = false
+                clearRuntimeInfo()
                 showError(event.error || "Pi did not become ready")
                 if (smokeMode && smokePhase === 8) {
                     console.log("QT_WEBUI_SMOKE_FAILED_STATE_RECOVERABLE")
@@ -160,6 +191,8 @@ Scope {
                 }
                 return
             }
+            updateRuntimeInfo(event.data)
+            if (smokeMode && runtimeInfoText.length > 0) console.log("QT_WEBUI_SMOKE_RUNTIME_INFO")
             ready = true
             active = !!(event.data && (event.data.isStreaming === true || event.data.isCompacting === true))
             if (!active) {
@@ -469,6 +502,7 @@ Scope {
             bridge.preserveRunError = false
             bridge.streamingRow = -1
             bridge.visibleError = ""
+            bridge.clearRuntimeInfo()
             bridge.statusKind = "stopped"
             bridge.statusText = "Starting…"
             bridge.awaitingStartupState = true
@@ -488,6 +522,7 @@ Scope {
             bridge.promptLifecycleStarted = false
             bridge.pendingPromptCancellation = false
             bridge.streamingRow = -1
+            bridge.clearRuntimeInfo()
             if (bridge.restartPending) {
                 bridge.restartPending = false
                 rpcProcess.running = true

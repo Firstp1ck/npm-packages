@@ -124,7 +124,12 @@ function handle(command) {
       id: command.id,
       command: "get_state",
       success: true,
-      data: { isStreaming: false, isCompacting: false },
+      data: {
+        model: { provider: "fixture-provider", id: "fixture-model" },
+        thinkingLevel: "high",
+        isStreaming: false,
+        isCompacting: false,
+      },
     }, lineEnding);
     return;
   }

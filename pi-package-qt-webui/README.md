@@ -6,6 +6,7 @@ Use Pi in a small Linux desktop window built with Quickshell and Qt Quick.
 
 - Send prompts and read assistant text as it streams.
 - See when Pi is running or using a tool.
+- See the active provider, model ID, and thinking effort in the header.
 - Abort active work and restart Pi after a process failure.
 - Work in the project directory where you started `qt-webui`.
 - Follow the desktop portal's light or dark color-scheme preference, with Qt as a fallback.
@@ -25,6 +26,8 @@ Open a Wayland session, change to the project you want Pi to work on, and start 
 cd ~/projects/example
 qt-webui
 ```
+
+The header shows the provider, model ID, and thinking effort reported by the embedded Pi session.
 
 For QML development, start the packaged source configuration with native reload enabled:
 

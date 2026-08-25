@@ -18,6 +18,7 @@ test("README has the package guide sections, exact install name, requirements, a
   assert.match(readme, /npm run dev/);
   assert.match(readme, /Quickshell 0\.3 or newer/);
   assert.match(readme, /Linux.*Wayland|Wayland.*Linux/s);
+  assert.match(readme, /active provider, model ID, and thinking effort/i);
   assert.match(readme, /\[TECHNICAL\.md\]\(TECHNICAL\.md\)/);
 });
 
@@ -30,6 +31,7 @@ test("technical reference remains user-facing", () => {
   assert.doesNotMatch(technical, /pi install npm:@firstpick\/pi-package-qt-webui/);
   assert.match(technical, /`qt-webui dev`/);
   assert.match(technical, /`npm run dev`/);
+  assert.match(technical, /provider and model ID followed by the thinking effort/i);
   assert.match(technical, /\[Back to README\]\(README\.md\)/);
   assert.match(technical, /\[Contributor guide\]\(DEVELOPMENT\.md\)/);
   for (const forbidden of [
@@ -52,6 +54,7 @@ test("development guide has required navigation and contributor contracts", () =
   assert.match(development, /Contributor-only implementation, API, architecture, testing, and maintenance information\./);
   assert.match(development, /\[Back to README\]\(README\.md\) · \[Advanced user technical reference\]\(TECHNICAL\.md\)/);
   assert.match(development, /QT_WEBUI_CALLER_CWD/);
+  assert.match(development, /model\.provider.*model\.id.*thinkingLevel/s);
   assert.match(development, /removes every inherited environment key whose name starts with `QT_WEBUI_`/);
   assert.match(development, /npm install --package-lock-only --ignore-scripts/);
   assert.match(development, /adds that prefix's bin directory to `PATH`/);

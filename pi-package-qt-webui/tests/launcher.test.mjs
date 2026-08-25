@@ -105,9 +105,23 @@ test("prepareLaunch passes resolved paths and caller cwd as bounded environment 
   assert.equal(launch.options.env.QT_WEBUI_DEVELOPMENT_MODE, "1");
   assert.equal(launch.options.env.QT_WEBUI_SYSTEM_COLOR_SCHEME, "dark");
   assert.equal(launch.options.env.PATH, "/test/bin");
+  assert.equal(launch.options.env.QT_NO_XDG_DESKTOP_PORTAL, "1");
   assert.equal(launch.options.env.QT_WEBUI_SMOKE_MODE, undefined);
   assert.equal(launch.options.env.QT_WEBUI_THEME_MODE, undefined);
   assert.equal(launch.options.env.QT_WEBUI_UNDOCUMENTED, undefined);
+});
+
+test("prepareLaunch preserves an explicit Qt portal override", () => {
+  const launch = prepareLaunch({
+    env: { QT_NO_XDG_DESKTOP_PORTAL: "0", QT_LOGGING_RULES: "qt.qml.warning=true" },
+    root: "/tmp/qt-webui",
+    cwd: "/tmp/project",
+    nodeExecutable: "/usr/bin/node",
+    resolvePiEntry: () => "/tmp/pi-cli.js",
+    detectColorScheme: () => "dark",
+  });
+  assert.equal(launch.options.env.QT_NO_XDG_DESKTOP_PORTAL, "0");
+  assert.equal(launch.options.env.QT_LOGGING_RULES, "qt.qml.warning=true");
 });
 
 test("prepareLaunch exposes smoke controls only through the explicit test seam", () => {

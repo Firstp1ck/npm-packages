@@ -12,6 +12,7 @@ const launcherUrl = pathToFileURL(path.join(root, "lib", "launcher.mjs")).href;
 const smokeMarkers = [
   "QT_WEBUI_SMOKE_READY",
   "QT_WEBUI_SMOKE_THEME_DARK",
+  "QT_WEBUI_SMOKE_RUNTIME_INFO",
   "QT_WEBUI_SMOKE_PARSE_RECOVERED",
   "QT_WEBUI_SMOKE_STREAM_RECONCILED",
   "QT_WEBUI_SMOKE_IMMEDIATE_PROMPT_RECONCILED",
@@ -132,6 +133,7 @@ test("real Quickshell completes the deterministic Pi RPC behavior scenarios", { 
   for (const marker of smokeMarkers) assert.match(combined, new RegExp(marker), `missing ${marker}\n${combined}`);
   t.diagnostic(`observed smoke markers: ${smokeMarkers.join(", ")}`);
   assert.doesNotMatch(combined, /QQmlApplicationEngine failed|TypeError:|ReferenceError:|is not a type|Cannot assign|Stack trace/i);
+  assert.doesNotMatch(combined, /Failed to register with host portal|Cannot create delegate|Required property (?:messageRole|messageText) was not initialized/i);
 
   const commands = (await readFile(capturePath, "utf8"))
     .trim()

@@ -14,6 +14,7 @@ pi-extension-cursor-composer/benchmark-output/
 .pi-subagents
 pi-package-webui/reports/
 pi-package-webui/plans/archive/
+pi-package-qt-webui/plans/archive/
 pi-extension-workflows/reports/
 reports/
 plans/archive/

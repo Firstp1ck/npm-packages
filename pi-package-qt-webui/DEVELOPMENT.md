@@ -12,7 +12,11 @@ The Pi package exposes only import-conditioned exports, so the launcher resolves
 
 Quickshell owns the QML application process. The QML bridge owns the Pi child and starts Node with the resolved Pi CLI entry followed by `--mode rpc`. This keeps Pi's lifecycle coupled to the window and avoids a network transport.
 
+The initial `get_state` response supplies the active model object and thinking level. `PiBridge.qml` copies the bounded `model.provider`, `model.id`, and `thinkingLevel` strings into one plain-text header summary. It clears them on failed state reads, restarts, and process exits so the window never presents stale runtime metadata.
+
 `qml/Theme.qml` is the only palette owner. The launcher reads the XDG desktop portal's `org.freedesktop.appearance` color scheme at startup and passes the normalized result to QML. The theme uses that result first and falls back to `Qt.styleHints.colorScheme` when the portal has no preference or cannot be read. `shell.qml`, `Composer.qml`, and `ChatMessage.qml` receive the shared semantic palette and contain no literal palette colors. Qt preference changes continue to retint the window when the portal fallback is active.
+
+Qt 6.11 registers host applications with `org.freedesktop.host.portal.Registry` during GUI startup. The host portal rejects that registration after the same D-Bus connection has already made another portal call, which can produce a non-fatal warning during Quickshell initialization. The launcher defaults the child process to `QT_NO_XDG_DESKTOP_PORTAL=1` because Qt WebUI does not call Qt's desktop-services portal APIs. It preserves an explicit caller value, and it does not filter the `qt.qpa.services` logging category. The launcher's separate color-scheme query still runs before Quickshell starts.
 
 The visual root explicitly belongs to `FloatingWindow.contentItem`; objects placed only in the window's default `data` list are not rendered as window content. The backing surface is marked opaque and uses the selected semantic background.
 

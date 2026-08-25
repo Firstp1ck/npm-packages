@@ -146,6 +146,7 @@ export function prepareLaunch({
   );
   const childEnv = {
     ...inheritedEnvironment,
+    QT_NO_XDG_DESKTOP_PORTAL: inheritedEnvironment.QT_NO_XDG_DESKTOP_PORTAL ?? "1",
     QT_WEBUI_CALLER_CWD: boundedEnvironmentValue("QT_WEBUI_CALLER_CWD", path.resolve(cwd)),
     QT_WEBUI_QML_ENTRY: boundedEnvironmentValue("QT_WEBUI_QML_ENTRY", qmlEntry),
     QT_WEBUI_NODE_EXECUTABLE: boundedEnvironmentValue("QT_WEBUI_NODE_EXECUTABLE", nodeExecutable),

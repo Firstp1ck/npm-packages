@@ -47,6 +47,7 @@ test("shell provides one standard Qt WebUI window with the version 1 controls", 
   assert.match(shell, /surfaceFormat\.opaque:\s*true/);
   assert.match(shell, /parent:\s*window\.contentItem/);
   assert.match(shell, /text:\s*bridge\.callerCwd/);
+  assert.match(shell, /text:\s*bridge\.runtimeInfoText/);
   assert.match(shell, /appTheme\.statusBackground\(bridge\.statusKind\)/);
   assert.match(shell, /appTheme\.statusBorder\(bridge\.statusKind\)/);
   assert.match(shell, /appTheme\.statusForeground\(bridge\.statusKind\)/);
@@ -78,16 +79,26 @@ test("shared semantic theme follows the system color scheme", () => {
   }
 });
 
-test("dynamic cwd, markup-like status, and transcript content render as plain text", () => {
+test("dynamic cwd, runtime metadata, markup-like status, and transcript content render as plain text", () => {
   const cwdLabel = objectBodyContaining(shell, "Label", "text: bridge.callerCwd");
+  const runtimeInfoLabel = objectBodyContaining(shell, "Label", "text: bridge.runtimeInfoText");
   const statusLabel = objectBodyContaining(shell, "Label", "text: bridge.statusText");
   assert.match(cwdLabel, /textFormat:\s*Text\.PlainText/);
+  assert.match(runtimeInfoLabel, /textFormat:\s*Text\.PlainText/);
+  assert.match(runtimeInfoLabel, /elide:\s*Text\.ElideRight/);
   assert.match(statusLabel, /textFormat:\s*Text\.PlainText/);
   assert.match(fixture, /toolName: "<b>read<\/b>"/);
   assert.match(bridge, /maxTranscriptRows:\s*80/);
   assert.match(bridge, /maxMessageCharacters:\s*8192/);
   assert.match(functionBody(bridge, "appendMessage"), /transcript\.count >= maxTranscriptRows/);
   assert.match(functionBody(bridge, "boundedText"), /slice\(0, maxMessageCharacters - 1\)/);
+  assert.match(functionBody(bridge, "boundedRuntimeInfoValue"), /maxRuntimeInfoCharacters/);
+  assert.match(functionBody(bridge, "updateRuntimeInfo"), /model\.provider/);
+  assert.match(functionBody(bridge, "updateRuntimeInfo"), /model\.id/);
+  assert.match(functionBody(bridge, "updateRuntimeInfo"), /thinkingLevel/);
+  assert.match(bridge, /currentProvider \+ "\/" \+ currentModelId \+ " · thinking " \+ currentThinkingLevel/);
+  assert.match(fixture, /provider: "fixture-provider", id: "fixture-model"/);
+  assert.match(fixture, /thinkingLevel: "high"/);
   assert.match(message, /required property string messageRole/);
   assert.match(message, /required property string messageText/);
   assert.match(message, /textFormat:\s*Text\.PlainText/);
@@ -157,6 +168,9 @@ test("prompt, abort, startup deadline, process exit, and restart have explicit g
   assert.match(functionBody(bridge, "sendPrompt"), /pendingPromptCancellation = false/);
   assert.match(functionBody(bridge, "restartProcess"), /restartPending \|\| \(rpcProcess\.running && ready\)/);
   assert.match(functionBody(bridge, "restartProcess"), /restartPending = true[\s\S]*rpcProcess\.running = false/);
+  assert.match(functionBody(bridge, "restartProcess"), /clearRuntimeInfo\(\)/);
+  assert.match(functionBody(bridge, "handleResponse"), /event\.success !== true[\s\S]*clearRuntimeInfo\(\)/);
+  assert.match(bridge, /onStarted:[\s\S]*clearRuntimeInfo\(\)[\s\S]*onExited:[\s\S]*clearRuntimeInfo\(\)/);
   assert.match(bridge, /id: startupReadinessTimer/);
   assert.match(bridge, /"Pi did not report readiness in time"/);
   assert.match(bridge, /if \(bridge\.restartPending\)[\s\S]*rpcProcess\.running = true/);

@@ -438,13 +438,24 @@ cleanup_stale_extension_wrappers() {
 }
 
 get_pi_package_dir() {
-  local pi_bin pi_cli pi_dist
+  local pi_bin pi_cli candidate parent
   pi_bin="$(command -v pi 2>/dev/null || true)"
   [[ -n "$pi_bin" ]] || return 1
   pi_cli="$(realpath_safe "$pi_bin")"
   [[ -n "$pi_cli" ]] || return 1
-  pi_dist="$(dirname "$pi_cli")"
-  (cd "$pi_dist/.." && pwd -P) 2>/dev/null
+
+  candidate="$(dirname "$pi_cli")"
+  while [[ "$candidate" != "/" ]]; do
+    if [[ -f "$candidate/package.json" && -f "$candidate/dist/index.js" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    parent="$(dirname "$candidate")"
+    [[ "$parent" != "$candidate" ]] || break
+    candidate="$parent"
+  done
+
+  return 1
 }
 
 resolve_from_pi() {

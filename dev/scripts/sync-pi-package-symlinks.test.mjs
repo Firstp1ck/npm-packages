@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,15 +11,42 @@ const script = path.join(scriptDir, "sync-pi-package-symlinks.sh");
 const webuiLib = path.join(repoRoot, "pi-package-webui", "lib");
 const work = await mkdtemp(path.join(tmpdir(), "pi-sync-symlinks-"));
 const extensions = path.join(work, "extensions");
+const fakeBin = path.join(work, "bin");
+const fakePiPackage = path.join(work, "pi-package");
+const fakePiCli = path.join(fakePiPackage, "dist", "bundle", "cli.js");
 
 try {
   await mkdir(extensions, { recursive: true });
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(path.dirname(fakePiCli), { recursive: true });
   await symlink(webuiLib, path.join(extensions, "lib"));
+  await writeFile(path.join(fakePiPackage, "package.json"), JSON.stringify({ type: "module" }));
+  await writeFile(fakePiCli, "#!/usr/bin/env node\n");
+  await chmod(fakePiCli, 0o755);
+  await symlink(fakePiCli, path.join(fakeBin, "pi"));
+  await writeFile(
+    path.join(fakePiPackage, "dist", "index.js"),
+    `export class SettingsManager {
+  static create() { return new SettingsManager(); }
+}
+export class DefaultPackageManager {
+  async resolveExtensionSources() {
+    return {
+      extensions: [{ enabled: true, path: ${JSON.stringify(path.join(repoRoot, "pi-package-webui", "session-summary.ts"))} }],
+      skills: [],
+      prompts: [],
+      themes: [],
+    };
+  }
+}
+`,
+  );
 
   const result = spawnSync(script, ["--dry-run", "--color=never"], {
     cwd: repoRoot,
     env: {
       ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       PI_EXT_DIR: extensions,
       PI_SKILL_DIR: path.join(work, "skills"),
       PI_THEME_DIR: path.join(work, "themes"),

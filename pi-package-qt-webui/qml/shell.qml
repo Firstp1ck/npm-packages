@@ -64,6 +64,16 @@ ShellRoot {
                             elide: Text.ElideMiddle
                             font.pixelSize: 12
                         }
+
+                        Label {
+                            Layout.fillWidth: true
+                            visible: bridge.runtimeInfoText.length > 0
+                            text: bridge.runtimeInfoText
+                            textFormat: Text.PlainText
+                            color: appTheme.muted
+                            elide: Text.ElideRight
+                            font.pixelSize: 12
+                        }
                     }
 
                     Rectangle {
@@ -124,8 +134,6 @@ ShellRoot {
                         onCountChanged: Qt.callLater(positionViewAtEnd)
 
                         delegate: ChatMessage {
-                            required property string messageRole
-                            required property string messageText
                             width: transcriptList.width
                             theme: appTheme
                         }
