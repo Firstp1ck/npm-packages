@@ -170,6 +170,13 @@ try {
   ));
   assert.equal(replacementStartup.cwd, changedCwd, "replacement child process should actually run in the requested cwd");
 
+  const featureRoutingStatus = await request("/api/prompt", { method: "POST", body: { tab: observedTabId, message: "fixture feature decision clear" } });
+  assert.equal(featureRoutingStatus.status, 200, "feature-routing capability status must be accepted before the server restarts");
+  await waitFor("feature-routing supervisor metadata", async () => {
+    const supervisorState = await readSupervisorState(paths);
+    return supervisorState?.tabs?.find((tab) => tab.id === observedTabId)?.metadata?.featureSystemPromptDetected === true;
+  });
+
   const controlledPrompt = await request("/api/prompt", { method: "POST", body: { tab: observedTabId, message: streamPrompt } });
   assert.equal(controlledPrompt.status, 200, "controlled-restart prompt must be accepted once");
   const preRestartTab = (await tabs())[0];
@@ -219,6 +226,8 @@ try {
   const reconnectEvents = await initialSseEvents(observedTabId);
   const connectedEvent = reconnectEvents.find((event) => event.type === "webui_connected");
   const replayGapEvent = reconnectEvents.find((event) => event.type === "webui_supervisor_replay_gap");
+  const featureRoutingReplay = reconnectEvents.find((event) => event.type === "extension_ui_request" && event.method === "setStatus" && event.statusKey === "feature-decision-output");
+  assert.equal(featureRoutingReplay?.replayed, true, "replacement server must replay persisted feature-routing capability evidence before another prompt");
   assert.equal(connectedEvent?.supervisorReplayGap, true, "actual replacement server must report a truthful cursor-less replay gap");
   assert.equal(Object.hasOwn(connectedEvent || {}, "supervisorGap"), false, "replacement server must use the browser's canonical replay-gap field");
   assert.equal(replayGapEvent?.supervisorReplayGap, true, "replacement SSE must explicitly warn that authoritative replay recovery ran");

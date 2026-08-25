@@ -456,6 +456,7 @@ let optionalFeatureStartupReady = false;
 const UPDATE_PACKAGE_NAMES = [...CORE_UPDATE_PACKAGE_NAMES].sort();
 const NATURAL_CONVERSATION_STATUS_KEY = "natural-conversation";
 const NATURAL_CONVERSATION_COMMAND_NAMES = ["talk", "voice", "conversation"];
+const REPLAYABLE_CLEARED_EXTENSION_STATUS_KEYS = new Set(["feature-decision-output", "feature-category"]);
 const GUIDED_GIT_START_STATUS_KEY = "git-guided-workflow:webui-start";
 const GUIDED_GIT_START_PAYLOAD_TYPE = "firstpick.pi-extension-git-guided-workflow.start";
 const GUIDED_GIT_START_PAYLOAD_VERSION = 1;
@@ -10068,6 +10069,7 @@ function supervisedTabMetadata(tab, { cwd = tab.cwd } = {}) {
     sessionFile: tabRestorableSessionFile(tab),
     gitWorkspace: tab.gitWorkspace || null,
     createdAt: tab.createdAt,
+    featureSystemPromptDetected: featureSystemPromptDetected(tab),
   };
 }
 
@@ -10219,6 +10221,17 @@ function extensionStatusMap(tab) {
   return tab.extensionStatuses;
 }
 
+function featureSystemPromptDetected(tab) {
+  const statuses = extensionStatusMap(tab);
+  return [...REPLAYABLE_CLEARED_EXTENSION_STATUS_KEYS].some((statusKey) => statuses.has(statusKey));
+}
+
+function restoreFeatureSystemPromptDetection(tab, detected) {
+  if (!detected) return;
+  const statuses = extensionStatusMap(tab);
+  for (const statusKey of REPLAYABLE_CLEARED_EXTENSION_STATUS_KEYS) statuses.set(statusKey, undefined);
+}
+
 function isGuidedGitWorkflowCommandMessage(message) {
   return GUIDED_GIT_COMMAND_MESSAGE.test(String(message || "").trim());
 }
@@ -10286,8 +10299,12 @@ function extensionWidgetMap(tab) {
 function rememberExtensionStatusEvent(tab, event) {
   if (event?.type !== "extension_ui_request" || event.method !== "setStatus" || !event.statusKey) return;
   const statuses = extensionStatusMap(tab);
-  if (event.statusText) statuses.set(String(event.statusKey), String(event.statusText));
-  else statuses.delete(String(event.statusKey));
+  const statusKey = String(event.statusKey);
+  const featureWasDetected = featureSystemPromptDetected(tab);
+  if (event.statusText) statuses.set(statusKey, String(event.statusText));
+  else if (REPLAYABLE_CLEARED_EXTENSION_STATUS_KEYS.has(statusKey)) statuses.set(statusKey, undefined);
+  else statuses.delete(statusKey);
+  if (!featureWasDetected && featureSystemPromptDetected(tab)) scheduleSupervisorMetadataUpdate(tab);
 }
 
 function rememberExtensionWidgetEvent(tab, event) {
@@ -11397,6 +11414,7 @@ function attachRpcToTab(tab, rpc) {
       tab.gitWorkflowMessageGeneration = null;
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
+      scheduleSupervisorMetadataUpdate(tab);
       clearExtensionWidgets(tab);
       clearPendingGuidedGitLaunch(tab);
       clearWebuiSubagents(tab);
@@ -11556,6 +11574,7 @@ async function hydrateManagedTabs(snapshot) {
         gitWorkspace: metadata?.gitWorkspace || null,
         rpc,
       });
+      restoreFeatureSystemPromptDetection(tab, metadata?.featureSystemPromptDetected === true);
       attachRpcToTab(tab, rpc);
       tabs.set(tab.id, tab);
       workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
