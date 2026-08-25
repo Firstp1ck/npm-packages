@@ -186,9 +186,9 @@ Launch detected development servers, tests, builds, scripts, and project-defined
 
 ![Pi Web UI guided Git workflow showing staged changes, generated commit messages, and PR controls](https://raw.githubusercontent.com/Firstp1ck/pi-coding-agent-forge/main/pi-package-webui/images/Webui_GitWorkflow_v0.4.8.png)
 
-**Optional features needed:** `@firstpick/pi-extension-git-guided-workflow` provides the preferred `/git-guided-workflow` launcher and bundles `@firstpick/pi-prompts-git-pr` for generated commit messages, branch names, and pull-request content. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate. The Optional features panel installs and audits the Guided Git extension as one complete feature.
+**Optional features needed:** `@firstpick/pi-extension-git-guided-workflow` provides `/git-guided-workflow` plus native `/git-staged-msg`, `/git-branch-name`, and `/pr` generation commands. `@firstpick/pi-extension-aur-review` optionally adds the staged-review gate. The Optional features panel installs and audits the Guided Git extension as one complete feature.
 
-Run `/git-guided-workflow` in the browser composer or use the **Guided Git workflow** button. The extension starts the workflow in the originating tab without sending a repository path, diff, or Git data in its activation request. Existing prompt-only installations retain a temporary compatibility launcher, but installing the workflow extension is the supported path.
+Run `/git-guided-workflow` in the browser composer or use the **Guided Git workflow** button. The extension starts the workflow in the originating tab without sending a repository path, diff, or Git data in its activation request. Browser generation requires the extension-owned RPC commands and does not fall back to same-named prompt templates.
 
 Move through review, staging, commit-message generation, commit, push, and pull-request steps with explicit confirmations. In **Guided Git Setup**, you can optionally choose a fallback model and its own reasoning effort. If the primary model reaches a final generation failure, Guided Git tries the fallback once, reports the change in the workflow, and restores the tab’s prior model and effort afterward. Validation failures, cancellation, Git command failures, and a stopped Pi process do not trigger fallback.
 

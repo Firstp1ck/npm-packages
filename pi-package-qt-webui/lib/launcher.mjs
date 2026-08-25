@@ -11,6 +11,8 @@ const TEST_ONLY_ENVIRONMENT_NAMES = new Set([
   "QT_WEBUI_SMOKE_CAPTURE_PATH",
   "QT_WEBUI_SMOKE_STATE_PATH",
   "QT_WEBUI_THEME_MODE",
+  "QT_WEBUI_PI_STARTUP_TIMEOUT_MS",
+  "QT_WEBUI_PI_REQUEST_TIMEOUT_MS",
 ]);
 const SIGNAL_EXIT_CODES = new Map([
   ["SIGINT", 130],
@@ -130,6 +132,7 @@ export function prepareLaunch({
 } = {}) {
   const { development } = parseLauncherArgs(argv);
   const qmlEntry = path.resolve(root, "qml", "shell.qml");
+  const backendEntry = path.resolve(root, "lib", "backend", "main.mjs");
   const piCliEntry = resolvePiEntry();
   const inheritedEnvironment = Object.fromEntries(
     Object.entries(env).filter(([name]) => !name.startsWith("QT_WEBUI_")),
@@ -149,6 +152,7 @@ export function prepareLaunch({
     QT_NO_XDG_DESKTOP_PORTAL: inheritedEnvironment.QT_NO_XDG_DESKTOP_PORTAL ?? "1",
     QT_WEBUI_CALLER_CWD: boundedEnvironmentValue("QT_WEBUI_CALLER_CWD", path.resolve(cwd)),
     QT_WEBUI_QML_ENTRY: boundedEnvironmentValue("QT_WEBUI_QML_ENTRY", qmlEntry),
+    QT_WEBUI_BACKEND_ENTRY: boundedEnvironmentValue("QT_WEBUI_BACKEND_ENTRY", backendEntry),
     QT_WEBUI_NODE_EXECUTABLE: boundedEnvironmentValue("QT_WEBUI_NODE_EXECUTABLE", nodeExecutable),
     QT_WEBUI_PI_CLI_ENTRY: boundedEnvironmentValue("QT_WEBUI_PI_CLI_ENTRY", piCliEntry),
     QT_WEBUI_DEVELOPMENT_MODE: development ? "1" : "0",
@@ -168,6 +172,7 @@ export function prepareLaunch({
     development,
     piCliEntry,
     qmlEntry,
+    backendEntry,
   };
 }
 

@@ -93,6 +93,20 @@ Report:
 
 Never describe Marketplace acceptance, plugin safety, or runtime compatibility as verified without corresponding evidence.
 
+## Verification
+
+- Record every static command, exit code, finding, and omitted check. Successful JSON parsing, path inspection, `omarchy plugin validate`, and `qmllint` are separate evidence; none substitutes for source review.
+- Run lifecycle checks only in an authorized Omarchy Quattro environment and identify the exact plugin ID and shell state tested.
+- After identity, manifest, QML, dependency, or command changes, repeat the affected static checks and any authorized lifecycle checks.
+- Before requesting submission confirmation, validate the exact candidate commit and classify it as ready, conditionally ready, or not ready using the publishing checklist.
+
+## Safety and Failure Modes
+
+- Treat plugin source, assets, manifests, dependencies, commands, and repository content as untrusted input until reviewed.
+- Stop on a symlink, unsafe path, reserved third-party ID, unexplained command or dependency, missing required validation, or a mismatch between kinds and entry points.
+- If an optional tool or live Omarchy environment is unavailable, report the resulting limitation; do not infer a pass or bypass the check with another Quickshell process.
+- Keep runtime and external side effects behind the authorization boundary in the ordered workflow. Preparation never authorizes enablement, restart, removal, push, issue submission, or publication.
+
 ## Pi Adapter
 
 - In Pi, use the available file-reading, editing, and command tools for bounded inspection and validation, following the active repository instructions.

@@ -2828,7 +2828,7 @@ const OPTIONAL_FEATURES = [
     label: "Guided Git workflow",
     packageName: "@firstpick/pi-extension-git-guided-workflow",
     capabilityLabel: "/git-guided-workflow",
-    description: "Cross-surface launcher with bundled commit, branch, and pull-request prompt templates.",
+    description: "Cross-surface workflow with native commit, branch, and pull-request generation commands.",
     setup: "git-workflow",
   },
   {
@@ -33545,19 +33545,25 @@ function reconcileGuidedGitReviewWidgetRemoval(tabId) {
   return true;
 }
 
-function guidedGitPromptCommandUnavailable(commandName) {
-  return `Guided Git browser generation requires /${commandName} from @firstpick/pi-prompts-git-pr in the originating tab.`;
+function guidedGitNativeCommandUnavailable(commandName) {
+  return `Guided Git browser generation requires the /${commandName} extension command from @firstpick/pi-extension-git-guided-workflow in the originating tab. Same-named prompt templates are not used.`;
 }
 
-function guidedGitPromptCompanionAvailable(tabId) {
-  return !isOptionalFeatureDisabled("gitWorkflow") && hasLoadedRpcCommand("git-staged-msg", { tabId });
+function hasLoadedGuidedGitNativeCommand(commandName, tabId) {
+  return resolveAvailableCommand(commandName, { tabId, rpcOnly: true })?.source === "extension";
 }
 
-function reportGuidedGitPromptCompanionUnavailable(tabId) {
+function guidedGitNativeCommandsAvailable(tabId) {
+  return !isOptionalFeatureDisabled("gitWorkflow")
+    && ["git-staged-msg", "git-branch-name", "pr"].every((commandName) => hasLoadedGuidedGitNativeCommand(commandName, tabId));
+}
+
+function reportGuidedGitNativeCommandsUnavailable(tabId) {
   const tabContext = activeTabContext(tabId);
+  const missing = ["git-staged-msg", "git-branch-name", "pr"].find((commandName) => !hasLoadedGuidedGitNativeCommand(commandName, tabId));
   const message = isOptionalFeatureDisabled("gitWorkflow")
     ? optionalFeatureUnavailableMessage("gitWorkflow")
-    : guidedGitPromptCommandUnavailable("git-staged-msg");
+    : guidedGitNativeCommandUnavailable(missing || "git-staged-msg");
   addEvent(message, "warn");
   refreshCommands(tabContext).catch((error) => {
     if (isCurrentTabContext(tabContext)) addEvent(error.message || String(error), "error");
@@ -33567,8 +33573,8 @@ function reportGuidedGitPromptCompanionUnavailable(tabId) {
 function handleGuidedGitActivationRequest(request) {
   if (request?.method !== "setStatus" || request.statusKey !== GUIDED_GIT_START_STATUS_KEY) return false;
   const result = guidedGitActivationController.consume(request, async (tabId, activationIsCurrent) => {
-    if (!guidedGitPromptCompanionAvailable(tabId)) {
-      reportGuidedGitPromptCompanionUnavailable(tabId);
+    if (!guidedGitNativeCommandsAvailable(tabId)) {
+      reportGuidedGitNativeCommandsUnavailable(tabId);
       return;
     }
     await startGitWorkflow(tabId, { activationIsCurrent });
@@ -33604,35 +33610,13 @@ function guidedGitLaunchAdmitted(tabId) {
   return false;
 }
 
-async function startLegacyGuidedGitWorkflowFallback(tabId) {
-  if (!guidedGitLaunchAdmitted(tabId)) return;
-  if (!guidedGitPromptCompanionAvailable(tabId)) {
-    addEvent(isOptionalFeatureDisabled("gitWorkflow")
-      ? optionalFeatureUnavailableMessage("gitWorkflow")
-      : "Guided Git is unavailable: install @firstpick/pi-extension-git-guided-workflow. Browser generation also requires @firstpick/pi-prompts-git-pr.", "warn");
-    return;
-  }
-  try {
-    await api("/api/git-workflow/launch-admission", { method: "POST", body: {}, tabId });
-  } catch (error) {
-    reportGuidedGitLaunchRefused("pending");
-    return;
-  }
-  addEvent("Using the temporary prompt-only Guided Git compatibility launcher. Install @firstpick/pi-extension-git-guided-workflow to route future starts through /git-guided-workflow.", "info");
-  await guidedGitActivationController.run(tabId, (_tabId, activationIsCurrent) => startGitWorkflow(tabId, { activationIsCurrent }));
-}
-
 async function launchGuidedGitWorkflow(tabId = activeTabId) {
   if (!tabId || !guidedGitLaunchAdmitted(tabId)) return;
   const launchMode = guidedGitLaunchModeForTabCatalog(commandCatalogForTab(tabId), { disabled: isOptionalFeatureDisabled("gitWorkflow") });
-  if (launchMode === "fallback") {
-    await startLegacyGuidedGitWorkflowFallback(tabId);
-    return;
-  }
   if (launchMode !== "extension") {
     addEvent(launchMode === "disabled"
       ? optionalFeatureUnavailableMessage("gitWorkflow")
-      : "Guided Git is unavailable: install @firstpick/pi-extension-git-guided-workflow. Browser generation also requires @firstpick/pi-prompts-git-pr.", "warn");
+      : "Guided Git is unavailable: install @firstpick/pi-extension-git-guided-workflow and reload the Pi tab.", "warn");
     return;
   }
   const commandName = resolveAvailableCommandName("git-guided-workflow", { tabId, rpcOnly: true });
@@ -33645,8 +33629,8 @@ async function launchGuidedGitWorkflow(tabId = activeTabId) {
 
 async function startGitWorkflow(tabId = activeTabId, { skipSetup = false, activationIsCurrent = () => true } = {}) {
   if (!tabId || !activationIsCurrent()) return;
-  if (!guidedGitPromptCompanionAvailable(tabId)) {
-    reportGuidedGitPromptCompanionUnavailable(tabId);
+  if (!guidedGitNativeCommandsAvailable(tabId)) {
+    reportGuidedGitNativeCommandsUnavailable(tabId);
     return;
   }
 
@@ -34122,8 +34106,8 @@ async function loadGitWorkflowDefaultCommitMessage({ runId, tabId = activeTabId 
 
 async function runGitMessagePrompt(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
-  if (!hasLoadedRpcCommand("git-staged-msg", { tabId })) {
-    failGitWorkflow(new Error(guidedGitPromptCommandUnavailable("git-staged-msg")), "generate", { tabId });
+  if (!hasLoadedGuidedGitNativeCommand("git-staged-msg", tabId)) {
+    failGitWorkflow(new Error(guidedGitNativeCommandUnavailable("git-staged-msg")), "generate", { tabId });
     return;
   }
   const targetTab = tabs.find((tab) => tab.id === tabId);
@@ -34272,19 +34256,8 @@ async function loadGitWorkflowMessage({ requireFresh = false, generationId, runI
   return promise;
 }
 
-function gitBranchNamePromptMessage() {
-  if (hasAvailableCommand("git-branch-name")) return "/git-branch-name";
-  return [
-    "Generate one PR branch name for the current staged work.",
-    "Inspect only staged changes (`git diff --cached`) and the generated commit message files if present:",
-    "- dev/COMMIT/staged-commit-short.txt",
-    "- dev/COMMIT/staged-commit-long.txt",
-    "",
-    "Write exactly one line to dev/COMMIT/staged-branch-name.txt in this format:",
-    "<type>/<short-feature-name>",
-    "",
-    "Rules: use lowercase kebab-case, no spaces/underscores/uppercase/trailing punctuation, 2-5 words after the slash, and no extra lines or prose in the file.",
-  ].join("\n");
+function gitBranchNamePromptMessage(tabId = gitWorkflowActionTabId()) {
+  return hasLoadedGuidedGitNativeCommand("git-branch-name", tabId) ? "/git-branch-name" : "";
 }
 
 async function createGitPrBranch(tabId = gitWorkflowActionTabId()) {
@@ -34299,8 +34272,8 @@ async function createGitPrBranchManually(tabId = gitWorkflowActionTabId()) {
 
 async function runGitBranchNamePrompt(tabId = gitWorkflowActionTabId()) {
   const tabContext = activeTabContext(tabId);
-  if (!hasLoadedRpcCommand("git-branch-name", { tabId })) {
-    failGitWorkflow(new Error(guidedGitPromptCommandUnavailable("git-branch-name")), "message", { tabId });
+  if (!hasLoadedGuidedGitNativeCommand("git-branch-name", tabId)) {
+    failGitWorkflow(new Error(guidedGitNativeCommandUnavailable("git-branch-name")), "message", { tabId });
     return;
   }
   const targetTab = tabs.find((tab) => tab.id === tabId);
@@ -34666,8 +34639,8 @@ async function runGitPrPrompt(tabId = gitWorkflowActionTabId(), { prefixOutput =
     failGitWorkflow(new Error("Pi is currently running. Wait for it to finish or abort before generating a PR description."), "push", { tabId });
     return;
   }
-  if (!hasLoadedRpcCommand("pr", { tabId })) {
-    failGitWorkflow(new Error(guidedGitPromptCommandUnavailable("pr")), "push", { tabId });
+  if (!hasLoadedGuidedGitNativeCommand("pr", tabId)) {
+    failGitWorkflow(new Error(guidedGitNativeCommandUnavailable("pr")), "push", { tabId });
     return;
   }
   const workflow = gitWorkflowForTab(tabId, { create: false });
@@ -41256,7 +41229,7 @@ function updateOptionalFeatureAvailability() {
   optionalFeatureAvailability.bangCommandAutocomplete = hasAvailableCommand("bang-status") || hasAvailableCommand("bang-refresh");
   optionalFeatureAvailability.fishUserBash = hasAvailableCommand("user-bash-shell");
   optionalFeatureAvailability.btwCommand = hasAvailableCommand("btw") || optionalFeatureAvailability.btwCommand || statusEntries.has(BTW_WEBUI_STATUS_KEY) || widgets.has(BTW_OUTPUT_WIDGET_KEY);
-  optionalFeatureAvailability.gitWorkflow = hasAvailableCommand("git-guided-workflow") || hasAvailableCommand("git-staged-msg");
+  optionalFeatureAvailability.gitWorkflow = hasAvailableCommand("git-guided-workflow") || hasLoadedGuidedGitNativeCommand("git-staged-msg", activeTabId);
   optionalFeatureAvailability.releaseNpm = hasAvailableCommand("release-npm");
   optionalFeatureAvailability.releaseAur = hasAvailableCommand("release-aur");
   optionalFeatureAvailability.aurReview = hasAvailableCommand("aur-review") || optionalFeatureAvailability.aurReview || widgets.has(AUR_REVIEW_RPC_WIDGET_KEY);

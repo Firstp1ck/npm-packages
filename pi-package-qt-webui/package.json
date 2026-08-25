@@ -1,7 +1,7 @@
 {
   "name": "@firstpick/pi-package-qt-webui",
-  "version": "0.1.0",
-  "description": "A small Quickshell and Qt Quick desktop client for the Pi coding agent.",
+  "version": "0.2.0",
+  "description": "A Quickshell and Qt Quick desktop client for the Pi coding agent with rich transcript output, extension dialogs, and a supervised local backend.",
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-package-qt-webui#readme",
   "repository": {
@@ -23,7 +23,7 @@
     "qt-webui": "./bin/qt-webui.mjs"
   },
   "scripts": {
-    "check": "node --check bin/qt-webui.mjs && node --check lib/launcher.mjs && node tests/run-all.mjs",
+    "check": "node --check bin/qt-webui.mjs && node --check lib/launcher.mjs && for f in lib/backend/*.mjs; do node --check \"$f\" || exit 1; done && node tests/run-all.mjs",
     "dev": "node ./bin/qt-webui.mjs dev",
     "test": "node tests/run-all.mjs"
   },

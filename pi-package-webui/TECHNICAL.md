@@ -115,7 +115,7 @@ Text and image reads remain scoped to the active tab's working directory and its
 
 ## Optional features
 
-Every server start performs a bounded, read-only startup audit of optional companion packages. Missing, unregistered, or older companions appear in the Optional features panel without blocking the core Web UI. The Guided Git entry installs `@firstpick/pi-extension-git-guided-workflow`, which bundles and registers the `@firstpick/pi-prompts-git-pr` generation prompts as part of the same Pi package.
+Every server start performs a bounded, read-only startup audit of optional companion packages. Missing, unregistered, or older companions appear in the Optional features panel without blocking the core Web UI. The Guided Git entry installs `@firstpick/pi-extension-git-guided-workflow`, which registers the launcher and native commit-message, branch-name, and pull-request generation commands as one Pi package.
 
 - **Migrate…** reviews and installs selected legacy companions.
 - **Later** dismisses the startup reminder while leaving migration available in settings.
@@ -319,9 +319,9 @@ If an expected tag is absent, confirm that the agents used direct Intercom or na
 
 Install `@firstpick/pi-extension-git-guided-workflow` to make `/git-guided-workflow` the preferred launcher in both Pi's terminal interface and WebUI. In WebUI, typing the command or selecting the Guided Git action requests the browser workflow for the originating tab. Only the browser client that sent the command consumes the live activation. The request is one-shot: a disconnected browser can miss it, but WebUI will not replay it later and unexpectedly restart Git work.
 
-The browser keeps a temporary direct-launch fallback for legacy installations that have a separately installed `@firstpick/pi-prompts-git-pr` package but not the workflow extension. This compatibility path will be removed after the migration period, so install the extension rather than relying on the fallback. Current extension installations bundle the prompt package and do not require a second Pi package entry.
+Browser generation accepts only RPC-capable extension provenance for `/git-staged-msg`, `/git-branch-name`, and `/pr`. A separately installed same-named prompt template is not a fallback for the native path.
 
-The launcher refuses immediately while the originating tab is running, compacting context, or has pending messages; it does not queue Guided Git for later. If the command does not open the workflow, confirm that the tab is idle, has no queued messages, and lists both `/git-guided-workflow` and `/git-staged-msg`. Restart or reload the Pi tab after installing or updating either package. Retrying after an uncertain activation is a manual decision; WebUI does not retry it automatically.
+The launcher refuses immediately while the originating tab is running, compacting context, or has pending messages; it does not queue Guided Git for later. If the command does not open the workflow, confirm that the tab is idle, has no queued messages, and lists `/git-guided-workflow`, `/git-staged-msg`, `/git-branch-name`, and `/pr` as extension commands. Restart or reload the Pi tab after installing or updating the extension. Retrying after an uncertain activation is a manual decision; WebUI does not retry it automatically.
 
 ## Guided Git generation profiles
 

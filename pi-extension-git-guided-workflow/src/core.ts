@@ -9,7 +9,7 @@ export const STAGED_FINGERPRINT_DOMAIN = "firstpick/git-guided-workflow/staged-c
 export const GENERATION_INPUT_MAX_BYTES = 1024 * 1024;
 export const COMMIT_MESSAGE_MAX_BYTES = 16 * 1024;
 export const CONVENTIONAL_COMMIT_TYPES = Object.freeze([
-  "build", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
+  "build", "change", "chore", "ci", "docs", "feat", "fix", "perf", "refactor", "revert", "style", "test",
 ]);
 
 const READ_TIMEOUT_MS = 10_000;
@@ -333,25 +333,17 @@ function assertNoUnsafeControls(message: string): void {
   }
 }
 
-function validateSubject(subject: string, requireConventional: boolean): void {
-  if (!subject || subject.trim() !== subject) throw new GuidedGitError("INVALID_COMMIT_SUBJECT", "The commit subject must not be empty or padded with whitespace");
-  if (Array.from(subject).length > 72) throw new GuidedGitError("COMMIT_SUBJECT_TOO_LONG", "The commit subject must be at most 72 characters");
-  if (requireConventional) {
-    const types = CONVENTIONAL_COMMIT_TYPES.join("|");
-    const match = subject.match(new RegExp(`^(${types})(?:\\([a-z0-9][a-z0-9._/-]*\\))?(!)?: [^\\s].*$`, "u"));
-    if (!match) throw new GuidedGitError("INVALID_CONVENTIONAL_COMMIT", "Generated subjects must use a supported Conventional Commit type");
-  }
+function validateSubject(subject: string): void {
+  if (!subject.trim()) throw new GuidedGitError("INVALID_COMMIT_SUBJECT", "The commit subject must not be empty");
 }
 
-/** Validate a manual message without requiring Conventional Commit syntax. */
+/** Validate a manual message for safe, bounded Git input without enforcing style guidance. */
 export function validateManualCommitMessage(message: string): string {
   if (typeof message !== "string") throw new GuidedGitError("INVALID_COMMIT_MESSAGE", "The commit message must be text");
   assertNoUnsafeControls(message);
   if (Buffer.byteLength(message, "utf8") > COMMIT_MESSAGE_MAX_BYTES) throw new GuidedGitError("COMMIT_MESSAGE_TOO_LARGE", `The commit message exceeds ${COMMIT_MESSAGE_MAX_BYTES} bytes`);
-  if (message.trim() !== message || !message) throw new GuidedGitError("INVALID_COMMIT_MESSAGE", "The commit message must not be empty or padded with blank space");
-  const lines = message.split("\n");
-  validateSubject(lines[0]!, false);
-  if (lines.length > 1 && lines[1] !== "") throw new GuidedGitError("INVALID_COMMIT_MESSAGE", "Separate the subject and body with a blank line");
+  if (!message.trim()) throw new GuidedGitError("INVALID_COMMIT_MESSAGE", "The commit message must not be empty");
+  validateSubject(message.split("\n", 1)[0]!);
   return message;
 }
 
@@ -364,14 +356,12 @@ export interface GeneratedMessages { short: string; long: string }
 export function parseGeneratedOutput(output: string): GeneratedMessages {
   if (typeof output !== "string") throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output must be text");
   assertNoUnsafeControls(output);
-  if (output.includes("```") || output.includes("~~~")) throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output must not contain code fences");
   const match = output.match(/^<<<SHORT>>>\n([^\n]+)\n<<<LONG>>>\n([\s\S]+)\n<<<END>>>$/u);
   if (!match) throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output did not match the required closed format");
   const short = match[1]!;
   const long = match[2]!;
-  validateSubject(short, true);
+  validateSubject(short);
   validateManualCommitMessage(long);
-  if (long.split("\n", 1)[0] !== short) throw new GuidedGitError("GENERATED_SUBJECT_MISMATCH", "The long candidate must start with the exact short subject");
   return { short, long };
 }
 

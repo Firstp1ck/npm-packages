@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   BorderedLoader,
   DynamicBorder,
+  withFileMutationQueue,
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
@@ -26,8 +27,30 @@ import {
   type RepositoryState,
   type StagedSnapshot,
 } from "./src/core.ts";
+import {
+  acquireBranchGenerationContext,
+  acquirePrGenerationContext,
+  acquireStagedGenerationContext,
+  buildBranchModelRequest,
+  buildCommitCorrectionModelRequest,
+  buildCommitModelRequest,
+  buildPrModelRequest,
+  parseBranchGenerationArgs,
+  parseBranchOutput,
+  parseCommitGenerationArgs,
+  parseNativeCommitOutput,
+  parsePrGenerationArgs,
+  parsePrOutput,
+  writeBranchArtifact,
+  writeCommitArtifacts,
+  writePrArtifact,
+  type NativeModelRequest,
+} from "./src/native-generation.ts";
 
 export const COMMAND_NAME = "git-guided-workflow";
+export const COMMIT_GENERATION_COMMAND_NAME = "git-staged-msg";
+export const BRANCH_GENERATION_COMMAND_NAME = "git-branch-name";
+export const PR_GENERATION_COMMAND_NAME = "pr";
 export const WEBUI_START_STATUS_KEY = "git-guided-workflow:webui-start";
 export const WEBUI_START_PAYLOAD_TYPE = "firstpick.pi-extension-git-guided-workflow.start";
 export const WEBUI_START_PAYLOAD_VERSION = 1;
@@ -52,7 +75,7 @@ Return exactly this closed format, with no preface, suffix, Markdown fence, or e
 <<<LONG>>>
 <the exact same subject, optionally followed by a blank line and concise body>
 <<<END>>>
-The subject type must be one of: build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test.`;
+The subject type must be one of: build, change, chore, ci, docs, feat, fix, perf, refactor, revert, style, test.`;
 
 function errorMessage(error: unknown): string {
   return sanitizeDiagnostic(error instanceof Error ? error.message : String(error));
@@ -64,6 +87,56 @@ function isCode(error: unknown, code: string): boolean {
 
 function assertCurrent(active: ActiveWorkflow): void {
   if (active.cancelled) throw new GuidedGitError("WORKFLOW_CANCELLED", "The workflow session ended");
+}
+
+function abortError(): GuidedGitError {
+  return new GuidedGitError("GENERATION_CANCELLED", "Generation was cancelled");
+}
+
+const NATIVE_GENERATION_PROVIDER_FAILURE_MARKER = "FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE";
+const nativeCompletionSettlements = new WeakMap<AbortSignal, Promise<void>>();
+
+async function completeNativeRequest(
+  ctx: ExtensionCommandContext,
+  request: NativeModelRequest,
+  signal: AbortSignal,
+): Promise<string> {
+  if (signal.aborted) throw abortError();
+  const completion = Promise.resolve().then(() => ctx.modelRegistry.complete(ctx.model!, request, { signal }));
+  nativeCompletionSettlements.set(signal, completion.then(() => {}, () => {}));
+  let removeAbortListener = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+  });
+  try {
+    const response = await Promise.race([completion, aborted]);
+    if (signal.aborted || response.stopReason === "aborted") throw abortError();
+    if (response.stopReason === "error") {
+      throw new GuidedGitError("MODEL_GENERATION_FAILED", errorMessage(response.errorMessage || "The active model returned an error"));
+    }
+    return response.content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+  } catch (error) {
+    if (signal.aborted || isCode(error, "GENERATION_CANCELLED")) throw abortError();
+    if (isCode(error, "MODEL_GENERATION_FAILED")) throw error;
+    throw new GuidedGitError("MODEL_GENERATION_FAILED", errorMessage(error));
+  } finally {
+    removeAbortListener();
+  }
+}
+
+function assertNativeGenerationSurface(ctx: ExtensionCommandContext, commandName: string): void {
+  if (!ctx.hasUI || (ctx.mode !== "tui" && ctx.mode !== "rpc")) {
+    throw new GuidedGitError("UNSUPPORTED_SURFACE", `/${commandName} is available only in Pi's interactive TUI or a compatible WebUI RPC session`);
+  }
+  if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+    throw new GuidedGitError("SESSION_BUSY", `/${commandName} requires an idle Pi session with no queued messages`);
+  }
+  if (!ctx.model) throw new GuidedGitError("NO_ACTIVE_MODEL", `/${commandName} requires an active model`);
 }
 
 export function createWebuiStartPayload(): WebuiStartPayload {
@@ -544,11 +617,140 @@ async function pushStage(
 
 export default function gitGuidedWorkflow(pi: ExtensionAPI): void {
   let activeWorkflow: ActiveWorkflow | undefined;
+  let activeNativeGeneration: { commandName: string; controller: AbortController } | undefined;
+
+  async function runNativeGeneration(
+    commandName: string,
+    ctx: ExtensionCommandContext,
+    work: (signal: AbortSignal) => Promise<string[]>,
+  ): Promise<void> {
+    try {
+      assertNativeGenerationSurface(ctx, commandName);
+      if (activeNativeGeneration) {
+        throw new GuidedGitError("GENERATION_BUSY", `/${activeNativeGeneration.commandName} generation is already active`);
+      }
+      const controller = new AbortController();
+      activeNativeGeneration = { commandName, controller };
+      const provider = sanitizeDiagnostic(String(ctx.model!.provider || "active model provider"), 200);
+      const model = sanitizeDiagnostic(String(ctx.model!.id || "active model"), 200);
+      ctx.ui.notify(`/${commandName} sends the required bounded repository content directly to ${provider} using ${model}. No parent-agent tools or prompt template are used.`, "info");
+      try {
+        let paths: string[];
+        if (ctx.mode === "tui") {
+          const result = await ctx.ui.custom<{ paths?: string[]; error?: unknown }>((tui, theme, _keybindings, done) => {
+            const loader = new BorderedLoader(
+              tui,
+              theme,
+              `Generating with active model ${model} for /${commandName}. Repository content is sent to ${provider}. Esc cancels.`,
+              { cancellable: true },
+            );
+            let settled = false;
+            const finish = (value: { paths?: string[]; error?: unknown }) => {
+              if (settled) return;
+              settled = true;
+              done(value);
+            };
+            loader.onAbort = () => controller.abort();
+            work(controller.signal)
+              .then((value) => finish({ paths: value }))
+              .catch((error) => finish({ error }));
+            return loader;
+          });
+          if (result.error) throw result.error;
+          paths = result.paths ?? [];
+        } else {
+          paths = await work(controller.signal);
+        }
+        ctx.ui.notify(`/${commandName} completed: ${paths.map((item) => sanitizeDiagnostic(item, 500)).join(", ")}`, "info");
+      } finally {
+        controller.abort();
+        const completionSettlement = nativeCompletionSettlements.get(controller.signal);
+        if (activeNativeGeneration?.controller === controller) {
+          if (completionSettlement) {
+            void completionSettlement.finally(() => {
+              nativeCompletionSettlements.delete(controller.signal);
+              if (activeNativeGeneration?.controller === controller) activeNativeGeneration = undefined;
+            });
+          } else {
+            activeNativeGeneration = undefined;
+          }
+        }
+      }
+    } catch (error) {
+      const cancelled = isCode(error, "GENERATION_CANCELLED");
+      ctx.ui.notify(`/${commandName} ${cancelled ? "cancelled" : "failed"}: ${errorMessage(error)}. No stale success was reported.`, cancelled ? "info" : "error");
+      if (ctx.mode === "rpc") {
+        if (isCode(error, "MODEL_GENERATION_FAILED")) {
+          throw new Error(`${NATIVE_GENERATION_PROVIDER_FAILURE_MARKER}: active model generation failed`);
+        }
+        throw new Error(errorMessage(error));
+      }
+    }
+  }
+
   pi.on("session_shutdown", async () => {
+    activeNativeGeneration?.controller.abort();
     if (!activeWorkflow) return;
     activeWorkflow.cancelled = true;
     activeWorkflow.generationController?.abort();
   });
+
+  pi.registerCommand(COMMIT_GENERATION_COMMAND_NAME, {
+    description: "Generate validated staged Conventional Commit artifacts with the active model",
+    handler: async (rawArgs, ctx) => {
+      let args;
+      try { args = parseCommitGenerationArgs(rawArgs); }
+      catch (error) { ctx.ui.notify(errorMessage(error), "error"); return; }
+      await runNativeGeneration(COMMIT_GENERATION_COMMAND_NAME, ctx, async (signal) => {
+        const context = await acquireStagedGenerationContext(ctx.cwd, { signal });
+        const output = await completeNativeRequest(ctx, buildCommitModelRequest(context, args), signal);
+        let generated: { short: string; long: string };
+        try {
+          generated = parseNativeCommitOutput(output, args.scope);
+        } catch (error) {
+          if (!(error instanceof GuidedGitError)) throw error;
+          ctx.ui.notify(`/${COMMIT_GENERATION_COMMAND_NAME} received invalid output (${error.code}); sending one final correction request to the same model.`, "warning");
+          const correctedOutput = await completeNativeRequest(ctx, buildCommitCorrectionModelRequest(context, args, {
+            code: error.code,
+            message: errorMessage(error),
+            previousOutput: output,
+          }), signal);
+          generated = parseNativeCommitOutput(correctedOutput, args.scope);
+        }
+        return (await writeCommitArtifacts(context, generated, { signal, scopePolicy: args.scope, queue: withFileMutationQueue })).paths;
+      });
+    },
+  });
+
+  pi.registerCommand(BRANCH_GENERATION_COMMAND_NAME, {
+    description: "Generate a validated staged branch-name artifact with the active model",
+    handler: async (rawArgs, ctx) => {
+      try { parseBranchGenerationArgs(rawArgs); }
+      catch (error) { ctx.ui.notify(errorMessage(error), "error"); return; }
+      await runNativeGeneration(BRANCH_GENERATION_COMMAND_NAME, ctx, async (signal) => {
+        const context = await acquireBranchGenerationContext(ctx.cwd, { signal });
+        const output = await completeNativeRequest(ctx, buildBranchModelRequest(context), signal);
+        const branch = parseBranchOutput(output);
+        return (await writeBranchArtifact(context, branch, { signal, queue: withFileMutationQueue })).paths;
+      });
+    },
+  });
+
+  pi.registerCommand(PR_GENERATION_COMMAND_NAME, {
+    description: "Generate a validated pull-request description artifact with the active model",
+    handler: async (rawArgs, ctx) => {
+      let args;
+      try { args = parsePrGenerationArgs(rawArgs); }
+      catch (error) { ctx.ui.notify(errorMessage(error), "error"); return; }
+      await runNativeGeneration(PR_GENERATION_COMMAND_NAME, ctx, async (signal) => {
+        const context = await acquirePrGenerationContext(ctx.cwd, { signal });
+        const output = await completeNativeRequest(ctx, buildPrModelRequest(context, args), signal);
+        const body = parsePrOutput(output);
+        return (await writePrArtifact(context, body, { signal, queue: withFileMutationQueue })).paths;
+      });
+    },
+  });
+
   pi.registerCommand(COMMAND_NAME, {
     description: "Guide staged changes through commit and push in Pi's TUI or request Guided Git in WebUI",
     handler: async (args, ctx) => {

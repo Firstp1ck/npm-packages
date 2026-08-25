@@ -82,6 +82,7 @@ test("packed package installs in isolation and resolves packaged paths", { timeo
   assert.equal(capture.cwd, workspace);
   assert.equal(capture.env.QT_WEBUI_CALLER_CWD, workspace);
   assert.equal(capture.env.QT_WEBUI_QML_ENTRY, expectedQmlEntry);
+  assert.equal(capture.env.QT_WEBUI_BACKEND_ENTRY, path.join(installedPackageRoot, "lib", "backend", "main.mjs"));
   assert.equal(capture.env.QT_WEBUI_PI_CLI_ENTRY, expectedPiEntry);
   assert.equal(capture.env.QT_WEBUI_DEVELOPMENT_MODE, "1");
   assert.equal(capture.env.QT_WEBUI_NODE_EXECUTABLE, process.execPath);

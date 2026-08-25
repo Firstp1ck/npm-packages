@@ -1600,9 +1600,9 @@ rl.on("line", (line) => {
             { name: "workflow", source: "extension", description: "Run and inspect JavaScript workflows" },
             ...(guidedGitActivationEnabled ? [
               { name: "git-guided-workflow", source: "extension", description: "Start Guided Git" },
-              { name: "git-staged-msg", source: "prompt", description: "Generate commit messages" },
-              { name: "git-branch-name", source: "prompt", description: "Generate branch names" },
-              { name: "pr", source: "prompt", description: "Generate PR text" },
+              { name: "git-staged-msg", source: "extension", description: "Generate commit messages" },
+              { name: "git-branch-name", source: "extension", description: "Generate branch names" },
+              { name: "pr", source: "extension", description: "Generate PR text" },
             ] : []),
             ...(statsPromptContextEnabled ? [{ name: "stats-webui", source: "extension", description: "Publish fixture stats dashboard" }] : []),
           ],

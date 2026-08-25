@@ -48,9 +48,10 @@ test("all visible Guided Git entry points prefer the extension launcher without 
   assert.match(app, /guidedGitLaunchBlockedReason\(guidedGitLaunchStateForTab\(tabId\), queueMessageCount\(queuedSnapshotForTab\(tabId\)\)\)/u, "busy admission must include streaming, compaction, canonical pending count, and the real tab-local queue snapshot");
 });
 
-test("temporary fallback and prompt capabilities are explicit and tab-local", () => {
-  assert.match(app, /async function startLegacyGuidedGitWorkflowFallback\(tabId\) \{\s+if \(!guidedGitLaunchAdmitted\(tabId\)\) return;[\s\S]*api\("\/api\/git-workflow\/launch-admission", \{ method: "POST", body: \{\}, tabId \}\)/u, "the direct compatibility fallback must receive authoritative server admission immediately before local start");
-  assert.match(app, /if \(launchMode === "fallback"\) \{\n    await startLegacyGuidedGitWorkflowFallback\(tabId\);/u);
+test("native generation capabilities are extension-only and tab-local", () => {
+  assert.doesNotMatch(app, /startLegacyGuidedGitWorkflowFallback|temporary prompt-only Guided Git compatibility launcher/u);
+  assert.match(app, /function hasLoadedGuidedGitNativeCommand\(commandName, tabId\)[\s\S]*rpcOnly: true[\s\S]*source === "extension"/u);
+  assert.match(app, /guidedGitNativeCommandsAvailable[\s\S]*\["git-staged-msg", "git-branch-name", "pr"\]\.every/u);
   assert.match(state, /function guidedGitLaunchModeForTabCatalog[\s\S]*return "extension"[\s\S]*return "fallback"[\s\S]*return "unavailable"/u);
   assert.match(state, /createGuidedGitLaunchPermitController\(\{ maxTrackedTabs = 64, permitTtlMs = 15_000 \}/u);
   assert.match(app, /claimStart: \(tabId, _payload, request, now\) => guidedGitLaunchPermits\.consume\(tabId, request\?\.guidedGitLaunchId, now\)/u, "only the browser client holding the exact envelope-correlated permit may claim activation");
@@ -60,11 +61,19 @@ test("temporary fallback and prompt capabilities are explicit and tab-local", ()
   assert.match(server, /return \{ \.\.\.event, guidedGitLaunchId: pending\.launchId \};/u, "browser launch correlation belongs only to the trusted transport envelope");
   assert.match(server, /GUIDED_GIT_LAUNCH_TTL_MS = 15_000/u);
   assert.match(server, /guidedGitPendingLaunch: null/u, "pending launch state is bounded to one record per tab and dies with the tab");
-  assert.match(app, /temporary prompt-only Guided Git compatibility launcher/u);
-  assert.match(app, /hasLoadedRpcCommand\("git-staged-msg", \{ tabId \}\)/u);
-  assert.match(app, /hasLoadedRpcCommand\("git-branch-name", \{ tabId \}\)/u);
-  assert.match(app, /hasLoadedRpcCommand\("pr", \{ tabId \}\)/u);
-  assert.match(app, /packageName: "@firstpick\/pi-extension-git-guided-workflow"[\s\S]*Browser generation also requires @firstpick\/pi-prompts-git-pr/u);
+  assert.match(app, /hasLoadedGuidedGitNativeCommand\("git-staged-msg", tabId\)/u);
+  assert.match(app, /hasLoadedGuidedGitNativeCommand\("git-branch-name", tabId\)/u);
+  assert.match(app, /hasLoadedGuidedGitNativeCommand\("pr", tabId\)/u);
+  assert.match(app, /Same-named prompt templates are not used/u);
+  assert.doesNotMatch(`${app}\n${readme}\n${technical}\n${development}`, /pi-prompts-git-pr/u);
+});
+
+test("server dispatch requires extension provenance and completes on a fresh native artifact", () => {
+  assert.match(server, /async function resolveGuidedGitNativeCommand[\s\S]*candidate\?\.source === "extension"[\s\S]*Same-named prompt templates are not used/u);
+  assert.match(server, /record\.message = gitWorkflowGenerationPrompt\(kind, preferences, nativeCommandName\)/u);
+  assert.match(server, /if \(record\.nativeGeneration\) \{\s+await assertGuidedGitNativeArtifactUpdated\(tab, record\);[\s\S]*finishGitWorkflowGeneration\(tab, record, \{ successful: true \}\)/u);
+  assert.match(server, /const target = path\.resolve\(base, `\$\{encodeURIComponent\(branch\)\}\.md`\)/u);
+  assert.match(development, /synchronous RPC command response plus a fresh correlated artifact/u);
 });
 
 test("fixture, cache revisions, and layered docs expose the migration contract", () => {

@@ -108,6 +108,14 @@ Without opening or submitting anything, prepare:
 
 Automated Marketplace validation checks the current commit before maintainer approval. Re-run the live publishing requirements immediately before submission.
 
+The official guide currently links this submission form:
+
+```text
+https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/new?template=submit-plugin.yml
+```
+
+Treat the URL as current upstream data rather than a permanent API. Verify it against the live publishing guide before use, and do not open it when that would transmit data or create browser state unless the user has authorized that exact action.
+
 ## 6. Stop for explicit confirmation
 
 Present the prepared material and evidence, then stop. If the user has not already authorized the exact next side effect, request explicit confirmation before:

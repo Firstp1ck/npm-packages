@@ -30,7 +30,7 @@ Packages bundle larger features, prompt collections, themes, or related tools.
 - **[Remote access for Pi Web UI](pi-package-remote-webui/README.md)** — Open an existing Pi Web UI safely to devices on a trusted local network.
 - **[Skill lifecycle tools for Pi](pi-package-skill-lifecycle/README.md)** — Bundles the tools used to review, create, organize, and improve Pi skills.
 - **[Theme bundle for Pi](pi-package-themes-bundle/README.md)** — Adds a collection of familiar color themes to Pi.
-- **[Qt WebUI](pi-package-qt-webui/README.md)** — Use Pi in a small Linux desktop window built with Quickshell and Qt Quick.
+- **[Qt WebUI](pi-package-qt-webui/README.md)** — Use Pi in a Linux desktop window built with Quickshell and Qt Quick, with Markdown output, tool cards, extension dialogs, and transcript search.
 - **[Pi Web UI](pi-package-webui/README.md)** — Use Pi from a local browser with tabs, streaming responses, uploads, model controls, Git helpers, and optional companion features.
 
 ### Extensions
@@ -95,6 +95,7 @@ Skills give Pi a reusable workflow for a particular kind of work. You normally a
 - **[HTML Report](pi-skill-html-report/README.md)** — Create polished, self-contained HTML reports for complex explanations and investigations.
 - **[Lab QC Presentation Theme](pi-skill-lab-qc-presentation-theme/README.md)** — Create modern green presentations for chemical production and quality-control teams.
 - **[Network Diagnostics](pi-skill-network-diagnostics/README.md)** — Troubleshoot DNS, routing, ports, firewalls, TLS, and general connectivity problems.
+- **[Omarchy Plugin](pi-skill-omarchy-plugin/README.md)** — Develop, validate, review, and prepare Omarchy Quattro plugins for Marketplace submission.
 - **[Paper Summarizer](pi-skill-paper-summarizer/README.md)** — Read technical or academic papers and explain their findings, limits, and practical value.
 - **[Patch MD](pi-skill-patch-md/README.md)** — Create and manage reproducible PATCH.md packages with validation and rollback guidance.
 - **[Performance Optimizer](pi-skill-performance-optimizer/README.md)** — Find why software is slow or resource-heavy before recommending optimizations.

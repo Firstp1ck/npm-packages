@@ -3114,22 +3114,47 @@ async function triggerSessionSummary(tab, { refresh = false } = {}) {
   }
 }
 
-function gitWorkflowGenerationPrompt(kind, preferences) {
+function gitWorkflowGenerationPrompt(kind, preferences, commandName) {
   switch (kind) {
     case "commit":
-      return `/git-staged-msg ${preferences.commit.language} ${preferences.commit.scope}`;
+      return `/${commandName} ${preferences.commit.language} ${preferences.commit.scope}`;
     case "branch":
-      return "/git-branch-name";
+      return `/${commandName}`;
     case "pr":
-      return `/pr ${preferences.commit.language}`;
+      return `/${commandName} ${preferences.commit.language}`;
     default:
       throw makeHttpError(400, "generation kind must be commit, branch, or pr");
   }
 }
 
+function guidedGitNativeCommandBase(kind) {
+  if (kind === "commit") return "git-staged-msg";
+  if (kind === "branch") return "git-branch-name";
+  if (kind === "pr") return "pr";
+  throw makeHttpError(400, "generation kind must be commit, branch, or pr");
+}
+
+async function resolveGuidedGitNativeCommand(tab, kind) {
+  const baseName = guidedGitNativeCommandBase(kind);
+  const response = await safeRpcData(tab, { type: "get_commands" }, STATUS_RPC_TIMEOUT_MS);
+  const commands = Array.isArray(response.data?.commands) ? response.data.commands : [];
+  const command = commands.find((candidate) => candidate?.source === "extension" && candidate?.name === baseName)
+    || commands.find((candidate) => candidate?.source === "extension" && String(candidate?.name || "").replace(/:\d+$/, "") === baseName);
+  if (!response.ok || !command) {
+    throw makeHttpError(409, `Guided Git requires the /${baseName} extension command in this Pi tab. Same-named prompt templates are not used.`);
+  }
+  return String(command.name);
+}
+
+const GUIDED_GIT_PROVIDER_FAILURE_MARKER = "FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE";
+
 function boundedGitWorkflowGenerationError(message, fallback = "Guided Git generation failed") {
   const text = typeof message === "string" ? message : fallback;
   return text.replace(/[\r\n]+/g, " ").trim().slice(0, 240) || fallback;
+}
+
+function isGuidedGitProviderGenerationFailure(error) {
+  return String(error?.message || error || "").includes(GUIDED_GIT_PROVIDER_FAILURE_MARKER);
 }
 
 function gitWorkflowGenerationCancellationError() {
@@ -3199,23 +3224,49 @@ async function restoreGitWorkflowGenerationProfile(tab, expectedRecord = tab?.gi
   return operation;
 }
 
-async function createGitWorkflowMessageGeneration(tab, generationId) {
-  // Keep generation dispatch backward-compatible for tabs whose cwd has not
-  // become a repository yet; the Guided Git flow itself still verifies Git
-  // state at its staging/review boundaries.
-  const root = await getGitRoot(tab.cwd).catch(() => path.resolve(tab.cwd));
-  const cwd = gitWorkflowMessageCwd(root, tab.cwd);
-  const paths = commitMessagePaths(cwd);
-  return {
-    id: generationId,
-    kind: "commit",
-    root,
-    cwd,
-    createdAt: Date.now(),
-    baseline: await readStableGitMessageArtifactPair(paths),
-    terminal: false,
-    successful: false,
-  };
+async function createGitWorkflowArtifactGeneration(tab, generationId, kind) {
+  const createdAt = Date.now();
+  if (kind === "commit") {
+    // Keep generation dispatch compatible with tabs whose cwd has not become
+    // a repository yet; staging boundaries still verify the real Git root.
+    const root = await getGitRoot(tab.cwd).catch(() => path.resolve(tab.cwd));
+    const cwd = gitWorkflowMessageCwd(root, tab.cwd);
+    return {
+      id: generationId,
+      kind,
+      root,
+      cwd,
+      createdAt,
+      baseline: await readStableGitMessageArtifactPair(commitMessagePaths(cwd)),
+      terminal: false,
+      successful: false,
+    };
+  }
+  const baseline = kind === "branch"
+    ? await readGitWorkflowBranchName(tab.cwd).catch(() => null)
+    : await readGitWorkflowPrDescription(tab.cwd).catch(() => null);
+  return { id: generationId, kind, cwd: path.resolve(tab.cwd), createdAt, baseline, terminal: false, successful: false };
+}
+
+async function assertGuidedGitNativeArtifactUpdated(tab, record) {
+  const generation = record.artifactGeneration;
+  if (!generation) throw new Error("Guided Git generation has no artifact correlation record");
+  if (generation.kind === "commit") {
+    const pair = await readStableGitMessageArtifactPair(commitMessagePaths(generation.cwd));
+    const readiness = gitMessageArtifactPairReadiness(generation.baseline, pair);
+    if (!readiness.ready) throw new Error(readiness.reason || "Native commit generation did not update both message artifacts");
+    return;
+  }
+  const current = generation.kind === "branch"
+    ? await readGitWorkflowBranchName(tab.cwd)
+    : await readGitWorkflowPrDescription(tab.cwd);
+  if (generation.baseline
+    && current.path === generation.baseline.path
+    && current.mtimeMs === generation.baseline.mtimeMs
+    && current.ctimeMs === generation.baseline.ctimeMs
+    && current.ino === generation.baseline.ino) {
+    throw new Error(`Native ${generation.kind} generation did not update its correlated artifact`);
+  }
 }
 
 function emitGitWorkflowFallbackLifecycle(tab, record, phase) {
@@ -3284,14 +3335,18 @@ async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attemp
   markTabWorking(tab);
   const response = await tab.rpc.send({ type: "prompt", message: record.message });
   assertGitWorkflowGenerationOwnership(tab, record);
-  if (response.success === false) throw new Error(response.error || "Guided Git generation prompt was rejected");
+  if (response.success === false) {
+    const error = new Error(response.error || "Guided Git generation prompt was rejected");
+    error.guidedGitProviderGenerationFailure = isGuidedGitProviderGenerationFailure(response.error);
+    throw error;
+  }
   record.promptAccepted = true;
   const pendingSettlement = record.pendingSettlement;
   if (pendingSettlement?.attempt === attempt) {
     record.pendingSettlement = null;
     void settleGitWorkflowGeneration(tab, record, pendingSettlement);
   }
-  return {
+  const result = {
     accepted: true,
     kind: record.kind,
     message: record.message,
@@ -3300,11 +3355,17 @@ async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attemp
     fallbackUsed: attempt === "fallback",
     primaryGeneration: publicGitWorkflowGenerationProfile(record.primary),
   };
+  if (record.nativeGeneration) {
+    await assertGuidedGitNativeArtifactUpdated(tab, record);
+    assertGitWorkflowGenerationOwnership(tab, record);
+    await finishGitWorkflowGeneration(tab, record, { successful: true });
+  }
+  return result;
 }
 
 async function startGitWorkflowFallback(tab, record, primaryError) {
   if (tab.gitWorkflowGeneration !== record || record.fallbackStarted || !record.fallback) return null;
-  if (record.cancelled || !tab.rpc?.isRunning?.()) return null;
+  if (record.cancelled || !tab.rpc?.isRunning?.() || primaryError?.guidedGitProviderGenerationFailure !== true) return null;
   record.fallbackStarted = true;
   record.attempt = "fallback";
   record.attemptRunStarted = false;
@@ -3383,6 +3444,7 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     promptAccepted: false,
     pendingSettlement: null,
     currentModelKey: "",
+    nativeGeneration: true,
   };
   tab.gitWorkflowGeneration = record;
   tab.gitWorkflowFallbackLifecycle = { generationId: record.generationId, kind, events: [] };
@@ -3395,7 +3457,9 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     const preferences = await readGitWorkflowPreferences();
     assertGitWorkflowGenerationOwnership(tab, record);
     if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
-    record.message = gitWorkflowGenerationPrompt(kind, preferences);
+    const nativeCommandName = await resolveGuidedGitNativeCommand(tab, kind);
+    assertGitWorkflowGenerationOwnership(tab, record);
+    record.message = gitWorkflowGenerationPrompt(kind, preferences, nativeCommandName);
 
     const state = await currentSessionState(tab);
     assertGitWorkflowGenerationOwnership(tab, record);
@@ -3424,16 +3488,9 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     record.restore = { model: state.model || null, thinkingLevel: state.thinkingLevel || "off" };
     record.currentModelKey = gitWorkflowModelKey(state.model);
     tab.gitWorkflowGenerationRestore = record.restore;
-    record.messageGeneration = kind === "commit" ? await createGitWorkflowMessageGeneration(tab, record.generationId) : null;
+    record.artifactGeneration = await createGitWorkflowArtifactGeneration(tab, record.generationId, kind);
+    record.messageGeneration = kind === "commit" ? record.artifactGeneration : null;
     assertGitWorkflowGenerationOwnership(tab, record);
-    record.artifactGeneration = record.messageGeneration || {
-      id: record.generationId,
-      kind,
-      cwd: path.resolve(tab.cwd),
-      createdAt: Date.now(),
-      terminal: false,
-      successful: false,
-    };
     tab.gitWorkflowArtifactGeneration = record.artifactGeneration;
     if (record.messageGeneration) tab.gitWorkflowMessageGeneration = record.messageGeneration;
 
@@ -3441,7 +3498,7 @@ async function startGitWorkflowGeneration(tab, body = {}) {
       return await dispatchGitWorkflowGenerationAttempt(tab, record, record.primary, "primary");
     } catch (primaryError) {
       markTabIdle(tab);
-      if (record.fallback && !record.cancelled && tab.rpc?.isRunning?.()) {
+      if (record.fallback && !record.cancelled && tab.rpc?.isRunning?.() && primaryError?.guidedGitProviderGenerationFailure === true) {
         try {
           const fallbackResult = await startGitWorkflowFallback(tab, record, primaryError);
           if (fallbackResult) return fallbackResult;
@@ -7688,9 +7745,12 @@ async function readGitSigningDiagnostics(cwd) {
 }
 
 function gitWorkflowMessageCwd(root, cwd) {
-  const messageCwd = path.resolve(String(cwd || root));
-  if (!pathInside(root, messageCwd)) throw new Error(`Git workflow cwd must stay inside repository root: ${messageCwd}`);
-  return messageCwd;
+  const repositoryRoot = path.resolve(root);
+  const suppliedCwd = path.resolve(String(cwd || repositoryRoot));
+  if (suppliedCwd !== repositoryRoot && !pathInside(repositoryRoot, suppliedCwd)) {
+    throw new Error(`Git workflow cwd must stay inside repository root: ${suppliedCwd}`);
+  }
+  return repositoryRoot;
 }
 
 function gitWorkflowMessageFileMeta(root, messageCwd, filePath) {
@@ -7728,7 +7788,17 @@ async function readGitWorkflowBranchName(cwd, { generationId = "", generation = 
     const branch = branchText.split(/\r?\n/).find((line) => line.trim())?.trim() || "";
     if (!branch) throw new Error(`${branchPath} is empty`);
     const branchFile = gitWorkflowMessageFileMeta(root, messageCwd, branchPath);
-    return { root, cwd: messageCwd, branchPath, branchRelativePath: branchFile.relativePath, branchRepoRelativePath: branchFile.repoRelativePath, branch, mtimeMs: branchStat.mtimeMs };
+    return {
+      root,
+      cwd: messageCwd,
+      branchPath,
+      branchRelativePath: branchFile.relativePath,
+      branchRepoRelativePath: branchFile.repoRelativePath,
+      branch,
+      mtimeMs: branchStat.mtimeMs,
+      ctimeMs: branchStat.ctimeMs,
+      ino: String(branchStat.ino),
+    };
   } catch (error) {
     throw new Error(`Missing generated branch name file ${branchPath}. Run /git-branch-name first. ${sanitizeError(error)}`);
   }
@@ -8505,8 +8575,8 @@ async function defaultGitRemote(root) {
 
 function prDescriptionPath(root, branch) {
   const base = path.resolve(root, "dev", "PR");
-  const target = path.resolve(base, `${branch}.md`);
-  if (target !== base && !target.startsWith(`${base}${path.sep}`)) throw new Error("Resolved PR description path escapes dev/PR");
+  const target = path.resolve(base, `${encodeURIComponent(branch)}.md`);
+  if (path.dirname(target) !== base) throw new Error("Resolved PR description path escapes dev/PR");
   return { base, prPath: target };
 }
 
@@ -8517,7 +8587,15 @@ async function readGitWorkflowPrDescription(cwd, { generationId = "", generation
   const { prPath } = prDescriptionPath(root, branch);
   try {
     const [body, info] = await Promise.all([readFile(prPath, "utf8"), stat(prPath)]);
-    return { root, branch, path: prPath, body: body.trimEnd(), mtimeMs: info.mtimeMs };
+    return {
+      root,
+      branch,
+      path: prPath,
+      body: body.trimEnd(),
+      mtimeMs: info.mtimeMs,
+      ctimeMs: info.ctimeMs,
+      ino: String(info.ino),
+    };
   } catch (error) {
     throw new Error(`Missing generated PR description ${prPath}. Run /pr first. ${sanitizeError(error)}`);
   }

@@ -222,19 +222,23 @@ test("runGit settles output-limit errors only after close and bounds unconfirmed
   await new Promise((resolve) => setTimeout(resolve, 350));
 });
 
-test("terminal diagnostics are safe and generated output parsing is closed and strict", () => {
+test("terminal diagnostics are safe and generated output parsing keeps quality rules advisory", () => {
   assert.equal(sanitizeDiagnostic("bad\x1b[31mred\x1b[0m\x00\tname\u202e"), "badred  name ");
   const short = "feat(core): add guided commit planning";
   const long = `${short}\n\nBind each commit to the staged snapshot.`;
   assert.deepEqual(parseGeneratedOutput(`<<<SHORT>>>\n${short}\n<<<LONG>>>\n${long}\n<<<END>>>`), { short, long });
   assert.deepEqual(parseGeneratedOutput(`<<<SHORT>>>\nfix: handle failure\n<<<LONG>>>\nfix: handle failure\n<<<END>>>`), { short: "fix: handle failure", long: "fix: handle failure" });
+  for (const [advisoryShort, advisoryLong] of [
+    ["unknown: type", "different body subject"],
+    [`feat: ${"x".repeat(70)}`, "body without a typed bullet"],
+    ["feat: missing requested scope", "fix: mismatched subject"],
+  ]) {
+    assert.deepEqual(parseGeneratedOutput(`<<<SHORT>>>\n${advisoryShort}\n<<<LONG>>>\n${advisoryLong}\n<<<END>>>`), { short: advisoryShort, long: advisoryLong });
+  }
 
   const invalid = [
     "feat: missing delimiters",
     "```\n<<<SHORT>>>\nfeat: fenced\n<<<LONG>>>\nfeat: fenced\n<<<END>>>\n```",
-    "<<<SHORT>>>\nunknown: type\n<<<LONG>>>\nunknown: type\n<<<END>>>",
-    `<<<SHORT>>>\nfeat: ${"x".repeat(70)}\n<<<LONG>>>\nfeat: ${"x".repeat(70)}\n<<<END>>>`,
-    "<<<SHORT>>>\nfeat: short\n<<<LONG>>>\nfix: mismatch\n<<<END>>>",
     "<<<SHORT>>>\nfeat: nul\x00\n<<<LONG>>>\nfeat: nul\n<<<END>>>",
     "<<<SHORT>>>\nfeat: ansi\x1b[31m\n<<<LONG>>>\nfeat: ansi\n<<<END>>>",
     "<<<SHORT>>>\nfeat: tab\tbad\n<<<LONG>>>\nfeat: tab bad\n<<<END>>>",
@@ -244,14 +248,14 @@ test("terminal diagnostics are safe and generated output parsing is closed and s
   for (const value of invalid) assert.throws(() => parseGeneratedOutput(value), GuidedGitError);
 });
 
-test("manual validation rejects empty, unsafe, malformed, and oversized messages and commit plans preserve exact argv", () => {
+test("manual validation rejects only empty, unsafe, and oversized messages while preserving exact argv", () => {
   const message = "A clear manual subject\n\nDetailed body.";
   assert.equal(validateManualCommitMessage(message), message);
   assert.deepEqual(planCommit(message), { command: "git", args: ["commit", "-m", message] });
-  for (const invalid of ["", " padded", "subject\nbody", `subject\n\n${"x".repeat(COMMIT_MESSAGE_MAX_BYTES)}`, "subject\x00", "subject\x1b[2J", "subject\u202e", "subject\u2069"]) {
+  for (const advisory of [" padded", "subject\nbody", "x".repeat(73)]) assert.equal(validateManualCommitMessage(advisory), advisory);
+  for (const invalid of ["", "   ", `subject\n\n${"x".repeat(COMMIT_MESSAGE_MAX_BYTES)}`, "subject\x00", "subject\x1b[2J", "subject\u202e", "subject\u2069"]) {
     assert.throws(() => validateManualCommitMessage(invalid), GuidedGitError);
   }
-  assert.throws(() => validateManualCommitMessage("x".repeat(73)), /72 characters/);
 });
 
 test("commit preparation rejects staged drift without producing or executing a commit plan", async () => {

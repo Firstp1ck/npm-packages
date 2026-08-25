@@ -11,7 +11,8 @@ const [app, server, artifacts] = await Promise.all([
   readFile(path.join(packageDir, "lib", "git-message-artifacts.mjs"), "utf8"),
 ]);
 
-assert.match(server, /async function createGitWorkflowMessageGeneration\(tab, generationId\)[\s\S]*id: generationId[\s\S]*baseline: await readStableGitMessageArtifactPair\(paths\)/, "commit generation must retain the shared server-owned ID and exact pre-primary baseline");
+assert.match(server, /async function createGitWorkflowArtifactGeneration\(tab, generationId, kind\)[\s\S]*kind === "commit"[\s\S]*id: generationId[\s\S]*baseline: await readStableGitMessageArtifactPair\(commitMessagePaths\(cwd\)\)/, "commit generation must retain the shared server-owned ID and exact pre-primary baseline");
+assert.match(server, /function gitWorkflowMessageCwd\(root, cwd\)[\s\S]*suppliedCwd !== repositoryRoot[\s\S]*return repositoryRoot;/, "commit and branch artifacts must resolve at repository root after validating a nested tab cwd");
 assert.match(server, /generationId: record\.generationId/, "generation dispatch must return one server-owned correlation ID across every kind and both attempts");
 assert.match(server, /tab\.gitWorkflowArtifactGeneration = record\.artifactGeneration/, "the artifact generation record must be owned by the originating tab");
 assert.match(server, /case "\/api\/git-workflow\/message"[\s\S]*generationId[\s\S]*tab\?\.gitWorkflowArtifactGeneration/, "fresh message reads must resolve the correlated generation from the requested tab");

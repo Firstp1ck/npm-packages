@@ -6,15 +6,87 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 ## Architecture
 
-`index.ts` owns Pi command registration, surface routing, native TUI orchestration, model calls, lifecycle cancellation, confirmations, and the short-lived screen loop. `src/core.ts` owns Git process execution, repository preflight, status parsing, staged fingerprints and snapshots, commit-message validation, and commit/push plans.
+`index.ts` owns four Pi command registrations, surface routing, active nested-model lifecycle, session-shutdown cancellation, native TUI orchestration, WebUI activation, and user notifications.
 
-The extension registers exactly `git-guided-workflow`. After argument and idle-state checks, TUI mode enters the native workflow. Compatible RPC mode emits only the WebUI activation contract below and returns. Other modes fail closed.
+`src/core.ts` owns shell-free bounded Git execution, repository preflight, status parsing, staged fingerprints and snapshots, commit-message validation, and commit/push plans.
 
-Action screens use Pi TUI's native `SelectList`; direct model generation uses `BorderedLoader`; message entry uses the native editor; mutations use native confirmation dialogs. A screen completes its `ctx.ui.custom()` promise before another screen, editor, loader, or confirmation opens.
+`src/native-generation.ts` owns strict command argument parsing, staged/branch/PR generation contexts, base resolution, untrusted model requests, closed-output parsers, artifact naming, snapshot revalidation, and secure transactional writes.
+
+The registered commands are:
+
+```text
+git-staged-msg
+git-branch-name
+pr
+git-guided-workflow
+```
+
+The three generation handlers parse arguments before repository or model work, require an interactive TUI or RPC surface, require an idle session and active model, and share one active-generation slot. The existing guided TUI command retains its Stage → Message → Commit → Push state machine.
+
+## Native model lifecycle
+
+A generation handler captures one immutable context, builds the corresponding `NativeModelRequest`, and calls:
+
+```text
+ctx.modelRegistry.complete(ctx.model, request, { signal })
+```
+
+It concatenates text response parts only, rejects aborted/error responses, parses the exact closed output, then passes the parsed value and the original context to the matching write helper. It never calls `pi.sendUserMessage`, expands prompt templates, registers an LLM-callable helper tool, or asks an agent loop to inspect the repository.
+
+Commit generation may make one additional direct completion only when `parseNativeCommitOutput` rejects the first response for unsafe content or invalid closed framing. `buildCommitCorrectionModelRequest` reuses the original immutable staged snapshot and the standalone prompt's staged-only language, scope, type, length, body, and format guidance as native instructions. It adds the bounded first response and validation code/message as untrusted JSON. A first response above the 32 KiB output cap or containing unsafe control or bidirectional characters is omitted rather than copied into the correction request. The corrected response passes through the same parser, with no third call. Quality deviations bypass correction and remain in the artifacts. Provider, cancellation, Git, context, and transaction failures also bypass correction. Branch and PR commands remain single-completion operations.
+
+The command API returns `Promise<void>` and has no nested-completion usage return channel. Provider usage remains present on each model response, but Pi's current extension-command API exposes no supported accounting sink for attaching it to the parent session. Do not invent transcript entries or agent turns as an accounting workaround. The user receives a warning before the one correction call so its extra provider work is visible.
+
+Each active native call has one `AbortController`. The completion is raced against its abort signal so session shutdown settles the command even when a provider ignores cancellation. The controller remains active through parsing and artifact transaction completion. A `finally` block aborts and clears ownership. A conflicting generation is refused before context acquisition.
+
+The user receives a provider/privacy notice before context acquisition and a completion notification only after exact artifact verification. Bounded sanitized failures distinguish cancellation from error and never claim a write succeeded. In RPC mode, every command failure is also thrown through Pi's command response; returning normally after an error notification would make WebUI treat the command as successful and misreport an unchanged artifact. Only direct provider/model failures carry the stable fallback-eligibility marker.
+
+## Generation contexts and output contracts
+
+Commit generation binds canonical root, attached branch, HEAD, stable staged fingerprint, and the complete `--cached --binary` diff. Branch generation adds an optional validated pair of generated commit artifacts. PR generation binds current branch, HEAD, resolved base ref/OID, merge base, complete commit list and binary diff, plus an optional safe PR template.
+
+Model-facing repository data is JSON-serialized inside named untrusted blocks. System instructions define language, commit quality guidance, closed delimiters, and safety constraints. Repository data never becomes trusted instructions or shell text.
+
+Accepted closed response shapes are:
+
+```text
+<<<SHORT>>>
+<subject>
+<<<LONG>>>
+<long commit message>
+<<<END>>>
+```
+
+```text
+<<<BRANCH>>>
+<type>/<two-to-five-lowercase-kebab-words>
+<<<END_BRANCH>>>
+```
+
+```text
+<<<PR_BODY>>>
+<reviewer-focused Markdown>
+<<<END_PR_BODY>>>
+```
+
+Commit prompts intentionally ask for stricter quality than commit parsers enforce. Parsers keep only the closed framing, non-empty content, byte bounds, and unsafe-character checks as blockers. Branch and PR parsers retain their documented validation contracts.
+
+## Artifact transaction contract
+
+Canonical destinations are:
+
+```text
+dev/COMMIT/staged-commit-short.txt
+dev/COMMIT/staged-commit-long.txt
+dev/COMMIT/staged-branch-name.txt
+dev/PR/<encodeURIComponent(current-branch)>.md
+```
+
+`index.ts` injects Pi's `withFileMutationQueue` into every write helper. Transactions verify canonical non-symlink parents and regular destinations, prepare private same-directory files with `wx`, preserve same-directory backups, install by rename, verify exact nonempty bytes, and revalidate the bound source state. Commit short/long writes roll back together. If rollback itself fails, recoverable backups are preserved and `ARTIFACT_ROLLBACK_FAILED` is returned.
 
 ## WebUI activation contract
 
-The extension exports these canonical values from `index.ts`:
+The extension exports these canonical values:
 
 ```text
 status key: git-guided-workflow:webui-start
@@ -22,7 +94,7 @@ payload type: firstpick.pi-extension-git-guided-workflow.start
 payload version: 1
 ```
 
-The exact closed JSON payload contains four fields:
+The exact JSON payload is:
 
 ```json
 {
@@ -33,74 +105,53 @@ The exact closed JSON payload contains four fields:
 }
 ```
 
-Do not add a tab ID, cwd, repository path, Git data, preferences, model data, or success claim. The WebUI transport envelope owns the authoritative originating tab. A payload change requires a new version and coordinated WebUI support.
+Do not add tab ID, cwd, repository path, Git data, preferences, model data, or a success claim. The WebUI transport envelope owns the originating tab.
 
-RPC activation calls `ctx.ui.setStatus(WEBUI_START_STATUS_KEY, payload)` and then immediately calls `ctx.ui.setStatus(WEBUI_START_STATUS_KEY, undefined)`. WebUI consumes the live non-empty request before generic status storage, ignores replayed requests, and treats the clear as a no-op. This is intentionally at-most-once: a disconnect may miss activation, but a reconnect must not restart stale work.
+RPC activation calls `ctx.ui.setStatus` with the payload and immediately clears it. This is intentionally at-most-once. The browser requires RPC-capable extension provenance for all three native generation commands; a same-named prompt command is not a valid fallback. Browser-selected model and reasoning effort remain active while the extension command invokes `ctx.modelRegistry.complete`, after which the WebUI restores the prior profile and verifies the generation-correlated artifact.
 
-`setStatus` is fire-and-forget, so the extension can truthfully report only that activation was requested. A failed initial set gets one best-effort clear and no retry. A failed clear produces a warning that the request may have been delivered and must not be retried automatically.
+The PR filename contract is encoded as one path segment. WebUI and extension code must both map `feat/native` to `dev/PR/feat%2Fnative.md`; do not independently reintroduce branch path separators.
 
-The common idle guard runs before either supported surface. Busy sessions or sessions with pending messages emit no activation and enter no native workflow. RPC activation must never run Git, call a model, open a TUI component, edit a message, confirm a mutation, commit, or push.
+## Native TUI state and safety
 
-The browser workflow remains implemented by `@firstpick/pi-package-webui`. Generated browser commit, branch, and PR text is provided by the prompt-only `@firstpick/pi-prompts-git-pr` dependency. The dependency is bundled into this package and its `prompts` directory is included through the Pi manifest; do not copy those prompt files into the extension source.
-
-## Native state and safety contracts
-
-The TUI command state is deliberately ephemeral and command-owned:
+The TUI workflow state is ephemeral and command-owned:
 
 ```text
 Stage → Message → Commit → Push → Finish
 ```
 
-The staged binding contains repository root, branch, pre-commit HEAD, and the package-domain staged fingerprint. Snapshot acquisition reads fingerprint A, the complete bounded diff, then fingerprint B. Commit planning repeats repository and fingerprint checks immediately before execution. Stage all separately repeats repository preflight after confirmation and refuses stale root, branch, operation, conflict, or material-count authorization before executing `git add --all --`.
+Action screens use Pi TUI's native `SelectList`; optional TUI message generation uses `BorderedLoader`; manual entry uses the native editor; mutations use native confirmation dialogs. Screens do not overlap.
 
-Git commands are argv arrays and never shell strings. Ordinary hooks and signing are retained. On timeout or output overflow, the Git runner requests direct-child termination and waits for the child `close` barrier before settlement. A bounded secondary watchdog reports `GIT_TERMINATION_UNCONFIRMED`; commit orchestration treats that result as uncertain without reading HEAD or making retry available. This direct-child barrier does not claim descendant process-tree termination. Every confirmed-barrier commit outcome is followed by a HEAD read. Push planning requires the preserved created object ID to equal live HEAD and constructs an explicit `<created-oid>:refs/heads/<branch>` refspec without force options.
-
-A session shutdown marks the TUI command context stale, aborts the command-owned direct model request, and independently settles the generation custom screen even if a provider promise ignores abort. Components are not reused after their custom screen completes.
-
-## Generation contract
-
-The provider receives a system instruction declaring the diff untrusted and a user message containing the complete bounded staged diff. The response must use exactly:
-
-```text
-<<<SHORT>>>
-<subject>
-<<<LONG>>>
-<same subject, optionally followed by a blank line and body>
-<<<END>>>
-```
-
-The core parser is the authority for delimiters, supported Conventional Commit types, subject binding, length limits, and unsafe controls. Do not relax the prompt or parser independently.
+Git commands are argv arrays, never shell strings. Normal hooks and signing remain enabled. Timeouts wait for the direct child close barrier; unconfirmed termination and ambiguous commit or push outcomes stop without automatic retry. Push uses an explicit immutable object-ID refspec and no force option.
 
 ## Source layout
 
-- `index.ts` — Pi command, surface routing, WebUI activation constants, and native TUI workflow
-- `src/core.ts` — dependency-free Git/state/message core
-- `tests/core.test.mjs` — temporary-repository core and local bare-remote coverage
-- `tests/tui.test.mjs` — stubbed Pi UI/model/status harness, workflow transitions, RPC activation, lifecycle, rendering, and package checks
+- `index.ts` — four commands, direct completion integration, cancellation, TUI workflow, and WebUI activation
+- `src/core.ts` — Git/state/message core
+- `src/native-generation.ts` — native generation contexts, parsers, and artifact transactions
+- `tests/core.test.mjs` — temporary-repository Git and commit/push coverage
+- `tests/native-generation.test.mjs` — context, parser, drift, path, and rollback coverage
+- `tests/tui.test.mjs` — command registration, direct model calls, RPC behavior, shutdown, TUI transitions, and documentation contract
+- `tests/package.test.mjs` — manifest dependency, registration, allowlist, and bundle contract
 
 ## Validation
 
 Run:
 
 ```bash
-node --test tests/core.test.mjs
-node --test tests/tui.test.mjs
 npm test
 npm run check
-/usr/bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck index.ts src/core.ts
+/usr/bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck index.ts src/core.ts src/native-generation.ts
 npm pack --dry-run --json
 ```
 
-Tests must use temporary repositories and local bare remotes only. They must not call a real model provider or network service. RPC tests must assert the exact status set/clear order and prove there are no Git, model, editor, confirmation, or custom-component side effects. Do not stage, commit, push, publish, install packages, or change Pi settings as part of repository validation.
+Inspect the pack JSON and confirm that `src/native-generation.ts` is present while no nested prompt package or prompt directory is included. Tests use temporary repositories and local bare remotes only; they must not call a real provider or network service.
 
-Also run the repository documentation and whitespace check from the repository root:
+From the repository root, run the owned-file whitespace check without staging files:
 
 ```bash
-git diff --check -- pi-extension-git-guided-workflow
+git diff --check -- pi-extension-git-guided-workflow plans/handoffs/guided-git-native-generation-integration.md
 ```
 
 ## Package maintenance
 
-The npm tarball includes the extension entry point, pure core, user documentation, contributor guide, license, and bundled `@firstpick/pi-prompts-git-pr` dependency. Test files are intentionally excluded. Keep the prompt package in `dependencies` and `bundledDependencies`, and keep its `node_modules/@firstpick/pi-prompts-git-pr/prompts` path in the Pi manifest so one extension install both installs and registers the prompt resources.
-
-Keep user-visible behavior in README and TECHNICAL. Keep schemas, transport lifecycle, source seams, algorithms, tests, and package maintenance details in this contributor guide.
+The npm tarball includes the extension entry point, both source modules, user documentation, contributor guide, and license. Tests are intentionally excluded. The manifest registers only `./index.ts` as an extension resource. Keep generation native: do not add a prompt dependency, bundled dependency, `pi.prompts` registration, copied prompt Markdown, or reverse dependency.

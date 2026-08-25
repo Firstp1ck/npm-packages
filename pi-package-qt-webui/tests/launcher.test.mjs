@@ -100,6 +100,8 @@ test("prepareLaunch passes resolved paths and caller cwd as bounded environment 
   assert.equal(launch.options.stdio, "inherit");
   assert.equal(launch.options.env.QT_WEBUI_CALLER_CWD, cwd);
   assert.equal(launch.options.env.QT_WEBUI_QML_ENTRY, path.join(root, "qml", "shell.qml"));
+  assert.equal(launch.options.env.QT_WEBUI_BACKEND_ENTRY, path.join(root, "lib", "backend", "main.mjs"));
+  assert.equal(launch.backendEntry, path.join(root, "lib", "backend", "main.mjs"));
   assert.equal(launch.options.env.QT_WEBUI_NODE_EXECUTABLE, "/usr/bin/node");
   assert.equal(launch.options.env.QT_WEBUI_PI_CLI_ENTRY, piEntry);
   assert.equal(launch.options.env.QT_WEBUI_DEVELOPMENT_MODE, "1");
@@ -140,9 +142,13 @@ test("prepareLaunch exposes smoke controls only through the explicit test seam",
       QT_WEBUI_SMOKE_CAPTURE_PATH: "/tmp/capture.jsonl",
       QT_WEBUI_SMOKE_STATE_PATH: "/tmp/state.txt",
       QT_WEBUI_THEME_MODE: "dark",
+      QT_WEBUI_PI_STARTUP_TIMEOUT_MS: "2000",
+      QT_WEBUI_PI_REQUEST_TIMEOUT_MS: "500",
     },
   });
   assert.equal(launch.options.env.QT_WEBUI_SMOKE_MODE, "1");
+  assert.equal(launch.options.env.QT_WEBUI_PI_STARTUP_TIMEOUT_MS, "2000");
+  assert.equal(launch.options.env.QT_WEBUI_PI_REQUEST_TIMEOUT_MS, "500");
   assert.equal(launch.options.env.QT_WEBUI_SMOKE_CAPTURE_PATH, "/tmp/capture.jsonl");
   assert.equal(launch.options.env.QT_WEBUI_SMOKE_STATE_PATH, "/tmp/state.txt");
   assert.equal(launch.options.env.QT_WEBUI_THEME_MODE, "dark");

@@ -195,9 +195,8 @@ try {
   assert.equal(savedGitSetup.body?.data?.preferences?.reviewProcessEnabled, false);
 
   const generation = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
-  assert.equal(generation.status, 200);
-  assert.equal(generation.body?.data?.message, "/git-staged-msg de required");
-  assert.deepEqual(generation.body?.data?.generation, { provider: "fake", modelId: "fake-model", thinkingLevel: "off" });
+  assert.equal(generation.status, 409);
+  assert.match(generation.body?.error || "", /git-staged-msg extension command.*Same-named prompt templates are not used/iu);
 
   const disableAuth = await request("/api/remote-auth/settings", { method: "POST", body: { enabled: false } });
   assert.equal(disableAuth.status, 200);

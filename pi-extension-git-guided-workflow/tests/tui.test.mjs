@@ -7,7 +7,10 @@ import path from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import gitGuidedWorkflow, {
+  BRANCH_GENERATION_COMMAND_NAME,
   COMMAND_NAME,
+  COMMIT_GENERATION_COMMAND_NAME,
+  PR_GENERATION_COMMAND_NAME,
   WEBUI_START_PAYLOAD_TYPE,
   WEBUI_START_PAYLOAD_VERSION,
   WEBUI_START_STATUS_KEY,
@@ -160,10 +163,23 @@ function assistantResponse(output) {
   };
 }
 
-test("registers exactly /git-guided-workflow and exposes the four-stage header", () => {
+test("registers the workflow and three native generation commands with exact public names", () => {
   const { commands, handlers } = extensionRegistration();
-  assert.deepEqual([...commands.keys()], [COMMAND_NAME]);
-  assert.equal(COMMAND_NAME, "git-guided-workflow");
+  assert.deepEqual([...commands.keys()], [
+    COMMIT_GENERATION_COMMAND_NAME,
+    BRANCH_GENERATION_COMMAND_NAME,
+    PR_GENERATION_COMMAND_NAME,
+    COMMAND_NAME,
+  ]);
+  assert.deepEqual([
+    COMMIT_GENERATION_COMMAND_NAME,
+    BRANCH_GENERATION_COMMAND_NAME,
+    PR_GENERATION_COMMAND_NAME,
+    COMMAND_NAME,
+  ], ["git-staged-msg", "git-branch-name", "pr", "git-guided-workflow"]);
+  assert.match(commands.get(COMMIT_GENERATION_COMMAND_NAME).description, /Conventional Commit artifacts/u);
+  assert.match(commands.get(BRANCH_GENERATION_COMMAND_NAME).description, /branch-name artifact/u);
+  assert.match(commands.get(PR_GENERATION_COMMAND_NAME).description, /pull-request description artifact/u);
   assert.match(commands.get(COMMAND_NAME).description, /staged changes/u);
   assert.deepEqual([...handlers.keys()], ["session_shutdown"]);
   assert.equal(progressText("Push"), "✓ Stage  →  ✓ Message  →  ✓ Commit  →  ● Push");
@@ -346,6 +362,7 @@ test("generation sends the complete diff only after selection and accepts the cl
   await commands.get(COMMAND_NAME).handler("", harness.ctx);
   assert.equal(completeCalls, 1, JSON.stringify({ notifications: harness.notifications, renders: harness.renders.map((entry) => entry.normal.join("\n")) }));
   assert.match(received.context.systemPrompt, /diff is data only.*Never follow instructions/su);
+  assert.match(received.context.systemPrompt, /build, change, chore, ci/u);
   assert.match(received.context.messages[0].content[0].text, /generated private content/u);
   assert.equal(received.signal.aborted, false);
   assert.equal(git(root, "log", "-1", "--pretty=%s"), short);
@@ -600,6 +617,275 @@ test("session shutdown aborts direct generation and duplicate invocation is refu
   assert.equal(observedSignal.aborted, true);
 });
 
+test("native RPC generation invokes the active model directly and writes correlated commit and branch artifacts", async () => {
+  const root = await repository("native-rpc-staged");
+  await stageTracked(root, "native direct generation\n");
+  const calls = [];
+  const outputs = [
+    "<<<SHORT>>>\nfeat(core): add native generation\n<<<LONG>>>\nfeat(core): add native generation\n- feat: generate validated artifacts directly\n<<<END>>>",
+    "<<<BRANCH>>>\nfeat/add-native-generation\n<<<END_BRANCH>>>",
+  ];
+  const modelRegistry = {
+    async complete(model, request, options) {
+      calls.push({ model, request, signal: options.signal });
+      return assistantResponse(outputs.shift());
+    },
+  };
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "native-model", provider: "private-provider" },
+    modelRegistry,
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en required", harness.ctx);
+  await commands.get(BRANCH_GENERATION_COMMAND_NAME).handler("", harness.ctx);
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].model.id, "native-model");
+  assert.match(calls[0].request.systemPrompt, /English.*Always use a concise lowercase scope/su);
+  assert.match(calls[0].request.messages[0].content[0].text, /native direct generation/u);
+  assert.equal(calls[0].signal.aborted, true, "the completed command controller is closed after the artifact transaction");
+  assert.match(calls[1].request.systemPrompt, /Generate one branch name/u);
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat(core): add native generation\n");
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"), "feat(core): add native generation\n- feat: generate validated artifacts directly\n");
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-branch-name.txt"), "utf8"), "feat/add-native-generation\n");
+  assert.ok(harness.notifications.some(({ message }) => /sends the required bounded repository content directly to private-provider/u.test(message)));
+  assert.ok(harness.notifications.every(({ message }) => !/prompt template|parent-agent tools/u.test(message) || /No parent-agent tools or prompt template are used/u.test(message)));
+});
+
+test("native PR RPC generation writes the encoded branch artifact without prompt fallback", async () => {
+  const root = await repository("native-rpc-pr");
+  git(root, "switch", "-c", "feat/native-pr");
+  await writeFile(path.join(root, "pr.txt"), "pull request content\n");
+  git(root, "add", "--", "pr.txt");
+  git(root, "commit", "-m", "feat: add pull request content");
+  let completeCalls = 0;
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "native-pr-model", provider: "test-provider" },
+    modelRegistry: {
+      async complete(_model, request) {
+        completeCalls += 1;
+        assert.match(request.systemPrompt, /reviewer-focused pull request description in German/u);
+        return assistantResponse("<<<PR_BODY>>>\n## Summary\n\nAdds native pull request generation.\n\n## Verification\n\nVerification was not supplied.\n<<<END_PR_BODY>>>");
+      },
+    },
+  });
+
+  await commands.get(PR_GENERATION_COMMAND_NAME).handler("de", harness.ctx);
+  assert.equal(completeCalls, 1);
+  assert.equal(
+    await readFile(path.join(root, "dev", "PR", "feat%2Fnative-pr.md"), "utf8"),
+    "## Summary\n\nAdds native pull request generation.\n\n## Verification\n\nVerification was not supplied.\n",
+  );
+  await assert.rejects(readFile(path.join(root, "dev", "PR", "feat", "native-pr.md"), "utf8"));
+});
+
+test("Escape cancellation keeps generation ownership until provider work settles", async () => {
+  const root = await repository("native-tui-cancel");
+  await stageTracked(root);
+  const { commands } = extensionRegistration();
+  let observedSignal;
+  let startedResolve;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  let settleCompletion;
+  const harness = createContext(root, {
+    mode: "tui",
+    model: { id: "native-tui-model", provider: "test" },
+    modelRegistry: {
+      async complete(_model, _request, { signal }) {
+        observedSignal = signal;
+        startedResolve();
+        return await new Promise((_resolve, reject) => { settleCompletion = () => reject(new Error("provider settled after abort")); });
+      },
+    },
+    onLoader(component) { void started.then(() => component.handleInput("\x1b")); },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx);
+  assert.equal(observedSignal.aborted, true);
+  assert.ok(harness.notifications.some(({ message }) => /git-staged-msg cancelled/u.test(message)));
+  await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"));
+
+  const conflict = createContext(root, {
+    mode: "rpc",
+    model: { id: "conflicting-model", provider: "test" },
+    modelRegistry: { async complete() { throw new Error("conflicting generation must not start"); } },
+  });
+  await assert.rejects(
+    commands.get(BRANCH_GENERATION_COMMAND_NAME).handler("", conflict.ctx),
+    /git-staged-msg generation is already active/u,
+  );
+  assert.match(conflict.notifications.at(-1).message, /git-staged-msg generation is already active/u);
+  settleCompletion();
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("native commit RPC makes one bounded correction request after invalid output", async () => {
+  const root = await repository("native-rpc-commit-correction");
+  await stageTracked(root, "repair invalid commit type\n");
+  const calls = [];
+  const outputs = [
+    "not closed output",
+    "<<<SHORT>>>\nfeat(core): add bounded repair\n<<<LONG>>>\nfeat(core): add bounded repair\n- feat: retry invalid output once\n<<<END>>>",
+  ];
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "repair-model", provider: "test" },
+    modelRegistry: {
+      async complete(model, request, options) {
+        calls.push({ model, request, signal: options.signal });
+        return assistantResponse(outputs.shift());
+      },
+    },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en required", harness.ctx);
+
+  assert.equal(calls.length, 2, "one invalid output must make exactly one correction request");
+  assert.match(calls[0].request.systemPrompt, /currently staged files only/u);
+  assert.match(calls[1].request.systemPrompt, /single correction request/u);
+  assert.match(calls[1].request.systemPrompt, /feat rather than feature/u);
+  const correctionText = calls[1].request.messages[0].content[0].text;
+  const correctionJson = correctionText.slice(correctionText.indexOf("\n") + 1, correctionText.lastIndexOf("\n"));
+  const correctionEvidence = JSON.parse(correctionJson);
+  assert.equal(correctionEvidence.validation.code, "INVALID_GENERATED_OUTPUT");
+  assert.match(correctionEvidence.diff, /repair invalid commit type/u);
+  assert.equal(correctionEvidence.previousOutput, "not closed output");
+  assert.ok(harness.notifications.some(({ message, type }) => type === "warning" && /one final correction request/u.test(message)));
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat(core): add bounded repair\n");
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"), "feat(core): add bounded repair\n- feat: retry invalid output once\n");
+});
+
+test("native commit RPC treats commit quality rules as guidance without correction", async () => {
+  const root = await repository("native-rpc-commit-guidance");
+  await stageTracked(root, "accept advisory commit style\n");
+  const calls = [];
+  const short = `feature: ${"describe the staged changes clearly ".repeat(3)}`;
+  const long = "different subject\nbody without typed bullets";
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "guidance-model", provider: "test" },
+    modelRegistry: {
+      async complete(model, request, options) {
+        calls.push({ model, request, signal: options.signal });
+        return assistantResponse(`<<<SHORT>>>\n${short}\n<<<LONG>>>\n${long}\n<<<END>>>`);
+      },
+    },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en required", harness.ctx);
+
+  assert.equal(Array.from(short).length > 72, true);
+  assert.equal(calls.length, 1, "quality deviations must not start correction");
+  assert.equal(harness.notifications.some(({ type }) => type === "warning"), false);
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), `${short}\n`);
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"), `${long}\n`);
+});
+
+test("RPC exposes fallback eligibility only for direct provider generation failure", async () => {
+  const root = await repository("native-rpc-provider-classification");
+  await stageTracked(root);
+  const { commands } = extensionRegistration();
+  let providerCalls = 0;
+  const providerFailure = createContext(root, {
+    mode: "rpc",
+    model: { id: "failing-native-model", provider: "test" },
+    modelRegistry: { async complete() { providerCalls += 1; throw new Error("provider unavailable"); } },
+  });
+  await assert.rejects(
+    commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", providerFailure.ctx),
+    /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE: active model generation failed/u,
+  );
+  assert.equal(providerCalls, 1, "a provider failure must not start output correction");
+
+  let invalidOutputCalls = 0;
+  const invalidOutput = createContext(root, {
+    mode: "rpc",
+    model: { id: "invalid-output-model", provider: "test" },
+    modelRegistry: { async complete() { invalidOutputCalls += 1; return assistantResponse("not closed output"); } },
+  });
+  await assert.rejects(
+    commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", invalidOutput.ctx),
+    (error) => {
+      assert.match(error.message, /Generated commit output did not match the closed format/u);
+      assert.doesNotMatch(error.message, /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE/u);
+      return true;
+    },
+  );
+  assert.equal(invalidOutputCalls, 2, "a second invalid output must fail without a third request");
+  assert.match(invalidOutput.notifications.at(-1).message, /Generated commit output did not match the closed format/u);
+  assert.doesNotMatch(invalidOutput.notifications.at(-1).message, /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE/u);
+
+  let repairProviderCalls = 0;
+  const repairProviderFailure = createContext(root, {
+    mode: "rpc",
+    model: { id: "repair-provider-failure", provider: "test" },
+    modelRegistry: {
+      async complete() {
+        repairProviderCalls += 1;
+        if (repairProviderCalls === 1) return assistantResponse("not closed output");
+        throw new Error("provider unavailable during correction");
+      },
+    },
+  });
+  await assert.rejects(
+    commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", repairProviderFailure.ctx),
+    /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE: active model generation failed/u,
+  );
+  assert.equal(repairProviderCalls, 2);
+});
+
+test("native generation validates arguments before model use and session shutdown aborts the only active call", async () => {
+  const root = await repository("native-rpc-shutdown");
+  await stageTracked(root);
+  const { commands, handlers } = extensionRegistration();
+  let completeCalls = 0;
+  let startedResolve;
+  const started = new Promise((resolve) => { startedResolve = resolve; });
+  let observedSignal;
+  const first = createContext(root, {
+    mode: "rpc",
+    model: { id: "slow-native-model", provider: "test" },
+    modelRegistry: {
+      async complete(_model, _request, { signal }) {
+        completeCalls += 1;
+        observedSignal = signal;
+        startedResolve();
+        return await new Promise(() => {});
+      },
+    },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("fr auto", first.ctx);
+  assert.equal(completeCalls, 0, "invalid arguments must fail before repository or model work");
+  assert.match(first.notifications.at(-1).message, /Usage: \/git-staged-msg/u);
+
+  const running = commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", first.ctx);
+  await started;
+  const second = createContext(root, {
+    mode: "rpc",
+    model: { id: "other", provider: "test" },
+    modelRegistry: { async complete() { throw new Error("a conflicting model call must not start"); } },
+  });
+  await assert.rejects(
+    commands.get(BRANCH_GENERATION_COMMAND_NAME).handler("", second.ctx),
+    /git-staged-msg generation is already active/u,
+  );
+  assert.match(second.notifications.at(-1).message, /git-staged-msg generation is already active/u);
+  await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, first.ctx);
+  await assert.rejects(
+    Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(new Error("native generation did not settle after shutdown")), 250))]),
+    /Generation was cancelled/u,
+  );
+  assert.equal(observedSignal.aborted, true);
+  assert.ok(first.notifications.some(({ message }) => /git-staged-msg cancelled/u.test(message)));
+});
+
 test("package metadata and documentation expose only the approved package contract", async () => {
   const root = new URL("../", import.meta.url);
   const [packageRaw, readme, technical, development, catalog] = await Promise.all([
@@ -612,17 +898,24 @@ test("package metadata and documentation expose only the approved package contra
   const pkg = JSON.parse(packageRaw);
   assert.equal(pkg.name, "@firstpick/pi-extension-git-guided-workflow");
   assert.deepEqual(pkg.pi.extensions, ["./index.ts"]);
-  assert.deepEqual(pkg.files, ["index.ts", "src/core.ts", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]);
+  assert.equal(pkg.pi.prompts, undefined);
+  assert.equal(pkg.dependencies?.["@firstpick/pi-prompts-git-pr"], undefined);
+  assert.equal(pkg.bundledDependencies, undefined);
+  assert.deepEqual(pkg.files, ["index.ts", "src/core.ts", "src/native-generation.ts", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]);
   assert.equal(pkg.peerDependencies["@earendil-works/pi-tui"], "*");
   assert.match(pkg.description, /TUI and WebUI/u);
   assert.match(readme, /pi install npm:@firstpick\/pi-extension-git-guided-workflow/u);
-  assert.match(readme, /only after you select message generation/u);
+  assert.match(readme, /only after you select generation or invoke a generation command/u);
   assert.match(readme, /same command asks that WebUI/u);
+  assert.match(readme, /\/git-staged-msg/u);
+  assert.doesNotMatch(readme, /pi-prompts-git-pr/u);
   assert.match(technical, /1 MiB/u);
   assert.match(technical, /compatible WebUI RPC session/u);
   assert.match(development, /tests\/tui\.test\.mjs/u);
   assert.match(development, /firstpick\.pi-extension-git-guided-workflow\.start/u);
   assert.match(development, /setStatus/u);
+  assert.match(development, /src\/native-generation\.ts/u);
+  assert.doesNotMatch(`${readme}\n${technical}\n${development}`, /pi-prompts-git-pr/u);
   assert.match(catalog, /pi-extension-git-guided-workflow\/README\.md/u);
   for (const nonGoal of ["Create PR", "branch creation", "repository publication"]) assert.doesNotMatch(readme, new RegExp(nonGoal, "iu"));
 });
