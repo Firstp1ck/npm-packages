@@ -17,12 +17,22 @@ Scope {
     property var usage: null
     property var recentActions: []
     readonly property int maxPendingRequests: 64
+    readonly property var sessionScopedRequestTypes: ({
+        "prompt": true, "abort": true, "state": true, "restart": true, "extension_response": true,
+        "models_list": true, "model_set": true, "model_cycle": true, "thinking_levels": true,
+        "thinking_set": true, "thinking_cycle": true, "resources_state": true, "tools_set": true,
+        "skills_set": true, "sampling_set": true, "compact": true, "commands_list": true,
+        "attachment_add": true, "attachment_update": true, "attachment_remove": true,
+        "path_complete": true, "session_stats": true, "sessions_list": true, "session_switch": true,
+        "session_new": true, "worktrees_list": true, "worktree_plan": true
+    })
     readonly property int defaultRequestTimeoutMs: 10000
     readonly property int backendStartupMs: 8000
     readonly property bool smokeMode: Quickshell.env("QT_WEBUI_SMOKE_MODE") === "1"
     readonly property string callerCwd: String(Quickshell.env("QT_WEBUI_CALLER_CWD") || "")
     readonly property string homeDirectory: String(Quickshell.env("HOME") || "")
     readonly property int maxTabs: 8
+    readonly property int maxResourceNames: 512
     // Tabs: one Pi session per tab. Only the active tab is materialized here; the backend keeps a
     // bounded mirror of every tab and replays it when the active tab changes.
     property var tabs: []
@@ -52,6 +62,10 @@ Scope {
     property bool currentModelReasoning: false
     property string currentThinkingLevel: ""
     property bool modelActionPending: false
+    property bool resourceActionPending: false
+    property bool resourceLoading: false
+    property var resourceState: null
+    readonly property bool resourcesAvailable: resourceState !== null && resourceState.available === true
     property bool compacting: false
     property string sessionName: ""
     property string sessionFile: ""
@@ -95,6 +109,7 @@ Scope {
     signal backendExited(int exitCode)
     signal modelsLoaded(var data)
     signal thinkingLevelsLoaded(var data)
+    signal resourcesLoaded(var data)
     signal compactionFinished(bool ok)
     signal draftLoaded(string key, string text)
     signal sequenceRan(string sequenceId)
@@ -238,7 +253,13 @@ Scope {
         const frame = Object.assign({ "v": protocolVersion, "id": id, "type": type }, fields || {})
         if (activeTabId.length > 0 && frame.tab === undefined) frame.tab = activeTabId
         const pending = pendingRequests
-        pending[id] = { type: type, callback: callback || null, deadline: Date.now() + timeoutFor(type) }
+        pending[id] = {
+            type: type,
+            callback: callback || null,
+            deadline: Date.now() + timeoutFor(type),
+            originTab: activeTabId,
+            sessionScoped: sessionScopedRequestTypes[type] === true
+        }
         pendingRequests = pending
         pendingRequestCount++
         pendingSweepTimer.start()
@@ -254,6 +275,10 @@ Scope {
         pendingRequests = pending
         pendingRequestCount = Math.max(0, pendingRequestCount - 1)
         if (pendingRequestCount === 0) pendingSweepTimer.stop()
+        if (entry.sessionScoped && entry.originTab.length > 0 && entry.originTab !== activeTabId) {
+            staleResponses++
+            return true
+        }
         if (entry.callback) entry.callback(response)
         return true
     }
@@ -473,7 +498,68 @@ Scope {
         return true
     }
 
-    // ---- models, thinking, and compaction ------------------------------------------------
+    // ---- models, thinking, resource profiles, and compaction -----------------------------
+
+    function applyResourceState(data) {
+        if (!data || typeof data !== "object") {
+            resourceState = { available: false, error: { code: "unavailable", message: "Resource state is unavailable" } }
+        } else {
+            resourceState = data
+        }
+        resourcesLoaded(resourceState)
+    }
+
+    function refreshResources(callback) {
+        if (!ready || active || resourceLoading || resourceActionPending || modelActionPending) {
+            if (callback) callback({ ok: false, error: { code: active ? "busy" : "unavailable", message: active ? "Pi is busy" : "Resource state cannot be refreshed now" } })
+            return false
+        }
+        resourceLoading = true
+        request("resources_state", {}, response => {
+            resourceLoading = false
+            if (response.ok) applyResourceState(response.data)
+            else applyResourceState({ available: false, error: response.error })
+            if (callback) callback(response)
+        })
+        return true
+    }
+
+    function setEnabledTools(scope, names, callback) {
+        return setResourceProfile("tools_set", scope, "enabledTools", names, callback)
+    }
+
+    function setEnabledSkills(scope, names, callback) {
+        return setResourceProfile("skills_set", scope, "enabledSkills", names, callback)
+    }
+
+    function setSampling(scope, params, callback) {
+        return setResourceProfile("sampling_set", scope, "params", params, callback)
+    }
+
+    function setResourceProfile(type, scope, field, value, callback) {
+        if (!ready || active || modelActionPending || resourceActionPending || resourceLoading || !resourcesAvailable) {
+            if (callback) callback({ ok: false, error: { code: active ? "busy" : "unavailable", message: active ? "Pi is busy" : "Resource profiles are unavailable" } })
+            return false
+        }
+        resourceActionPending = true
+        const fields = { "scope": String(scope) }
+        fields[field] = value
+        const finish = response => {
+            resourceActionPending = false
+            if (!response.ok) postNotice("error", "Could not save resource profile: " + response.error.message)
+            else {
+                applyResourceState(response.data)
+                if (scope === "session" && response.data.sessionDurability && response.data.sessionDurability.durable === false) {
+                    postNotice("warning", String(response.data.sessionDurability.reason || "This session profile is not durable."))
+                }
+            }
+            if (callback) callback(response)
+        }
+        if (type === "tools_set") request("tools_set", fields, finish)
+        else if (type === "skills_set") request("skills_set", fields, finish)
+        else request("sampling_set", fields, finish)
+        return true
+    }
 
     function loadModels(callback) {
         if (!ready) return false
@@ -486,25 +572,31 @@ Scope {
     }
 
     function selectModel(provider, modelId) {
-        if (!ready || active || modelActionPending) return false
+        if (!ready || active || modelActionPending || resourceActionPending) return false
         if (provider === currentProvider && modelId === currentModelId) return false
         modelActionPending = true
         request("model_set", { "provider": String(provider), "modelId": String(modelId) }, response => {
             modelActionPending = false
             if (!response.ok) postNotice("error", "Could not change the model: " + response.error.message)
-            else postNotice("info", "Model: " + response.data.model.provider + "/" + response.data.model.id + " · thinking " + response.data.thinkingLevel)
+            else {
+                applyResourceState(response.data.resources)
+                postNotice("info", "Model: " + response.data.model.provider + "/" + response.data.model.id + " · thinking " + response.data.thinkingLevel)
+            }
         })
         return true
     }
 
     function cycleModel() {
-        if (!ready || active || modelActionPending) return false
+        if (!ready || active || modelActionPending || resourceActionPending) return false
         modelActionPending = true
         request("model_cycle", {}, response => {
             modelActionPending = false
             if (!response.ok) postNotice("error", "Could not change the model: " + response.error.message)
-            else if (!response.data.changed) postNotice("info", "Only one model is configured")
-            else postNotice("info", "Model: " + response.data.model.provider + "/" + response.data.model.id + " · thinking " + response.data.thinkingLevel)
+            else {
+                applyResourceState(response.data.resources)
+                if (!response.data.changed) postNotice("info", "Only one model is configured")
+                else postNotice("info", "Model: " + response.data.model.provider + "/" + response.data.model.id + " · thinking " + response.data.thinkingLevel)
+            }
         })
         return true
     }
@@ -520,25 +612,31 @@ Scope {
     }
 
     function setThinkingLevel(level) {
-        if (!ready || active || modelActionPending) return false
+        if (!ready || active || modelActionPending || resourceActionPending) return false
         if (level === currentThinkingLevel) return false
         modelActionPending = true
         request("thinking_set", { "level": String(level) }, response => {
             modelActionPending = false
             if (!response.ok) postNotice("error", "Could not change the thinking level: " + response.error.message)
-            else postNotice("info", "Thinking " + response.data.level)
+            else {
+                applyResourceState(response.data.resources)
+                postNotice("info", "Thinking " + response.data.level)
+            }
         })
         return true
     }
 
     function cycleThinkingLevel() {
-        if (!ready || active || modelActionPending) return false
+        if (!ready || active || modelActionPending || resourceActionPending) return false
         modelActionPending = true
         request("thinking_cycle", {}, response => {
             modelActionPending = false
             if (!response.ok) postNotice("error", "Could not change the thinking level: " + response.error.message)
-            else if (!response.data.changed) postNotice("info", "This model has no thinking levels")
-            else postNotice("info", "Thinking " + response.data.level)
+            else {
+                applyResourceState(response.data.resources)
+                if (!response.data.changed) postNotice("info", "This model has no thinking levels")
+                else postNotice("info", "Thinking " + response.data.level)
+            }
         })
         return true
     }
@@ -585,6 +683,9 @@ Scope {
         extensionStatusText = ""
         compacting = false
         modelActionPending = false
+        resourceActionPending = false
+        resourceLoading = false
+        resourceState = null
         restarting = false
         const wasActive = activeDialog ? activeDialog.requestId : ""
         dialogQueue = []
@@ -612,9 +713,12 @@ Scope {
         active = snapshot.active === true
         compacting = snapshot.compacting === true
         modelActionPending = false
+        resourceActionPending = false
+        resourceLoading = false
+        resourceState = null
         restarting = false
         handleRuntime(snapshot.runtime || {})
-        visibleError = typeof snapshot.error === "string" ? boundedError(snapshot.error) : ""
+        visibleError = typeof snapshot.error === "string" && snapshot.error.trim().length > 0 ? boundedError(snapshot.error) : ""
         if (visibleError.length === 0 && statusKind === "error") statusKind = "stopped"
         steeringQueue = snapshot.queues && Array.isArray(snapshot.queues.steering) ? snapshot.queues.steering : []
         followUpQueue = snapshot.queues && Array.isArray(snapshot.queues.followUp) ? snapshot.queues.followUp : []
@@ -626,7 +730,10 @@ Scope {
         attachments = Array.isArray(data.attachments) ? data.attachments : []
         for (const dialog of Array.isArray(snapshot.dialogs) ? snapshot.dialogs : []) enqueueDialog(dialog, false)
         presentNextDialog()
-        if (ready) usageTimer.restart()
+        if (ready) {
+            usageTimer.restart()
+            Qt.callLater(bridge.refreshResources)
+        }
     }
 
     function selectTab(tabId, callback) {
@@ -1027,11 +1134,17 @@ Scope {
             break
         case "pi.started":
             visibleError = ""
+            resourceState = null
+            resourceActionPending = false
+            resourceLoading = false
             commands = []
             commandsLoaded = false
             break
         case "pi.exit":
             modelActionPending = false
+            resourceActionPending = false
+            resourceLoading = false
+            resourceState = null
             compacting = false
             commands = []
             commandsLoaded = false
@@ -1130,6 +1243,9 @@ Scope {
             break
         case "settings.changed":
             applySettings(event.settings)
+            break
+        case "resources.changed":
+            applyResourceState(event.state)
             break
         default:
             break
@@ -1256,6 +1372,9 @@ Scope {
             bridge.currentModelReasoning = false
             bridge.currentThinkingLevel = ""
             bridge.modelActionPending = false
+            bridge.resourceActionPending = false
+            bridge.resourceLoading = false
+            bridge.resourceState = null
             bridge.compacting = false
             bridge.attachments = []
             bridge.commands = []

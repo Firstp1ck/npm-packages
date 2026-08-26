@@ -16,7 +16,7 @@ No configuration is required.
 
 ## Commands
 
-- `/stats [days|all]` — show daily tokens and cost; the default is 14 days.
+- `/stats [days|all]` — show daily tokens and cost using the machine's local calendar; the default is 14 days.
 - `/stats tokens` — show what is using the current conversation space.
 - `/stats-pi` — estimate the size of Pi’s starting instructions, tools, and context.
 - `/stats-pi detailed` — include the main sources that contribute to that estimate.

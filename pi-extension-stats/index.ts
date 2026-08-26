@@ -957,10 +957,16 @@ function nullableRatio(numerator: number, denominator: number, multiplier = 1): 
   return Number.isFinite(value) ? value : null;
 }
 
+function formatLocalDayKey(date: Date): string {
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function shiftDayKey(day: string, offset: number): string {
-  const date = new Date(`${day}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + offset);
-  return date.toISOString().slice(0, 10);
+  const [year, month, date] = day.split("-").map(Number);
+  return formatLocalDayKey(new Date(year, month - 1, date + offset, 12));
 }
 
 function buildInclusiveDayRange(firstDay: string, lastDay: string): string[] {
@@ -972,7 +978,7 @@ function buildInclusiveDayRange(firstDay: string, lastDay: string): string[] {
 function getDayKey(timestamp: string): string | null {
   const parsed = Date.parse(timestamp);
   if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toISOString().slice(0, 10);
+  return formatLocalDayKey(new Date(parsed));
 }
 
 function parseDaysArg(args: string): { mode: "range"; days: number } | { mode: "all" } | null {
@@ -1136,13 +1142,13 @@ function aggregateUsageByDay(records: UsageRecord[]): Map<string, DayUsage> {
 
 function buildDayRange(days: number): string[] {
   const keys: string[] = [];
-  const now = new Date();
-  now.setUTCHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
 
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() - i);
-    keys.push(d.toISOString().slice(0, 10));
+    const date = new Date(today);
+    date.setDate(date.getDate() - i);
+    keys.push(formatLocalDayKey(date));
   }
 
   return keys;
@@ -1154,7 +1160,7 @@ function getScopeDayKeys(byDay: Map<string, DayUsage>, args: { mode: "range"; da
   const recordedDays = Array.from(byDay.keys()).sort((a, b) => a.localeCompare(b));
   const firstDay = recordedDays[0];
   const lastDay = recordedDays.at(-1);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatLocalDayKey(new Date());
   const boundedLastDay = lastDay && lastDay > today ? today : lastDay;
   return firstDay && boundedLastDay && firstDay <= boundedLastDay ? buildInclusiveDayRange(firstDay, boundedLastDay) : [];
 }

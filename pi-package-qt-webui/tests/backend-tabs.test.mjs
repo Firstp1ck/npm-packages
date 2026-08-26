@@ -412,6 +412,123 @@ test("tabs run isolated sessions, badge inactive tabs, replay transcripts on sel
   await restarted.exitPromise;
 });
 
+test("broader resource profiles reconcile every idle matching tab before commit and the next turn sees them", async (t) => {
+  const first = await temporary(t);
+  const second = await temporary(t);
+  const backend = await readyBackend(t, { cwd: first });
+  const hello = await backend.send("hello");
+  const firstTab = hello.data.tabs.activeTab;
+  assert.equal((await backend.send("tools_set", { tab: firstTab, scope: "session", enabledTools: [] })).ok, true);
+
+  const opened = await backend.send("tab_open", { cwd: second });
+  const secondTab = opened.data.tab.id;
+  await backend.waitForEvent("pi.status", (event) => event.tab === secondTab && event.statusKind === "ready");
+
+  const global = await backend.send("skills_set", { tab: firstTab, scope: "global", enabledSkills: ["review"] });
+  assert.equal(global.ok, true, JSON.stringify(global));
+  const exactModel = await backend.send("tools_set", { tab: firstTab, scope: "model", enabledTools: ["write"] });
+  assert.equal(exactModel.ok, true, JSON.stringify(exactModel));
+
+  // No tab selection and no resources_state refresh occurs before this turn in the other tab.
+  const beforeTurn = backend.events.length;
+  assert.equal((await backend.send("prompt", { tab: secondTab, message: "__QT_WEBUI_EFFECTIVE__" })).ok, true);
+  const applied = await backend.waitForEvent("extension.notify", (event) => event.seq > (backend.events[beforeTurn - 1]?.seq || 0)
+    && event.tab === secondTab && event.message.startsWith("QT_WEBUI_HELPER_EFFECTIVE "));
+  assert.deepEqual(JSON.parse(applied.message.slice("QT_WEBUI_HELPER_EFFECTIVE ".length)), {
+    tools: ["write"], skills: ["review"], sampling: {},
+  });
+  await backend.waitForEvent("pi.status", (event) => event.tab === secondTab && event.statusKind === "ready" && event.seq > applied.seq);
+
+  const secondState = await backend.send("resources_state", { tab: secondTab });
+  assert.deepEqual(secondState.data.profiles.session.tools, null);
+  assert.deepEqual(secondState.data.effective.tools, ["write"]);
+  assert.deepEqual(secondState.data.effective.skills, ["review"]);
+  assert.equal(secondState.data.effective.skillsSource, "global");
+  assert.equal((await backend.send("tools_set", { tab: secondTab, scope: "session", enabledTools: ["write"] })).ok, true);
+
+  const firstState = await backend.send("resources_state", { tab: firstTab });
+  assert.deepEqual(firstState.data.profiles.session.tools, []);
+  assert.deepEqual(firstState.data.effective.tools, []);
+  const secondAgain = await backend.send("resources_state", { tab: secondTab });
+  assert.deepEqual(secondAgain.data.profiles.session.tools, ["write"]);
+
+  await backend.send("prompt", { message: "__QT_WEBUI_DELAYED_ABORT__", tab: secondTab });
+  await backend.waitForEvent("run.start", (event) => event.tab === secondTab);
+  const refused = await backend.send("skills_set", { tab: firstTab, scope: "global", enabledSkills: [] });
+  assert.equal(refused.error.code, "busy", "a broader change is refused while any affected tab is active");
+  await backend.send("abort", { tab: secondTab });
+  await backend.waitForEvent("run.end", (event) => event.tab === secondTab);
+  assert(backend.events.filter((event) => event.type === "resources.changed").every((event) => event.tab === firstTab || event.tab === secondTab));
+});
+
+test("broader profile transactions fence compaction and session lifecycle through commit and rollback", async (t) => {
+  async function waitForHelperCalls(backend, count) {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      const calls = (await backend.readCapture()).filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "));
+      if (calls.length >= count) return calls;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.fail(`timed out waiting for ${count} helper calls`);
+  }
+
+  async function assertFencedRequests(backend, tab, label) {
+    const responses = await Promise.all([
+      backend.send("compact", { tab }),
+      backend.send("restart", { tab }),
+      backend.send("tab_close", { tab, force: true }),
+      backend.send("session_switch", { tab, sessionPath: `/tmp/${label}-resume.jsonl` }),
+      backend.send("session_new", { tab }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.error?.code), ["busy", "busy", "busy", "busy", "busy"], `${label} keeps every lifecycle request fenced`);
+  }
+
+  async function assertNormalAfterSettlement(backend, tab, label) {
+    const compacted = await backend.send("compact", { tab });
+    assert.equal(compacted.ok, true, `${label}: compact follows its normal contract after settlement`);
+    const switched = await backend.send("session_switch", { tab, sessionPath: `/tmp/${label}-resume.jsonl` });
+    assert.equal(switched.ok, true, `${label}: session switch succeeds after settlement`);
+    const fresh = await backend.send("session_new", { tab });
+    assert.equal(fresh.ok, true, `${label}: new session succeeds after settlement`);
+    const beforeRestart = backend.events.at(-1)?.seq || 0;
+    const restarted = await backend.send("restart", { tab });
+    assert.equal(restarted.ok, true, `${label}: restart succeeds after settlement`);
+    await backend.waitForEvent("pi.status", (event) => event.tab === tab && event.statusKind === "ready" && event.seq > beforeRestart);
+    const closed = await backend.send("tab_close", { tab });
+    assert.equal(closed.ok, true, `${label}: ordinary non-force close retains its normal idle semantics`);
+  }
+
+  async function runScenario(label, rollback) {
+    const first = await temporary(t, `qt-webui-lifecycle-${label}-a-`);
+    const second = await temporary(t, `qt-webui-lifecycle-${label}-b-`);
+    const backend = await readyBackend(t, { cwd: first, env: { QT_WEBUI_FIXTURE_HELPER_NOTIFY_DELAY_MS: "100" } });
+    const firstTab = (await backend.send("hello")).data.tabs.activeTab;
+    const opened = await backend.send("tab_open", { cwd: second });
+    const secondTab = opened.data.tab.id;
+    await backend.waitForEvent("pi.status", (event) => event.tab === secondTab && event.statusKind === "ready");
+    if (rollback) await mkdir(path.join(backend.temporary, "config", "qt-webui", "resources.json"), { recursive: true });
+
+    const transaction = backend.send("skills_set", { tab: firstTab, scope: "global", enabledSkills: ["review"] });
+    await waitForHelperCalls(backend, 1);
+    await assertFencedRequests(backend, secondTab, `${label}-apply`);
+    if (rollback) {
+      await waitForHelperCalls(backend, 5);
+      await assertFencedRequests(backend, secondTab, `${label}-rollback`);
+    }
+
+    const settled = await transaction;
+    if (rollback) {
+      assert.equal(settled.error.code, "internal_error");
+    } else {
+      assert.equal(settled.ok, true, JSON.stringify(settled));
+    }
+    await assertNormalAfterSettlement(backend, secondTab, label);
+  }
+
+  await runScenario("commit", false);
+  await runScenario("rollback", true);
+});
+
 test("persisted sessions can be listed, resumed with history and an interruption warning, and replaced by a new session", async (t) => {
   const cwd = await temporary(t);
   const agentDir = await temporary(t, "qt-webui-agent-");

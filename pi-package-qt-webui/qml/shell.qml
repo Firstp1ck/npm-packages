@@ -23,6 +23,7 @@ ShellRoot {
     readonly property var inputDialog: inputDialogItem
     readonly property var eventsDialog: eventsDialogItem
     readonly property var diagnosticsDialog: diagnosticsDialogItem
+    readonly property var resourceProfilesDialog: resourceProfilesDialogItem
     property var paletteModels: []
     property var paletteSessions: []
     property string draftKeyInUse: ""
@@ -79,7 +80,7 @@ ShellRoot {
             ["toggle-thinking", (bridge.showThinking ? "Hide" : "Show") + " thinking sections", "Ctrl+T"], ["toggle-compact", bridge.compactTranscript ? "Use comfortable rows" : "Use compact rows", "Ctrl+Shift+M"],
             ["toggle-highlighting", bridge.syntaxHighlighting ? "Turn off syntax highlighting" : "Turn on syntax highlighting", ""], ["toggle-notifications", bridge.desktopNotifications ? "Turn off desktop notifications" : "Turn on desktop notifications", ""],
             ["choose-model", "Choose a model", "Ctrl+M"], ["cycle-model", "Cycle to the next model", "Ctrl+Shift+P"], ["choose-thinking", "Choose the thinking effort", "Ctrl+E"], ["cycle-thinking", "Cycle the thinking effort", "Ctrl+Shift+E"],
-            ["compact-context", "Compact the conversation context", ""], ["abort", "Abort the current run", "Ctrl+Shift+X"], ["restart", "Restart Pi in this tab", ""],
+            ["resource-profiles", "Configure tools, skills, and sampling", "Ctrl+Shift+R"], ["compact-context", "Compact the conversation context", ""], ["abort", "Abort the current run", "Ctrl+Shift+X"], ["restart", "Restart Pi in this tab", ""],
             ["events", "Show events", "Ctrl+Shift+L"], ["diagnostics", "Show diagnostics", "Ctrl+Shift+D"], ["focus-prompt", "Focus the prompt", "Ctrl+L"],
         ]
     }
@@ -141,6 +142,7 @@ ShellRoot {
         case "cycle-model": return bridge.cycleModel()
         case "choose-thinking": return root.openThinkingPicker()
         case "cycle-thinking": return bridge.cycleThinkingLevel()
+        case "resource-profiles": return root.openResourceProfiles()
         case "compact-context": return root.compactContext()
         case "abort": return bridge.abortRun()
         case "restart": return bridge.restartProcess()
@@ -184,6 +186,12 @@ ShellRoot {
     function openDiagnostics() {
         if (diagnosticsDialogItem.opened) return false
         diagnosticsDialogItem.present()
+        return true
+    }
+
+    function openResourceProfiles() {
+        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || resourceProfilesDialogItem.opened) return false
+        resourceProfilesDialogItem.present()
         return true
     }
 
@@ -268,7 +276,7 @@ ShellRoot {
     // ---- models, thinking, and compaction ------------------------------------------------
 
     function openModelPicker() {
-        if (!bridge.ready || bridge.active || bridge.modelActionPending || pickerDialogItem.opened) return false
+        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || pickerDialogItem.opened) return false
         return bridge.loadModels(response => {
             if (!response.ok) return
             const items = []
@@ -285,7 +293,7 @@ ShellRoot {
     }
 
     function openThinkingPicker() {
-        if (!bridge.ready || bridge.active || bridge.modelActionPending || pickerDialogItem.opened) return false
+        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || pickerDialogItem.opened) return false
         return bridge.loadThinkingLevels(response => {
             if (!response.ok) return
             const items = []
@@ -578,6 +586,10 @@ ShellRoot {
                 onActivated: bridge.cycleThinkingLevel()
             }
             Shortcut {
+                sequence: "Ctrl+Shift+R"
+                onActivated: root.openResourceProfiles()
+            }
+            Shortcut {
                 sequence: "Ctrl+Shift+S"
                 onActivated: root.openSequences()
             }
@@ -852,7 +864,7 @@ ShellRoot {
                         text: bridge.currentProvider + "/" + bridge.currentModelId
                         accessibleName: "Model " + bridge.currentProvider + "/" + bridge.currentModelId + (bridge.currentModelName.length > 0 ? " (" + bridge.currentModelName + ")" : "") + ", choose a model"
                         accessibleDescription: "Ctrl+M opens the list, Ctrl+Shift+P cycles"
-                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending
+                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending
                         padding: 4
                         leftPadding: 8
                         rightPadding: 8
@@ -870,11 +882,26 @@ ShellRoot {
                         text: "thinking " + bridge.currentThinkingLevel
                         accessibleName: "Thinking effort " + bridge.currentThinkingLevel + ", choose a level"
                         accessibleDescription: "Ctrl+E opens the list, Ctrl+Shift+E cycles"
-                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending
+                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending
                         padding: 4
                         leftPadding: 8
                         rightPadding: 8
                         onClicked: root.openThinkingPicker()
+                    }
+
+                    AppButton {
+                        id: resourceProfilesButton
+                        visible: bridge.ready
+                        theme: appTheme
+                        variant: "ghost"
+                        text: bridge.resourceLoading ? "Resources…" : "Resources"
+                        accessibleName: "Configure tool, skill, and sampling profiles"
+                        accessibleDescription: "Ctrl+Shift+R; session, exact-model, and global scopes"
+                        enabled: !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending && !bridge.resourceLoading
+                        padding: 4
+                        leftPadding: 8
+                        rightPadding: 8
+                        onClicked: root.openResourceProfiles()
                     }
 
                     AppButton {
@@ -1119,6 +1146,13 @@ ShellRoot {
 
             DiagnosticsDialog {
                 id: diagnosticsDialogItem
+                theme: appTheme
+                bridge: bridge
+                returnFocusItem: composer
+            }
+
+            ResourceProfilesDialog {
+                id: resourceProfilesDialogItem
                 theme: appTheme
                 bridge: bridge
                 returnFocusItem: composer

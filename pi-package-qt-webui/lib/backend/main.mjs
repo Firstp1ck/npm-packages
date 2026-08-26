@@ -17,6 +17,8 @@ import {
   makeResponse,
   validateRequest,
 } from "./protocol.mjs";
+import { createResourceStore, resolveEffective, updateProfile, validateProfile } from "./resources.mjs";
+import { SAMPLING_KEYS, supportedSamplingValues } from "./sampling.mjs";
 import { createSequenceStore } from "./sequences.mjs";
 import { listSessions } from "./sessions-index.mjs";
 import { createSettingsStore } from "./settings.mjs";
@@ -43,6 +45,7 @@ export function createBackend({
   const cwd = env.QT_WEBUI_CALLER_CWD || process.cwd();
   const startupReadinessMs = Number.parseInt(env.QT_WEBUI_PI_STARTUP_TIMEOUT_MS ?? "", 10);
   const piRequestTimeoutMs = smokeMode ? Number.parseInt(env.QT_WEBUI_PI_REQUEST_TIMEOUT_MS ?? "", 10) : Number.NaN;
+  const helperTimeoutMs = smokeMode ? Number.parseInt(env.QT_WEBUI_HELPER_TIMEOUT_MS ?? "", 10) : Number.NaN;
 
   let sequence = 0;
   let dropped = 0;
@@ -119,6 +122,7 @@ export function createBackend({
   const settings = createSettingsStore({ env });
   const state = createStateStore({ env });
   const sequences = createSequenceStore({ env });
+  const resources = createResourceStore({ env });
   const sessionOptions = {
     nodeExecutable,
     piCliEntry,
@@ -127,6 +131,7 @@ export function createBackend({
     ...(Number.isFinite(piRequestTimeoutMs) && piRequestTimeoutMs > 0
       ? { requestTimeouts: { ...LIMITS.requestTimeoutMs, prompt: piRequestTimeoutMs, abort: piRequestTimeoutMs, state: piRequestTimeoutMs } }
       : {}),
+    ...(Number.isFinite(helperTimeoutMs) && helperTimeoutMs > 0 ? { helperTimeoutMs } : {}),
   };
   const registry = createTabRegistry({
     emit,
@@ -145,6 +150,269 @@ export function createBackend({
 
   function tabSnapshot(tab) {
     return { tab: registry.list().tabs.find((entry) => entry.id === tab.id), session: tab.session.snapshot(), attachments: tab.attachments.list() };
+  }
+
+  function normalizedNames(value, known, field) {
+    if (value === null) return null;
+    if (!Array.isArray(value)) throw new ProtocolError("unavailable", `The helper did not report a valid ${field} session override`);
+    const result = [];
+    for (const entry of value) {
+      if (typeof entry !== "string" || !known.has(entry) || result.includes(entry)) throw new ProtocolError("unavailable", `The helper reported an invalid ${field} name`);
+      result.push(entry);
+      if (result.length > LIMITS.maxResourceNames) throw new ProtocolError("unavailable", `The helper reported too many ${field} names`);
+    }
+    return result;
+  }
+
+  function normalizeHelperState(tab, raw) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ProtocolError("unavailable", "The helper did not report resource capability state");
+    const runtime = tab.session.snapshot().runtime;
+    const model = raw.model && typeof raw.model === "object" ? raw.model : null;
+    if (!model || model.provider !== runtime.provider || model.id !== runtime.modelId || typeof model.api !== "string") {
+      throw new ProtocolError("unavailable", "The helper resource capability state is stale for the active model");
+    }
+    const toolRows = raw.tools && Array.isArray(raw.tools.all) ? raw.tools.all : null;
+    const skillRows = raw.skills && Array.isArray(raw.skills.all) ? raw.skills.all : null;
+    if (!toolRows || !skillRows || toolRows.length > LIMITS.maxResourceNames || skillRows.length > LIMITS.maxResourceNames) {
+      throw new ProtocolError("unavailable", "The helper did not report bounded tool and skill inventories");
+    }
+    const tools = toolRows.filter((entry) => entry && typeof entry.name === "string" && entry.name.length > 0 && entry.name.length <= 128)
+      .map((entry) => ({ name: entry.name, description: String(entry.description || "").slice(0, 256), source: String(entry.source || "").slice(0, 128) }));
+    const skills = skillRows.filter((entry) => entry && typeof entry.name === "string" && entry.name.length > 0 && entry.name.length <= 128)
+      .map((entry) => ({ name: entry.name, description: String(entry.description || "").slice(0, 256), filePath: typeof entry.filePath === "string" && entry.filePath.length <= LIMITS.maxPathCharacters ? entry.filePath : "", disableModelInvocation: entry.disableModelInvocation === true }));
+    if (new Set(tools.map((entry) => entry.name)).size !== tools.length || new Set(skills.map((entry) => entry.name)).size !== skills.length) {
+      throw new ProtocolError("unavailable", "The helper reported duplicate resource names");
+    }
+    const capabilities = raw.sampling && raw.sampling.capabilities && typeof raw.sampling.capabilities === "object" ? raw.sampling.capabilities : null;
+    if (!capabilities || SAMPLING_KEYS.some((key) => !capabilities[key] || typeof capabilities[key].supported !== "boolean" || typeof capabilities[key].reason !== "string")) {
+      throw new ProtocolError("unavailable", "The helper did not report complete sampling capabilities");
+    }
+    const toolNames = new Set(tools.map((entry) => entry.name));
+    const skillNames = new Set(skills.map((entry) => entry.name));
+    const activeTools = normalizedNames(raw.tools.active, toolNames, "active tool");
+    const enabledSkills = normalizedNames(raw.skills.enabled, skillNames, "enabled skill");
+    if (!Array.isArray(activeTools) || !Array.isArray(enabledSkills) || !raw.sampling.applied || typeof raw.sampling.applied !== "object" || Array.isArray(raw.sampling.applied)) {
+      throw new ProtocolError("unavailable", "The helper did not report validated applied resource values");
+    }
+    const appliedSampling = validateProfile({ sampling: raw.sampling.applied }).sampling;
+    const sessionRaw = raw.session && typeof raw.session === "object" ? raw.session : {};
+    const sessionProfile = validateProfile({
+      tools: normalizedNames(sessionRaw.tools ?? null, toolNames, "tool"),
+      skills: normalizedNames(sessionRaw.skills ?? null, skillNames, "skill"),
+      sampling: sessionRaw.sampling,
+    });
+    const durabilityRaw = sessionRaw.durability;
+    if (!durabilityRaw || typeof durabilityRaw !== "object" || typeof durabilityRaw.durable !== "boolean" || typeof durabilityRaw.reason !== "string") {
+      throw new ProtocolError("unavailable", "The helper did not report session profile durability");
+    }
+    const durability = { durable: durabilityRaw.durable, reason: boundedError(durabilityRaw.reason) };
+    return {
+      model: { provider: model.provider, id: model.id, api: model.api },
+      thinkingLevel: typeof raw.thinkingLevel === "string" ? raw.thinkingLevel : "",
+      sessionProfile,
+      durability,
+      tools,
+      skills,
+      toolNames,
+      skillNames,
+      activeTools,
+      enabledSkills,
+      appliedSampling,
+      sampling: { api: model.api, capabilities, thinkingActive: raw.sampling.thinkingActive === true },
+    };
+  }
+
+  function resourceContextFrom(tab, helper, stored) {
+    const modelProfile = stored.value.models[`${helper.model.provider}/${helper.model.id}`] ?? validateProfile(null);
+    const effective = resolveEffective({ session: helper.sessionProfile, model: modelProfile, global: stored.value.global });
+    return { tab, helper, stored, modelProfile, effective };
+  }
+
+  async function resourceContext(tab) {
+    const helper = normalizeHelperState(tab, await tab.session.helperState());
+    return resourceContextFrom(tab, helper, resources.read());
+  }
+
+  function helperEffective(context) {
+    return {
+      tools: context.effective.tools,
+      skills: context.effective.skills,
+      sampling: supportedSamplingValues(context.effective.sampling, context.helper.sampling.capabilities),
+    };
+  }
+
+  function validateAppliedHelper(context, helper) {
+    const expected = helperEffective(context);
+    if (expected.tools !== null && JSON.stringify(helper.activeTools) !== JSON.stringify(expected.tools)) {
+      throw new ProtocolError("unavailable", "The helper did not apply the requested enabled tools exactly");
+    }
+    if (expected.skills !== null && JSON.stringify(helper.enabledSkills) !== JSON.stringify(expected.skills)) {
+      throw new ProtocolError("unavailable", "The helper did not apply the requested enabled skills exactly");
+    }
+    if (JSON.stringify(helper.appliedSampling) !== JSON.stringify(expected.sampling)) {
+      throw new ProtocolError("unavailable", "The helper did not apply the requested sampling values exactly");
+    }
+    if (JSON.stringify(helper.sessionProfile) !== JSON.stringify(context.helper.sessionProfile)) {
+      throw new ProtocolError("unavailable", "The helper did not retain the requested session resource profile exactly");
+    }
+    return helper;
+  }
+
+  function resourceResult(context) {
+    return {
+      available: true,
+      model: context.helper.model,
+      thinkingLevel: context.helper.thinkingLevel,
+      profiles: { session: context.helper.sessionProfile, model: context.modelProfile, global: context.stored.value.global },
+      sessionDurability: context.helper.durability,
+      effective: context.effective,
+      tools: { all: context.helper.tools },
+      skills: { all: context.helper.skills },
+      sampling: { ...context.helper.sampling, applied: context.helper.appliedSampling },
+      problems: context.stored.problems,
+      path: context.stored.path,
+    };
+  }
+
+  async function readResources(tab, { apply = true } = {}) {
+    const context = await resourceContext(tab);
+    if (!apply) return resourceResult(context);
+    const applied = normalizeHelperState(tab, await tab.session.helperApply({ effective: helperEffective(context) }));
+    validateAppliedHelper(context, applied);
+    return resourceResult(resourceContextFrom(tab, applied, context.stored));
+  }
+
+  async function safeReadResources(tab) {
+    try {
+      return await readResources(tab);
+    } catch (error) {
+      return { available: false, error: { code: error instanceof ProtocolError ? error.code : "unavailable", message: boundedError(error?.message ?? String(error)) } };
+    }
+  }
+
+  const exclusiveTabOperations = new Set();
+
+  function assertExclusiveTabOperationAvailable(tab) {
+    if (exclusiveTabOperations.has(tab.id)) throw new ProtocolError("busy", "Another resource, model, or session operation is already in progress for this tab");
+  }
+
+  async function withExclusiveTabOperation(tab, operation) {
+    assertExclusiveTabOperationAvailable(tab);
+    exclusiveTabOperations.add(tab.id);
+    try {
+      return await operation();
+    } finally {
+      exclusiveTabOperations.delete(tab.id);
+    }
+  }
+
+  function prospectiveStored(before, scope, field, value) {
+    if (scope === "session") return before.stored;
+    const nextValue = structuredClone(before.stored.value);
+    if (scope === "global") nextValue.global = updateProfile(nextValue.global, field, value);
+    else {
+      const key = `${before.helper.model.provider}/${before.helper.model.id}`;
+      nextValue.models[key] = updateProfile(nextValue.models[key] ?? validateProfile(null), field, value);
+    }
+    return { ...before.stored, value: nextValue };
+  }
+
+  function prospectiveContext(before, scope, field, value, stored) {
+    const helper = scope === "session"
+      ? { ...before.helper, sessionProfile: updateProfile(before.helper.sessionProfile, field, value) }
+      : before.helper;
+    return resourceContextFrom(before.tab, helper, stored);
+  }
+
+  async function rollbackResources(attempted, beforeById, scope, field, cause) {
+    const failures = [];
+    for (const target of attempted.slice().reverse()) {
+      const before = beforeById.get(target.id);
+      if (!before) continue;
+      try {
+        const session = scope === "session" ? { [field]: before.helper.sessionProfile[field] } : undefined;
+        await target.session.helperApply({ ...(session ? { session } : {}), effective: helperEffective(before) });
+      } catch (error) {
+        failures.push(`${target.id}: ${boundedError(error?.message ?? String(error))}`);
+      }
+    }
+    if (failures.length > 0) {
+      throw new ProtocolError("internal_error", `The resource change did not commit, and rollback failed (${failures.join("; ")}). The affected session state may be inconsistent. Original error: ${boundedError(cause?.message ?? String(cause))}`);
+    }
+    throw cause;
+  }
+
+  async function setResource(tab, scope, field, value) {
+    const acquired = [];
+    let targets = [tab];
+    try {
+      if (scope === "global") targets = allTabs();
+      else if (scope === "model") {
+        const runtime = tab.session.snapshot().runtime;
+        targets = allTabs().filter((candidate) => {
+          const candidateRuntime = candidate.session.snapshot().runtime;
+          return candidateRuntime.provider === runtime.provider && candidateRuntime.modelId === runtime.modelId;
+        });
+      }
+      for (const target of targets) {
+        if (target.session.snapshot().active) throw new ProtocolError("busy", "A broader resource profile cannot change while an affected tab is active");
+        if (target.id !== tab.id) {
+          if (exclusiveTabOperations.has(target.id)) throw new ProtocolError("busy", "Another resource, model, or session operation is already in progress for an affected tab");
+          exclusiveTabOperations.add(target.id);
+          acquired.push(target.id);
+        }
+      }
+
+      const beforeById = new Map();
+      for (const target of targets) beforeById.set(target.id, await resourceContext(target));
+      const before = beforeById.get(tab.id);
+      const known = field === "tools" ? before.helper.toolNames : before.helper.skillNames;
+      if (field !== "sampling" && value !== null) {
+        const unknown = value.find((name) => !known.has(name));
+        if (unknown) throw new ProtocolError("invalid_request", `Unknown ${field === "tools" ? "tool" : "skill"} ${unknown}`);
+      }
+      const storedBefore = before.stored;
+      const storedProspective = prospectiveStored(before, scope, field, value);
+      const prospectiveById = new Map();
+      for (const target of targets) prospectiveById.set(target.id, prospectiveContext(beforeById.get(target.id), scope, field, value, storedProspective));
+
+      const attempted = [];
+      const appliedHelpers = new Map();
+      for (const target of targets) {
+        attempted.push(target);
+        const prospective = prospectiveById.get(target.id);
+        const session = scope === "session" ? { [field]: prospective.helper.sessionProfile[field] } : undefined;
+        try {
+          const raw = await target.session.helperApply({ ...(session ? { session } : {}), effective: helperEffective(prospective) });
+          const applied = normalizeHelperState(target, raw);
+          validateAppliedHelper(prospective, applied);
+          appliedHelpers.set(target.id, applied);
+        } catch (error) {
+          await rollbackResources(attempted, beforeById, scope, field, error);
+        }
+      }
+
+      let committedStored = storedBefore;
+      if (scope !== "session") {
+        try {
+          resources.update(scope, { provider: before.helper.model.provider, modelId: before.helper.model.id }, field, value);
+          committedStored = resources.read();
+        } catch (error) {
+          await rollbackResources(attempted, beforeById, scope, field, error);
+        }
+      }
+
+      let requestedResult = null;
+      for (const target of targets) {
+        const finalContext = resourceContextFrom(target, appliedHelpers.get(target.id), committedStored);
+        const stateResult = resourceResult(finalContext);
+        emit("resources.changed", { tab: target.id, scope, field, state: stateResult });
+        if (target.id === tab.id) requestedResult = stateResult;
+      }
+      return requestedResult;
+    } finally {
+      for (const id of acquired) exclusiveTabOperations.delete(id);
+    }
   }
 
   const handlers = {
@@ -167,6 +435,7 @@ export function createBackend({
     },
     async prompt(request) {
       const tab = tabFor(request);
+      assertExclusiveTabOperationAvailable(tab);
       // Attachments are consumed only once the prompt is known to be acceptable.
       tab.session.assertPromptAllowed(request.mode);
       const taken = request.attachments.length > 0 ? tab.attachments.take(request.attachments) : null;
@@ -179,7 +448,8 @@ export function createBackend({
       return tabFor(request).session.requestState();
     },
     async restart(request) {
-      return registry.restart(tabFor(request).id);
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, () => registry.restart(tab.id));
     },
     async extension_response(request) {
       return tabFor(request).session.answerDialog(request);
@@ -223,7 +493,7 @@ export function createBackend({
         stats: { maxWritableLength, droppedTotal, backpressurePauses, queuedRecords, sequence, inflight: inflight.size },
         tabs: registry.list(),
         recentActions: saved.recentActions,
-        paths: { settings: settings.path, state: state.path, sequences: sequences.path },
+        paths: { settings: settings.path, state: state.path, sequences: sequences.path, resources: resources.path },
         limits: LIMITS,
       };
     },
@@ -235,22 +505,59 @@ export function createBackend({
       return tabFor(request).session.listModels();
     },
     async model_set(request) {
-      return tabFor(request).session.setModel({ provider: request.provider, modelId: request.modelId });
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, async () => {
+        const result = await tab.session.setModel({ provider: request.provider, modelId: request.modelId });
+        return { ...result, resources: await safeReadResources(tab) };
+      });
     },
     async model_cycle(request) {
-      return tabFor(request).session.cycleModel();
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, async () => {
+        const result = await tab.session.cycleModel();
+        return { ...result, resources: await safeReadResources(tab) };
+      });
     },
     async thinking_levels(request) {
       return tabFor(request).session.listThinkingLevels();
     },
     async thinking_set(request) {
-      return tabFor(request).session.setThinkingLevel({ level: request.level });
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, async () => {
+        const result = await tab.session.setThinkingLevel({ level: request.level });
+        return { ...result, resources: await safeReadResources(tab) };
+      });
     },
     async thinking_cycle(request) {
-      return tabFor(request).session.cycleThinkingLevel();
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, async () => {
+        const result = await tab.session.cycleThinkingLevel();
+        return { ...result, resources: await safeReadResources(tab) };
+      });
+    },
+    async resources_state(request) {
+      const tab = tabFor(request);
+      try {
+        return await withExclusiveTabOperation(tab, () => safeReadResources(tab));
+      } catch (error) {
+        return { available: false, error: { code: error.code || "unavailable", message: boundedError(error.message) } };
+      }
+    },
+    async tools_set(request) {
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, () => setResource(tab, request.scope, "tools", request.names));
+    },
+    async skills_set(request) {
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, () => setResource(tab, request.scope, "skills", request.names));
+    },
+    async sampling_set(request) {
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, () => setResource(tab, request.scope, "sampling", request.params));
     },
     async compact(request) {
-      return tabFor(request).session.compact({ instructions: request.instructions });
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, () => tab.session.compact({ instructions: request.instructions }));
     },
     async draft_get(request) {
       return { key: request.key, text: state.getDraft(request.key) };
@@ -277,7 +584,9 @@ export function createBackend({
     async sequence_run(request) {
       const sequence = sequences.get(request.sequenceId);
       if (!sequence) throw new ProtocolError("stale_request", "That sequence no longer exists");
-      return tabFor(request).session.runSequence({ sequenceId: sequence.id, entries: sequence.entries });
+      const tab = tabFor(request);
+      assertExclusiveTabOperationAvailable(tab);
+      return tab.session.runSequence({ sequenceId: sequence.id, entries: sequence.entries });
     },
     async commands_list(request) {
       return tabFor(request).session.listCommands();
@@ -309,9 +618,13 @@ export function createBackend({
       return tabSnapshot(tab);
     },
     async tab_close(request) {
-      const result = await registry.close(tabFor(request).id, { force: request.force });
-      const next = registry.active();
-      return { ...result, ...(next ? tabSnapshot(next) : {}) };
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, async () => {
+        const wasActive = registry.activeId === tab.id;
+        const result = await registry.close(tab.id, { force: request.force });
+        const next = wasActive ? registry.active() : null;
+        return { ...result, ...(next ? tabSnapshot(next) : {}) };
+      });
     },
     async tab_select(request) {
       const tab = registry.select(tabFor(request).id);
@@ -339,10 +652,11 @@ export function createBackend({
     },
     async session_switch(request) {
       const tab = tabFor(request);
-      return tab.session.switchSession(request.sessionPath);
+      return withExclusiveTabOperation(tab, () => tab.session.switchSession(request.sessionPath));
     },
     async session_new(request) {
-      return tabFor(request).session.newSession();
+      const tab = tabFor(request);
+      return withExclusiveTabOperation(tab, () => tab.session.newSession());
     },
     async directory_list(request) {
       const listing = listDirectory(request.path, { showHidden: request.showHidden });

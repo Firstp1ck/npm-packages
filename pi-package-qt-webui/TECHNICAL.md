@@ -92,6 +92,16 @@ The model button in the header (or `Ctrl+M`) lists every model configured in Pi 
 
 Changing the model can change the thinking effort, because Pi applies the new model's supported levels; the header always shows the values Pi confirmed. Both controls are disabled while Pi is working, and a change that Pi rejects is shown as a notice with Pi's reason. Choosing the entry that is already active does nothing. Up to 256 models are listed; the dialog says how many more are configured.
 
+**Resources** (`Ctrl+Shift+R`) opens profiles for enabled tools, enabled skills, and sampling values. First choose the scope:
+
+- **Session** overrides only the current Pi session. It stays with a persisted session; for an ephemeral session the dialog warns that the override applies only until the session ends.
+- **This model** applies to the exact active provider/model pair when its sessions inherit.
+- **Global** applies when neither the session nor exact model supplies a value.
+
+Session values win over exact-model values, which win over global values, which finally leave Pi's own defaults in place. The dialog always shows the effective value and its source. For tools and skills, **Inherit** means “use the next scope”; **None** is an intentional empty enabled list and prevents any item in that category from being used. Select individual names and choose **Save tools** or **Save skills** to apply them. Session changes take effect immediately in the idle tab. Exact-model and global changes are applied to every affected idle tab before they are saved; the change is refused if any affected tab is working. No Pi reload is required.
+
+The **Sampling** section offers temperature, top-p, frequency and presence penalties, seed, top-k, and min-p. A blank field inherits. Only values declared by the active provider interface can be edited or sent; every unavailable field is disabled with the provider's reason. A value saved for another model or before a capability change stays visible and stored, but is not sent while unsupported. Resource controls are disabled while Pi is working, while a model/resource change is pending, or when the helper cannot report complete current capabilities. **Refresh** retries capability discovery. Model, thinking, and tab changes refresh the shown profiles and support state.
+
 **Compact context** appears in the header once the transcript has content. It asks Pi to summarize older conversation so the context stays within the model's window, shows **Compacting…** until Pi answers, and then reports the token counts before and after. Prompts and model changes are refused while compaction runs. If compaction fails, Pi's error appears in the error panel and the session stays usable. Pi's automatic compaction and retries continue to appear as notices.
 
 ## Extension dialogs
@@ -122,7 +132,7 @@ Display choices are saved in `$XDG_CONFIG_HOME/qt-webui/settings.json` (usually 
 | `desktopNotifications` | `true` | Send desktop notifications while the window is unfocused. |
 | `syntaxHighlighting` | `true` | Highlight fenced code blocks. |
 
-The file is rewritten atomically. An unreadable or invalid file is ignored with a notice and the defaults apply. Saved prompt sequences live next to it in `sequences.json`, and unsent drafts, open tabs, and pinned and recent folders live in `$XDG_STATE_HOME/qt-webui/state.json` (usually `~/.local/state/qt-webui/state.json`), both with owner-only permissions. Sessions are listed from Pi's own session directory for the folder (`~/.pi/agent/sessions/`, or `$PI_CODING_AGENT_DIR/sessions/`). Qt WebUI stores nothing else; attachments stay in memory until they are sent, and Pi keeps its own session files in your Pi agent directory.
+The file is rewritten atomically. An unreadable or invalid file is ignored with a notice and the defaults apply. Saved prompt sequences live next to it in `sequences.json`; global and exact-model resource profiles live in `resources.json`; and unsent drafts, open tabs, and pinned and recent folders live in `$XDG_STATE_HOME/qt-webui/state.json` (usually `~/.local/state/qt-webui/state.json`), all with owner-only permissions. Session resource profiles stay in Pi's own saved session history rather than the shared profile file. If Pi reports that a session is ephemeral, the profile remains in memory only and the dialog shows that it is not durably saved. Sessions are listed from Pi's own session directory for the folder (`~/.pi/agent/sessions/`, or `$PI_CODING_AGENT_DIR/sessions/`). Attachments stay in memory until they are sent, and Pi keeps its own session files in your Pi agent directory.
 
 ## Runtime and security behavior
 
@@ -148,6 +158,7 @@ Everything Pi and its extensions produce is treated as untrusted text. Raw HTML 
 | `Ctrl+L` | Focus the prompt editor |
 | `Ctrl+M` | Choose a model; `Ctrl+Shift+P` cycles to the next model |
 | `Ctrl+E` | Choose the thinking effort; `Ctrl+Shift+E` cycles through the levels |
+| `Ctrl+Shift+R` | Open tool, skill, and sampling resource profiles |
 | `Ctrl+Shift+A` | Attach files |
 | `Ctrl+Shift+S` | Open saved prompt sequences |
 | `Ctrl+N` / `Ctrl+O` | New tab in the same folder / open another folder in a new tab |
@@ -193,6 +204,10 @@ Close the app, change to the project directory, and start `qt-webui` again. The 
 ### A model or thinking level cannot be selected
 
 The header controls are disabled while Pi is working or while another change is still being confirmed. If Pi rejects a change, the notice shows Pi's reason, for example a thinking level that the selected model does not support or a model that is no longer configured. The models offered come from Pi's own configuration; add or remove models in Pi, then reopen the list.
+
+### Resource profiles are unavailable or a sampling field is disabled
+
+Resource changes require idle affected Pi sessions and complete capability information from the bundled helper. Wait for current runs or model changes to finish, then open **Resources** and choose **Refresh**. A disabled sampling field shows the provider-interface reason; its stored value is preserved and will become active again only on a model that declares support. Unknown provider interfaces fail closed and receive no optional sampling values. If the dialog says a session profile is not durable, the override is active only for that ephemeral session; use a persisted Pi session if it must survive restart. If the entire profile stays unavailable after refresh, restart Pi in that tab; core prompts and model changes remain usable without resource editing.
 
 ### Saved tabs did not come back
 

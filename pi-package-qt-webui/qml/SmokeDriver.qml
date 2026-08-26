@@ -289,17 +289,35 @@ Item {
         const firstRows = bridge.transcriptModel.count
         if (!bridge.openTab(smokeSiblingDirectory("other"), "")) return fail("tab open refused")
         waitFor("second tab", () => bridge.tabCount === 2 && bridge.activeTabId !== firstTab && bridge.ready && bridge.transcriptModel.count === 0, () => {
+            const secondTab = bridge.activeTabId
             if (bridge.workspaceCwd.indexOf("/other") === -1 || bridge.displayCwd.indexOf("other") === -1) return fail("second tab workspace " + bridge.workspaceCwd)
+            if (!bridge.resourcesAvailable && !bridge.resourceLoading && !bridge.refreshResources()) return fail("second tab resource refresh refused")
+            waitFor("second tab initial resources", () => bridge.activeTabId === secondTab && bridge.resourcesAvailable && !bridge.resourceLoading, () => {
             log("QT_WEBUI_SMOKE_TAB_OPENED")
             bridge.sendPrompt("__QT_WEBUI_IMMEDIATE__", "send")
             waitFor("second tab prompt", () => !bridge.active && bridge.statusKind === "ready" && lastRowOfKind("user") !== null, () => {
-                if (!bridge.selectTab(firstTab)) return fail("tab select refused")
-                waitFor("first tab replayed", () => bridge.activeTabId === firstTab && bridge.ready && bridge.transcriptModel.count === firstRows, () => {
-                    if (bridge.workspaceCwd !== bridge.callerCwd) return fail("first tab workspace " + bridge.workspaceCwd)
-                    if (lastRowOfKind("user") === null || lastRowOfKind("user").text !== "queued follow-up") return fail("first tab rows " + (lastRowOfKind("user") ? lastRowOfKind("user").text : "none"))
-                    log("QT_WEBUI_SMOKE_TAB_SWITCHED")
-                    tabsSessions(firstTab)
+                const staleBeforeRead = bridge.staleResponses
+                if (!bridge.refreshResources() || !bridge.selectTab(firstTab)) return fail("delayed resource read switch refused")
+                waitFor("stale resource read", () => bridge.activeTabId === firstTab && bridge.staleResponses > staleBeforeRead, () => {
+                    log("QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED")
+                    waitFor("first tab resources", () => bridge.ready && bridge.resourcesAvailable && bridge.resourceState.profiles.session.sampling.top_k === 55, () => {
+                        if (!bridge.selectTab(secondTab)) return fail("second tab reselect refused")
+                        waitFor("second tab resources", () => bridge.activeTabId === secondTab && bridge.ready && bridge.resourcesAvailable && !bridge.resourceLoading, () => {
+                            const staleBeforeMutation = bridge.staleResponses
+                            if (!bridge.setEnabledTools("session", ["write"]) || !bridge.selectTab(firstTab)) return fail("delayed resource mutation switch refused")
+                            waitFor("stale resource mutation", () => bridge.activeTabId === firstTab && bridge.staleResponses > staleBeforeMutation, () => {
+                                log("QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED")
+                                waitFor("first tab replayed", () => bridge.ready && bridge.transcriptModel.count === firstRows && bridge.resourcesAvailable && bridge.resourceState.profiles.session.tools === null, () => {
+                                    if (bridge.workspaceCwd !== bridge.callerCwd) return fail("first tab workspace " + bridge.workspaceCwd)
+                                    if (lastRowOfKind("user") === null || lastRowOfKind("user").text !== "queued follow-up") return fail("first tab rows " + (lastRowOfKind("user") ? lastRowOfKind("user").text : "none"))
+                                    log("QT_WEBUI_SMOKE_TAB_SWITCHED")
+                                    tabsSessions(firstTab)
+                                })
+                            })
+                        })
+                    })
                 })
+            })
             })
         })
     }
@@ -478,6 +496,55 @@ Item {
         if (!bridge.cycleModel()) fail("model cycle refused")
     }
 
+    // Resource phase: drive the real dialog through all three scopes. Tools intentionally select
+    // none, skills send enabled names, and sampling proves a value survives a model capability loss.
+    function startResources() {
+        phase = "resources"
+        const dialog = shell.resourceProfilesDialog
+        if (!shell.openResourceProfiles()) return fail("resource profiles refused")
+        waitFor("resource profiles", () => dialog.opened && dialog.available && dialog.controlsEnabled && dialog.visibleCount === 3, () => {
+            if (dialog.effectiveSource("tools") !== "Pi defaults" || dialog.listSummary(null) !== "Pi defaults" || dialog.listSummary([]) !== "Intentionally none") return fail("resource inheritance labels")
+            log("QT_WEBUI_SMOKE_RESOURCES_LOADED")
+            dialog.setScope("global")
+            dialog.setSection("tools")
+            if (!dialog.chooseNone() || !dialog.saveCurrent(response => {
+                if (!response.ok || bridge.resourceState.effective.toolsSource !== "global" || bridge.resourceState.effective.tools.length !== 0) return fail("global tool profile")
+                log("QT_WEBUI_SMOKE_RESOURCE_TOOLS_NONE")
+                resourceSkills()
+            })) fail("global tool save refused")
+        })
+    }
+
+    function resourceSkills() {
+        const dialog = shell.resourceProfilesDialog
+        dialog.setScope("model")
+        dialog.setSection("skills")
+        if (!dialog.chooseNone() || !dialog.toggleName("review") || !dialog.saveCurrent(response => {
+            if (!response.ok || bridge.resourceState.effective.skillsSource !== "model" || bridge.resourceState.effective.skills.length !== 1 || bridge.resourceState.effective.skills[0] !== "review") return fail("model skill profile")
+            log("QT_WEBUI_SMOKE_RESOURCE_SKILLS_ENABLED")
+            resourceSampling()
+        })) fail("model skill save refused")
+    }
+
+    function resourceSampling() {
+        const dialog = shell.resourceProfilesDialog
+        dialog.setScope("session")
+        dialog.setSection("sampling")
+        if (!dialog.samplingSupported("top_k") || !dialog.setSamplingValue("temperature", "0.4") || !dialog.setSamplingValue("top_k", "55")) return fail("supported sampling edit")
+        if (!dialog.saveCurrent(response => {
+            if (!response.ok || bridge.resourceState.effective.samplingSources.top_k !== "session" || bridge.resourceState.sampling.applied.top_k !== 55) return fail("session sampling profile")
+            log("QT_WEBUI_SMOKE_RESOURCE_SAMPLING_SAVED")
+            if (!bridge.selectModel("fixture-provider", "fixture-model")) return fail("capability-loss model change refused")
+            waitFor("unsupported sampling preservation", () => !bridge.modelActionPending && bridge.currentModelId === "fixture-model" && bridge.resourcesAvailable && bridge.resourceState.model.id === "fixture-model", () => {
+                if (dialog.samplingSupported("top_k") || dialog.samplingStored("top_k") !== 55 || dialog.samplingEffective("top_k") !== 55) return fail("unsupported sampling was not preserved")
+                if (bridge.resourceState.sampling.applied.top_k !== undefined || dialog.samplingReason("top_k").length === 0) return fail("unsupported sampling was applied or has no reason")
+                log("QT_WEBUI_SMOKE_RESOURCE_UNSUPPORTED_PRESERVED")
+                dialog.close()
+                schedule("tabs")
+            })
+        })) fail("session sampling save refused")
+    }
+
     Timer {
         id: actionTimer
         interval: 40
@@ -487,8 +554,14 @@ Item {
             driver.nextAction = ""
             switch (action) {
             case "stream":
+                if (!driver.bridge.ready || driver.bridge.resourceLoading) {
+                    driver.waitFor("stable initial ready state", () => driver.bridge.ready && !driver.bridge.resourceLoading, () => driver.schedule("stream"))
+                    break
+                }
+                if (driver.bridge.visibleError === "Unknown error") return driver.fail("generic startup error")
+                driver.log("QT_WEBUI_SMOKE_STARTUP_ERROR_MAPPED")
                 driver.phase = "stream"
-                driver.bridge.sendPrompt("__QT_WEBUI_STREAM__", "send")
+                if (!driver.bridge.sendPrompt("__QT_WEBUI_STREAM__", "send")) driver.fail("initial stream prompt refused")
                 break
             case "markdown":
                 driver.phase = "markdown"
@@ -708,7 +781,7 @@ Item {
             if (!ok || driver.bridge.active || driver.bridge.compacting) return driver.fail("compaction result")
             driver.log("QT_WEBUI_SMOKE_CONTEXT_COMPACTED")
             driver.modelStep = ""
-            driver.schedule("tabs")
+            driver.startResources()
         }
 
         function onModelsLoaded(data) {

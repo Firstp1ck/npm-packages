@@ -25,26 +25,42 @@ function nameList(value) {
 
 function skillsFrom(options) {
   const skills = options && Array.isArray(options.skills) ? options.skills : [];
-  return skills.filter((skill) => skill && typeof skill.name === "string").map((skill) => ({
+  return skills.filter((skill) => skill && typeof skill.name === "string" && skill.name.length > 0 && skill.name.length <= 128).map((skill) => ({
     name: skill.name,
-    description: typeof skill.description === "string" ? skill.description.slice(0, 256) : "",
-    filePath: typeof skill.filePath === "string" ? skill.filePath : "",
+    description: typeof skill.description === "string" ? skill.description.slice(0, 128) : "",
+    filePath: typeof skill.filePath === "string" ? skill.filePath.slice(0, 512) : "",
     disableModelInvocation: skill.disableModelInvocation === true,
   }));
 }
 
 export default function qtWebUiHelper(pi) {
-  let baselineTools = null; // the active tools before Qt WebUI changed anything
-  let disabledSkills = new Set();
+  let baselineTools = null;
+  let sessionTools = null;
+  let sessionSkills = null;
   let sessionSampling = {};
-  let toolsPinned = false;
+  let disabledSkills = new Set();
+  let appliedSampling = {};
 
-  function persist(ctx) {
-    try {
-      pi.appendEntry(ENTRY_TYPE, { version: 1, tools: toolsPinned ? pi.getActiveTools() : null, disabledSkills: [...disabledSkills], sampling: { ...sessionSampling } });
-    } catch {
-      // Ephemeral sessions cannot persist; the in-memory state still applies.
-    }
+  function validatedSampling(value) {
+    const { values, problems } = validateSamplingParams(value);
+    if (Object.keys(problems).length > 0) throw new Error(`Invalid sampling parameters: ${Object.values(problems).join("; ")}`);
+    const result = {};
+    for (const [key, entry] of Object.entries(values)) if (entry !== null) result[key] = entry;
+    return result;
+  }
+
+  function sessionDurability(ctx) {
+    const persisted = typeof ctx?.sessionManager?.isPersisted === "function" ? ctx.sessionManager.isPersisted() : true;
+    return persisted
+      ? { durable: true, reason: "" }
+      : { durable: false, reason: "This Pi session is ephemeral; resource overrides apply only until it ends." };
+  }
+
+  function persist(ctx, next) {
+    const durability = sessionDurability(ctx);
+    if (!durability.durable) return durability;
+    pi.appendEntry(ENTRY_TYPE, { version: 1, tools: next.tools, skills: next.skills, sampling: { ...next.sampling } });
+    return durability;
   }
 
   function restore(ctx) {
@@ -57,37 +73,40 @@ export default function qtWebUiHelper(pi) {
       saved = null;
     }
     if (!saved) return;
-    disabledSkills = new Set(nameList(saved.disabledSkills));
-    sessionSampling = validateSamplingParams(saved.sampling).values;
-    for (const key of Object.keys(sessionSampling)) if (sessionSampling[key] === null) delete sessionSampling[key];
-    if (Array.isArray(saved.tools)) {
-      const known = new Set(pi.getAllTools().map((tool) => tool.name));
-      pi.setActiveTools(nameList(saved.tools).filter((name) => known.has(name)));
-      toolsPinned = true;
-    }
+    const knownTools = new Set(pi.getAllTools().map((tool) => tool.name));
+    const knownSkills = new Set(skillsFrom(typeof ctx.getSystemPromptOptions === "function" ? ctx.getSystemPromptOptions() : null).map((skill) => skill.name));
+    sessionTools = Array.isArray(saved.tools) ? nameList(saved.tools).filter((name) => knownTools.has(name)) : null;
+    sessionSkills = Array.isArray(saved.skills) ? nameList(saved.skills).filter((name) => knownSkills.has(name)) : null;
+    sessionSampling = validatedSampling(saved.sampling || {});
   }
 
-  function currentState(ctx) {
+  function currentState(ctx, durability = sessionDurability(ctx)) {
     const model = ctx.model ?? null;
     const api = model && typeof model.api === "string" ? model.api : "";
     const thinkingActive = !!(model && model.reasoning === true && typeof ctx.thinkingLevel === "string" && ctx.thinkingLevel !== "off");
     const options = typeof ctx.getSystemPromptOptions === "function" ? ctx.getSystemPromptOptions() : null;
+    const allSkills = skillsFrom(options).slice(0, MAX_NAMES);
     const active = new Set(pi.getActiveTools());
     return {
-      model: model ? { provider: model.provider, id: model.id, api } : null,
+      model: model ? { provider: String(model.provider || ""), id: String(model.id || ""), api } : null,
       thinkingLevel: typeof ctx.thinkingLevel === "string" ? ctx.thinkingLevel : "",
+      session: {
+        tools: sessionTools === null ? null : [...sessionTools],
+        skills: sessionSkills === null ? null : [...sessionSkills],
+        sampling: { ...sessionSampling },
+        durability,
+      },
       tools: {
-        all: pi.getAllTools().slice(0, MAX_NAMES).map((tool) => ({ name: tool.name, description: String(tool.description || "").slice(0, 256), source: String(tool.sourceInfo?.source || ""), enabled: active.has(tool.name) })),
+        all: pi.getAllTools().slice(0, MAX_NAMES).filter((tool) => tool && typeof tool.name === "string" && tool.name.length > 0 && tool.name.length <= 128).map((tool) => ({ name: tool.name, description: String(tool.description || "").slice(0, 128), source: String(tool.sourceInfo?.source || "").slice(0, 128), enabled: active.has(tool.name) })),
         active: [...active],
         baseline: baselineTools ? [...baselineTools] : [],
-        pinned: toolsPinned,
       },
       skills: {
-        all: skillsFrom(options).slice(0, MAX_NAMES),
-        disabled: [...disabledSkills],
+        all: allSkills,
+        enabled: allSkills.filter((skill) => !disabledSkills.has(skill.name)).map((skill) => skill.name),
       },
       sampling: {
-        session: { ...sessionSampling },
+        applied: { ...appliedSampling },
         api,
         capabilities: samplingCapabilities(api, { thinkingActive }),
         thinkingActive,
@@ -95,33 +114,35 @@ export default function qtWebUiHelper(pi) {
     };
   }
 
-  // payload: { tools?: string[] | null, skills?: { disabled: string[] } | null, sampling?: object | null }
+  // Session values are persisted separately from the already-resolved effective values. Skill
+  // enabled-name lists are translated to Pi's internal disabled set only at this boundary.
   function apply(ctx, payload) {
-    if (payload && Object.hasOwn(payload, "tools")) {
-      const known = new Set(pi.getAllTools().map((tool) => tool.name));
-      if (payload.tools === null) {
-        if (baselineTools) pi.setActiveTools([...baselineTools].filter((name) => known.has(name)));
-        toolsPinned = false;
-      } else {
-        pi.setActiveTools(nameList(payload.tools).filter((name) => known.has(name)));
-        toolsPinned = true;
-      }
+    const allTools = new Set(pi.getAllTools().map((tool) => tool.name));
+    const allSkills = new Set(skillsFrom(typeof ctx.getSystemPromptOptions === "function" ? ctx.getSystemPromptOptions() : null).map((skill) => skill.name));
+    const sessionUpdate = payload && payload.session && typeof payload.session === "object" ? payload.session : null;
+    let durability = sessionDurability(ctx);
+    if (sessionUpdate) {
+      const next = {
+        tools: Object.hasOwn(sessionUpdate, "tools") ? (sessionUpdate.tools === null ? null : nameList(sessionUpdate.tools).filter((name) => allTools.has(name))) : sessionTools,
+        skills: Object.hasOwn(sessionUpdate, "skills") ? (sessionUpdate.skills === null ? null : nameList(sessionUpdate.skills).filter((name) => allSkills.has(name))) : sessionSkills,
+        sampling: Object.hasOwn(sessionUpdate, "sampling") ? validatedSampling(sessionUpdate.sampling || {}) : sessionSampling,
+      };
+      durability = persist(ctx, next);
+      sessionTools = next.tools;
+      sessionSkills = next.skills;
+      sessionSampling = next.sampling;
     }
-    if (payload && Object.hasOwn(payload, "skills")) {
-      disabledSkills = payload.skills && typeof payload.skills === "object" ? new Set(nameList(payload.skills.disabled)) : new Set();
+    const effective = payload && payload.effective && typeof payload.effective === "object" ? payload.effective : {};
+    if (Object.hasOwn(effective, "tools")) {
+      const selected = effective.tools === null ? [...(baselineTools || [])] : nameList(effective.tools);
+      pi.setActiveTools(selected.filter((name) => allTools.has(name)));
     }
-    if (payload && Object.hasOwn(payload, "sampling")) {
-      if (payload.sampling === null) sessionSampling = {};
-      else {
-        const { values, problems } = validateSamplingParams(payload.sampling);
-        if (Object.keys(problems).length > 0) throw new Error(`Invalid sampling parameters: ${Object.values(problems).join("; ")}`);
-        const next = {};
-        for (const [key, value] of Object.entries(values)) if (value !== null) next[key] = value;
-        sessionSampling = next;
-      }
+    if (Object.hasOwn(effective, "skills")) {
+      const enabled = effective.skills === null ? allSkills : new Set(nameList(effective.skills).filter((name) => allSkills.has(name)));
+      disabledSkills = new Set([...allSkills].filter((name) => !enabled.has(name)));
     }
-    persist(ctx);
-    return currentState(ctx);
+    if (Object.hasOwn(effective, "sampling")) appliedSampling = validatedSampling(effective.sampling || {});
+    return currentState(ctx, durability);
   }
 
   pi.registerCommand(HELPER_COMMAND, {
@@ -151,10 +172,13 @@ export default function qtWebUiHelper(pi) {
 
   pi.on("session_start", async (_event, ctx) => {
     if (!baselineTools) baselineTools = new Set(pi.getActiveTools());
-    disabledSkills = new Set();
+    sessionTools = null;
+    sessionSkills = null;
     sessionSampling = {};
-    toolsPinned = false;
+    disabledSkills = new Set();
+    appliedSampling = {};
     restore(ctx);
+    apply(ctx, { effective: { tools: sessionTools, skills: sessionSkills, sampling: sessionSampling } });
   });
 
   // Disabled skills disappear from the system prompt; the section is rebuilt with Pi's own
@@ -178,10 +202,10 @@ export default function qtWebUiHelper(pi) {
   });
 
   pi.on("before_provider_request", (event, ctx) => {
-    if (Object.keys(sessionSampling).length === 0) return undefined;
+    if (Object.keys(appliedSampling).length === 0) return undefined;
     const model = ctx.model ?? null;
     const api = model && typeof model.api === "string" ? model.api : "";
     const thinkingActive = !!(model && model.reasoning === true && typeof ctx.thinkingLevel === "string" && ctx.thinkingLevel !== "off");
-    return applySamplingToPayload(event.payload, api, sessionSampling, { thinkingActive });
+    return applySamplingToPayload(event.payload, api, appliedSampling, { thinkingActive });
   });
 }

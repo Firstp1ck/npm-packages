@@ -22,7 +22,10 @@ import {
   validateRequest,
 } from "../lib/backend/protocol.mjs";
 import { normalizeModel, normalizeModels, normalizeThinkingLevels } from "../lib/backend/pi-session.mjs";
+import { createResourceStore, resolveEffective, updateProfile, validateResources } from "../lib/backend/resources.mjs";
+import { applySamplingToPayload, samplingCapabilities, validateSamplingParams } from "../lib/backend/sampling.mjs";
 import { createSettingsStore, defaultSettings } from "../lib/backend/settings.mjs";
+import qtWebUiHelper, { RESPONSE_PREFIX } from "../lib/pi-extension/qt-webui-helper.mjs";
 
 const STYLED_TAG = /<\/?([a-z]+)(?:\s+href="[^"]*")?>/g;
 const ALLOWED_TAGS = new Set(["b", "i", "s", "tt", "a", "br"]);
@@ -110,6 +113,144 @@ test("validateRequest bounds model, thinking, and compaction requests", () => {
   for (const type of ["models_list", "model_set", "model_cycle", "thinking_levels", "thinking_set", "thinking_cycle", "compact"]) {
     assert(REQUEST_TYPES.includes(type), `${type} must be a request type`);
   }
+});
+
+test("resource requests preserve null inheritance, intentional empty lists, and numeric bounds", () => {
+  const valid = (type, fields) => validateRequest({ v: 1, id: "r", type, ...fields });
+  assert.deepEqual(valid("tools_set", { scope: "session", enabledTools: null }).names, null);
+  assert.deepEqual(valid("tools_set", { scope: "global", enabledTools: [] }).names, []);
+  assert.deepEqual(valid("skills_set", { scope: "model", enabledSkills: ["review"] }).names, ["review"]);
+  assert.throws(() => valid("skills_set", { scope: "model", disabledSkills: [] }), /requires enabledSkills/);
+  assert.throws(() => valid("tools_set", { scope: "other", enabledTools: [] }), /scope must be/);
+  assert.doesNotThrow(() => valid("tools_set", { scope: "session", enabledTools: Array.from({ length: LIMITS.maxResourceNames }, (_, index) => `t${index}`) }));
+  assert.throws(() => valid("tools_set", { scope: "session", enabledTools: Array.from({ length: LIMITS.maxResourceNames + 1 }, (_, index) => `t${index}`) }), (error) => error.code === "limit_exceeded");
+  assert.throws(() => valid("skills_set", { scope: "session", enabledSkills: ["same", "same"] }), /unique/);
+  assert.deepEqual(valid("sampling_set", { scope: "global", params: null }).params, null);
+  assert.deepEqual(valid("sampling_set", { scope: "model", params: { temperature: 0, seed: Number.MAX_SAFE_INTEGER } }).params, { temperature: 0, seed: Number.MAX_SAFE_INTEGER });
+  assert.throws(() => valid("sampling_set", { scope: "session", params: Object.fromEntries(Array.from({ length: 17 }, (_, index) => [`p${index}`, 1])) }), (error) => error.code === "limit_exceeded");
+  for (const type of ["resources_state", "tools_set", "skills_set", "sampling_set"]) assert(REQUEST_TYPES.includes(type));
+});
+
+test("resource profiles resolve session then exact model then global without collapsing empty selections", async (t) => {
+  const global = { tools: ["read"], skills: [], sampling: { temperature: 0.4, top_p: 0.9 } };
+  const model = { tools: [], skills: null, sampling: { temperature: 0.2 } };
+  const session = { tools: null, skills: ["review"], sampling: { seed: 7 } };
+  assert.deepEqual(resolveEffective({ session, model, global }), {
+    tools: [], toolsSource: "model", skills: ["review"], skillsSource: "session",
+    sampling: { temperature: 0.2, top_p: 0.9, seed: 7 },
+    samplingSources: { temperature: "model", top_p: "global", seed: "session" },
+  });
+  assert.deepEqual(resolveEffective({ session: { tools: [], skills: [], sampling: {} }, model: null, global: null }).tools, []);
+  assert.equal(resolveEffective({ session: null, model: null, global: null }).tools, null);
+
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resources-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = createResourceStore({ directory });
+  store.update("global", {}, "sampling", { temperature: 0.7, top_k: 99 });
+  store.update("model", { provider: "p", modelId: "m" }, "tools", []);
+  assert.deepEqual(store.profileFor("global").sampling, { temperature: 0.7, top_k: 99 }, "unsupported values stay persisted");
+  assert.deepEqual(store.profileFor("model", "p", "m").tools, []);
+  store.update("model", { provider: "p", modelId: "m" }, "tools", null);
+  assert.equal(Object.hasOwn(store.read().value.models, "p/m"), false, "an all-inherit model profile is removed");
+  const mode = (await stat(store.path)).mode & 0o777;
+  assert.equal(mode, 0o600);
+  const invalid = validateResources({ global: { tools: "bad", sampling: { temperature: 3, top_k: 50 } }, models: {} });
+  assert.deepEqual(invalid.value.global.sampling, { top_k: 50 });
+  assert(invalid.problems.length >= 2);
+  assert.deepEqual(updateProfile(global, "sampling", { temperature: null, seed: 4 }).sampling, { top_p: 0.9, seed: 4 });
+});
+
+test("sampling capabilities validate every parameter and serialize exact provider payload shapes", () => {
+  assert.deepEqual(validateSamplingParams({ temperature: 0, top_p: 1, frequency_penalty: -2, presence_penalty: 2, seed: Number.MAX_SAFE_INTEGER, top_k: 1, min_p: 0 }).problems, {});
+  for (const [key, value] of Object.entries({ temperature: 2.01, top_p: -0.01, frequency_penalty: -2.01, presence_penalty: 2.01, seed: 1.5, top_k: 0, min_p: 1.01 })) {
+    assert(Object.hasOwn(validateSamplingParams({ [key]: value }).problems, key), `${key} rejects one over its range or integer contract`);
+  }
+  assert(Object.values(samplingCapabilities("unknown-api")).every((entry) => entry.supported === false));
+  assert.equal(samplingCapabilities("anthropic-messages", { thinkingActive: true }).temperature.supported, false);
+  const all = { temperature: 0.3, top_p: 0.8, frequency_penalty: -0.2, presence_penalty: 0.4, seed: 42, top_k: 30, min_p: 0.1 };
+  assert.deepEqual(applySamplingToPayload({ model: "x" }, "openai-completions", all), { model: "x", temperature: 0.3, top_p: 0.8, frequency_penalty: -0.2, presence_penalty: 0.4, seed: 42 });
+  assert.deepEqual(applySamplingToPayload({ config: { keep: true } }, "google-generative-ai", all), { config: { keep: true, temperature: 0.3, topP: 0.8, topK: 30, frequencyPenalty: -0.2, presencePenalty: 0.4, seed: 42 } });
+  assert.deepEqual(applySamplingToPayload({}, "bedrock-converse-stream", all), { inferenceConfig: { temperature: 0.3, topP: 0.8 } });
+  assert.deepEqual(applySamplingToPayload({}, "pi-messages", all), { options: { temperature: 0.3 } });
+  assert.equal(applySamplingToPayload({}, "unknown-api", all), undefined, "unknown provider APIs apply no sampling values");
+});
+
+test("Pi helper persists enabled-name session overrides and translates effective skills and sampling internally", async () => {
+  const handlers = new Map();
+  const commands = new Map();
+  const entries = [];
+  const notifications = [];
+  let activeTools = ["read", "bash"];
+  let appendFailure = false;
+  let persisted = true;
+  const allTools = [{ name: "read", description: "Read" }, { name: "bash", description: "Shell" }];
+  const allSkills = [
+    { name: "review", description: "Review", filePath: "/skills/review/SKILL.md" },
+    { name: "search", description: "Search", filePath: "/skills/search/SKILL.md" },
+  ];
+  const pi = {
+    on(name, handler) { handlers.set(name, handler); },
+    registerCommand(name, command) { commands.set(name, command); },
+    getActiveTools() { return [...activeTools]; },
+    getAllTools() { return allTools; },
+    setActiveTools(names) { activeTools = [...names]; },
+    appendEntry(type, data) {
+      if (appendFailure) throw new Error("deterministic append failure");
+      entries.push({ type, data: structuredClone(data) });
+    },
+  };
+  qtWebUiHelper(pi);
+  const ctx = {
+    model: { provider: "p", id: "m", api: "openai-completions", reasoning: false },
+    thinkingLevel: "off",
+    sessionManager: { getBranch: () => [], isPersisted: () => persisted },
+    getSystemPromptOptions: () => ({ skills: allSkills }),
+    ui: { notify: (message) => notifications.push(message) },
+  };
+  await handlers.get("session_start")({}, ctx);
+  const apply = commands.get("qt-webui-helper").handler;
+  await apply(JSON.stringify({ requestId: "a", action: "apply", payload: {
+    session: { tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 } },
+    effective: { tools: [], skills: ["review"], sampling: { temperature: 0.3, top_k: 20 } },
+  } }), ctx);
+  assert.deepEqual(entries.at(-1).data, { version: 1, tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 } }, "stored session values remain distinct from effective values");
+  assert.deepEqual(activeTools, []);
+  const answer = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
+  assert.deepEqual(answer.data.session, { tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 }, durability: { durable: true, reason: "" } });
+  assert.deepEqual(answer.data.skills.enabled, ["review"], "the enabled list is translated to the helper's disabled set");
+  assert.deepEqual(handlers.get("before_provider_request")({ payload: { model: "m" } }, ctx), { model: "m", temperature: 0.3 }, "unsupported stored values are not serialized");
+
+  await apply(JSON.stringify({ requestId: "b", action: "apply", payload: {
+    session: { tools: null, skills: null, sampling: {} },
+    effective: { tools: null, skills: [], sampling: {} },
+  } }), ctx);
+  const reset = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
+  assert.equal(reset.data.session.tools, null);
+  assert.equal(reset.data.session.skills, null);
+  assert.deepEqual(reset.data.skills.enabled, [], "an intentional empty effective selection is not treated as inherit");
+  assert.deepEqual(activeTools, ["read", "bash"], "null effective tools restore Pi defaults");
+
+  appendFailure = true;
+  await apply(JSON.stringify({ requestId: "c", action: "apply", payload: {
+    session: { tools: [] }, effective: { tools: [] },
+  } }), ctx);
+  const failed = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /deterministic append failure/);
+  assert.equal(reset.data.session.tools, null, "the last confirmed session state remains unchanged");
+  assert.deepEqual(activeTools, ["read", "bash"], "effective tools do not change after a durability failure");
+
+  persisted = false;
+  await apply(JSON.stringify({ requestId: "d", action: "apply", payload: {
+    session: { tools: [] }, effective: { tools: [] },
+  } }), ctx);
+  const ephemeral = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
+  assert.equal(ephemeral.ok, true);
+  assert.deepEqual(ephemeral.data.session.durability, {
+    durable: false,
+    reason: "This Pi session is ephemeral; resource overrides apply only until it ends.",
+  });
+  assert.deepEqual(activeTools, [], "an explicitly non-durable override still applies in memory");
 });
 
 test("model inventories and thinking levels are normalized, deduplicated, and bounded", () => {

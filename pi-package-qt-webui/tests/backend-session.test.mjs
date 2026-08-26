@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 import { LIMITS } from "../lib/backend/protocol.mjs";
 import { startBackend } from "./helpers/backend-client.mjs";
@@ -325,14 +327,18 @@ test("models and thinking levels can be listed, selected, and cycled with bounde
   assert.deepEqual((await backend.send("thinking_levels")).data.levels, ["off"]);
   const unsupported = await backend.send("thinking_set", { level: "high" });
   assert.equal(unsupported.error.code, "pi_error");
-  assert.deepEqual((await backend.send("thinking_cycle")).data, { changed: false, level: "off" });
+  const unchangedThinking = await backend.send("thinking_cycle");
+  assert.deepEqual({ changed: unchangedThinking.data.changed, level: unchangedThinking.data.level }, { changed: false, level: "off" });
+  assert.equal(unchangedThinking.data.resources.model.id, "fixture-fast");
   const rejectedLevel = await backend.send("thinking_set", { level: "ultra" });
   assert.equal(rejectedLevel.error.code, "invalid_request");
 
   const cycled = await backend.send("model_cycle");
   assert.deepEqual({ changed: cycled.data.changed, id: cycled.data.model.id, thinkingLevel: cycled.data.thinkingLevel }, { changed: true, id: "other-model", thinkingLevel: "off" });
   assert.equal((await backend.send("thinking_set", { level: "low" })).data.level, "low");
-  assert.deepEqual((await backend.send("thinking_cycle")).data, { changed: true, level: "medium" });
+  const cycledThinking = await backend.send("thinking_cycle");
+  assert.deepEqual({ changed: cycledThinking.data.changed, level: cycledThinking.data.level }, { changed: true, level: "medium" });
+  assert.equal(cycledThinking.data.resources.thinkingLevel, "medium");
   const after = backend.events.filter((event) => event.type === "pi.runtime").at(-1);
   assert.deepEqual({ provider: after.provider, modelId: after.modelId, thinkingLevel: after.thinkingLevel }, { provider: "other-provider", modelId: "other-model", thinkingLevel: "medium" });
 
@@ -347,6 +353,199 @@ test("models and thinking levels can be listed, selected, and cycled with bounde
   assert.deepEqual(commands.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]),
     [["fixture-provider", "missing"], ["fixture-provider", "fixture-fast"]]);
   assert.deepEqual(commands.filter((command) => command.type === "set_thinking_level").map((command) => command.level), ["high", "low"]);
+});
+
+test("resource profiles preserve inheritance and unsupported sampling while applying exact effective payloads", async (t) => {
+  const backend = await readyBackend(t);
+  const initial = await backend.send("resources_state");
+  assert.equal(initial.data.available, true);
+  assert.deepEqual(initial.data.profiles.session, { tools: null, skills: null, sampling: {} });
+  assert.deepEqual(initial.data.effective, { tools: null, toolsSource: "inherit", skills: null, skillsSource: "inherit", sampling: {}, samplingSources: {} });
+  assert.equal(initial.data.sampling.capabilities.temperature.supported, true);
+  assert.equal(initial.data.sampling.capabilities.top_k.supported, false);
+
+  const globalTools = await backend.send("tools_set", { scope: "global", enabledTools: ["read", "bash"] });
+  assert.deepEqual(globalTools.data.profiles.global.tools, ["read", "bash"]);
+  assert.equal(globalTools.data.effective.toolsSource, "global");
+  const globalSkills = await backend.send("skills_set", { scope: "global", enabledSkills: ["brave-search"] });
+  assert.deepEqual(globalSkills.data.effective.skills, ["brave-search"]);
+  const sampled = await backend.send("sampling_set", { scope: "global", params: { temperature: 0.6, top_k: 77 } });
+  assert.deepEqual(sampled.data.effective.sampling, { temperature: 0.6, top_k: 77 });
+  assert.deepEqual(sampled.data.sampling.applied, { temperature: 0.6 }, "unsupported top_k remains stored but is not applied");
+
+  const emptyTools = await backend.send("tools_set", { scope: "session", enabledTools: [] });
+  assert.deepEqual(emptyTools.data.profiles.session.tools, []);
+  assert.deepEqual(emptyTools.data.effective.tools, []);
+  assert.equal(emptyTools.data.effective.toolsSource, "session");
+  const emptySkills = await backend.send("skills_set", { scope: "session", enabledSkills: [] });
+  assert.deepEqual(emptySkills.data.profiles.session.skills, []);
+  assert.deepEqual(emptySkills.data.effective.skills, []);
+  const inheritedAgain = await backend.send("tools_set", { scope: "session", enabledTools: null });
+  assert.deepEqual(inheritedAgain.data.profiles.session.tools, null);
+  assert.deepEqual(inheritedAgain.data.effective.tools, ["read", "bash"]);
+
+  const modelSampling = await backend.send("sampling_set", { scope: "model", params: { temperature: 0.2, seed: 9 } });
+  assert.deepEqual(modelSampling.data.effective.sampling, { temperature: 0.2, top_k: 77, seed: 9 });
+  assert.deepEqual(modelSampling.data.effective.samplingSources, { temperature: "model", top_k: "global", seed: "model" });
+  assert.deepEqual(modelSampling.data.sampling.applied, { temperature: 0.2, seed: 9 });
+  const sessionSampling = await backend.send("sampling_set", { scope: "session", params: { temperature: 0, seed: null } });
+  assert.deepEqual(sessionSampling.data.profiles.session.sampling, { temperature: 0 });
+  assert.deepEqual(sessionSampling.data.effective.sampling, { temperature: 0, top_k: 77, seed: 9 });
+
+  const invalidTool = await backend.send("tools_set", { scope: "session", enabledTools: ["not-a-tool"] });
+  assert.equal(invalidTool.error.code, "invalid_request");
+  const invalidSampling = await backend.send("sampling_set", { scope: "session", params: { temperature: 3 } });
+  assert.equal(invalidSampling.error.code, "invalid_request");
+
+  const stored = JSON.parse(await readFile(initial.data.path, "utf8"));
+  assert.deepEqual(stored.global.sampling, { temperature: 0.6, top_k: 77 });
+  assert.deepEqual(stored.models["fixture-provider/fixture-model"].sampling, { temperature: 0.2, seed: 9 });
+  assert.equal(JSON.stringify(stored).includes("session"), false, "session overrides stay in Pi history, not resources.json");
+
+  const helperPrompts = (await backend.readCapture()).filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "));
+  const payloads = helperPrompts.map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length))).filter((entry) => entry.action === "apply").map((entry) => entry.payload);
+  assert(payloads.some((payload) => payload.session && Array.isArray(payload.session.skills) && payload.session.skills.length === 0), "empty enabled skill selection reaches the helper unchanged");
+  assert(payloads.some((payload) => payload.effective && payload.effective.sampling.temperature === 0 && payload.effective.sampling.seed === 9 && !Object.hasOwn(payload.effective.sampling, "top_k")), "only supported sampling values reach the helper");
+});
+
+test("resource commits avoid post-commit helper reads and report apply, persistence, and rollback failures honestly", async (t) => {
+  const beforeApply = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_FAIL_AT: "1" } });
+  const stateFailure = await beforeApply.send("tools_set", { scope: "global", enabledTools: ["read"] });
+  assert.equal(stateFailure.error.code, "pi_error");
+  assert.match(stateFailure.error.message, /call 1/);
+
+  const applyFailure = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_FAIL_AT: "2" } });
+  const failedApply = await applyFailure.send("tools_set", { scope: "global", enabledTools: ["read"] });
+  assert.equal(failedApply.error.code, "pi_error");
+  assert.match(failedApply.error.message, /call 2/);
+  const failedApplyPayloads = (await applyFailure.readCapture())
+    .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+    .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)));
+  assert.deepEqual(failedApplyPayloads.map((entry) => entry.action), ["state", "apply", "apply"], "a failed apply is followed by one explicit rollback");
+  assert.deepEqual(failedApplyPayloads.at(-1).payload.effective.tools, null);
+
+  const noPostCommitRead = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_FAIL_AT: "3" } });
+  const committed = await noPostCommitRead.send("tools_set", { scope: "global", enabledTools: ["read"] });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  assert.deepEqual(committed.data.effective.tools, ["read"]);
+  const committedCalls = (await noPostCommitRead.readCapture()).filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "));
+  assert.equal(committedCalls.length, 2, "commit uses state plus validated apply result, with no post-commit helper round trip");
+
+  const persistenceFailure = await readyBackend(t);
+  const resourcesPath = path.join(persistenceFailure.temporary, "config", "qt-webui", "resources.json");
+  await mkdir(resourcesPath, { recursive: true });
+  const notSaved = await persistenceFailure.send("tools_set", { scope: "global", enabledTools: ["read"] });
+  assert.equal(notSaved.error.code, "internal_error");
+  const persistenceCalls = (await persistenceFailure.readCapture())
+    .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+    .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)));
+  assert.deepEqual(persistenceCalls.map((entry) => entry.action), ["state", "apply", "apply"]);
+  assert.deepEqual(persistenceCalls.at(-1).payload.effective.tools, null, "persistence failure rolls the helper back to the validated prior state");
+
+  const rollbackFailure = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_FAIL_AT: "3" } });
+  const blockedPath = path.join(rollbackFailure.temporary, "config", "qt-webui", "resources.json");
+  await mkdir(blockedPath, { recursive: true });
+  const inconsistent = await rollbackFailure.send("tools_set", { scope: "global", enabledTools: ["read"] });
+  assert.equal(inconsistent.error.code, "internal_error");
+  assert.match(inconsistent.error.message, /rollback failed/i);
+  assert.match(inconsistent.error.message, /state may be inconsistent/i);
+});
+
+test("helper transport handles adverse ordering, both timeout legs, and Pi exit without killing the backend", async (t) => {
+  const early = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_ERROR_BEFORE_RESPONSE_AT: "1" } });
+  const earlyError = await early.send("resources_state");
+  assert.equal(earlyError.data.available, false);
+  assert.match(earlyError.data.error.message, /early helper error/);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal((await early.send("hello")).ok, true);
+  assert.equal(early.exit, null, "an observed early rejection does not trigger fatal backend shutdown");
+
+  const commandTimeout = await readyBackend(t, { env: {
+    QT_WEBUI_FIXTURE_HELPER_COMMAND_SILENT_AT: "1",
+    QT_WEBUI_FIXTURE_HELPER_NOTIFY_DELAY_MS: "200",
+    QT_WEBUI_PI_REQUEST_TIMEOUT_MS: "50",
+    QT_WEBUI_HELPER_TIMEOUT_MS: "500",
+  } });
+  const commandTimedOut = await commandTimeout.send("resources_state");
+  assert.equal(commandTimedOut.data.available, false);
+  assert.match(commandTimedOut.data.error.message, /Pi did not answer prompt within 50 ms/);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal((await commandTimeout.send("hello")).ok, true);
+  assert.equal(commandTimeout.exit, null);
+
+  const helperTimeout = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_SILENT_AT: "1", QT_WEBUI_HELPER_TIMEOUT_MS: "60" } });
+  const helperTimedOut = await helperTimeout.send("resources_state");
+  assert.equal(helperTimedOut.data.available, false);
+  assert.match(helperTimedOut.data.error.message, /helper did not answer state within 60 ms/i);
+  assert.equal((await helperTimeout.send("hello")).ok, true);
+  assert.equal(helperTimeout.exit, null);
+
+  const exitedPi = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_EXIT_AT: "1" } });
+  const exited = await exitedPi.send("resources_state");
+  assert.equal(exited.data.available, false);
+  assert.match(exited.data.error.message, /Pi exited/);
+  await exitedPi.waitForEvent("pi.exit", (event) => event.code === 24);
+  assert.equal((await exitedPi.send("hello")).ok, true);
+  assert.equal(exitedPi.exit, null, "Pi exit leaves the backend alive for restart");
+});
+
+test("session resource results distinguish durable and ephemeral overrides", async (t) => {
+  const durable = await readyBackend(t);
+  assert.deepEqual((await durable.send("resources_state")).data.sessionDurability, { durable: true, reason: "" });
+
+  const ephemeral = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_EPHEMERAL: "1" } });
+  const initial = await ephemeral.send("resources_state");
+  assert.equal(initial.data.sessionDurability.durable, false);
+  assert.match(initial.data.sessionDurability.reason, /ephemeral/);
+  const applied = await ephemeral.send("skills_set", { scope: "session", enabledSkills: [] });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.data.sessionDurability.durable, false);
+  assert.deepEqual(applied.data.profiles.session.skills, []);
+});
+
+test("resource changes are idle-only and helper loss, timeout, and invalid profile data fail closed without blocking chat", async (t) => {
+  const busyBackend = await readyBackend(t);
+  await busyBackend.send("prompt", { message: "__QT_WEBUI_DELAYED_ABORT__" });
+  assert.equal((await busyBackend.send("tools_set", { scope: "session", enabledTools: ["read"] })).error.code, "busy");
+  await busyBackend.send("abort");
+  await busyBackend.waitForEvent("run.end");
+
+  const missing = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_NO_HELPER: "1" } });
+  assert.deepEqual((await missing.send("resources_state")).data.available, false);
+  assert.equal((await missing.send("skills_set", { scope: "session", enabledSkills: [] })).error.code, "unavailable");
+  assert.equal((await missing.send("model_set", { provider: "fixture-provider", modelId: "fixture-fast" })).ok, true, "core model changes survive helper loss");
+  assert.equal((await missing.send("prompt", { message: "__QT_WEBUI_IMMEDIATE__" })).ok, true, "core chat survives helper loss");
+
+  const silent = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_SILENT: "1", QT_WEBUI_HELPER_TIMEOUT_MS: "80" } });
+  const timeout = await silent.send("sampling_set", { scope: "session", params: { temperature: 0.3 } });
+  assert.equal(timeout.error.code, "timeout");
+
+  const invalid = await readyBackend(t);
+  const state = await invalid.send("resources_state");
+  await mkdir(path.dirname(state.data.path), { recursive: true });
+  await writeFile(state.data.path, "{not json\n");
+  const fallback = await invalid.send("resources_state");
+  assert.equal(fallback.data.available, true);
+  assert.match(fallback.data.problems[0], /not valid JSON/);
+  assert.equal((await invalid.send("prompt", { message: "__QT_WEBUI_IMMEDIATE__" })).ok, true);
+});
+
+test("model and thinking changes return refreshed resource capabilities without stale stored values", async (t) => {
+  const backend = await readyBackend(t);
+  await backend.send("sampling_set", { scope: "global", params: { temperature: 0.4, top_k: 55 } });
+  const changed = await backend.send("model_set", { provider: "fixture-provider", modelId: "fixture-fast" });
+  assert.equal(changed.data.resources.model.id, "fixture-fast");
+  assert.equal(changed.data.resources.sampling.api, "fixture-unknown");
+  assert(Object.values(changed.data.resources.sampling.capabilities).every((entry) => entry.supported === false));
+  assert.deepEqual(changed.data.resources.effective.sampling, { temperature: 0.4, top_k: 55 }, "stored values survive capability loss");
+  assert.deepEqual(changed.data.resources.sampling.applied, {}, "unknown APIs apply no values");
+  const cycled = await backend.send("model_cycle");
+  assert.equal(cycled.data.resources.model.id, "other-model");
+  assert.equal(cycled.data.resources.sampling.api, "google-generative-ai");
+  assert.deepEqual(cycled.data.resources.sampling.applied, { temperature: 0.4, top_k: 55 });
+  const thinking = await backend.send("thinking_set", { level: "low" });
+  assert.equal(thinking.data.resources.thinkingLevel, "low");
+  assert.equal(thinking.data.resources.sampling.thinkingActive, true);
 });
 
 test("oversized model inventories are bounded and reported", async (t) => {

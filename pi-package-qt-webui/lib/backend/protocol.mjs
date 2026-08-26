@@ -9,7 +9,7 @@ export const PROTOCOL_VERSION = 1;
 export const LIMITS = Object.freeze({
   // Framing
   maxInboundFrameBytes: 256 * 1024,
-  maxOutboundFrameBytes: 256 * 1024,
+  maxOutboundFrameBytes: 1024 * 1024,
   maxPiFrameBytes: 4 * 1024 * 1024,
   // Outbound event queue while the QML consumer is slow
   maxQueuedRecords: 2000,
@@ -390,12 +390,15 @@ export function validateRequest(frame) {
     case "tools_set":
     case "skills_set": {
       request.scope = requireScope(frame);
-      const field = type === "tools_set" ? "enabledTools" : "disabledSkills";
+      const field = type === "tools_set" ? "enabledTools" : "enabledSkills";
       if (frame[field] === null) request.names = null;
       else if (Array.isArray(frame[field])) {
         if (frame[field].length > LIMITS.maxResourceNames) throw new ProtocolError("limit_exceeded", `${field} cannot have more than ${LIMITS.maxResourceNames} entries`);
+        const seen = new Set();
         request.names = frame[field].map((entry) => {
           if (typeof entry !== "string" || entry.length === 0 || entry.length > 128) throw new ProtocolError("invalid_request", `${field} entries must be non-empty strings`);
+          if (seen.has(entry)) throw new ProtocolError("invalid_request", `${field} entries must be unique`);
+          seen.add(entry);
           return entry;
         });
       } else throw new ProtocolError("invalid_request", `${type} requires ${field} as a list or null (inherit)`);

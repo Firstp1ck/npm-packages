@@ -13,6 +13,7 @@ const launcherUrl = pathToFileURL(path.join(root, "lib", "launcher.mjs")).href;
 const smokeMarkers = [
   "QT_WEBUI_SMOKE_BACKEND_READY",
   "QT_WEBUI_SMOKE_READY",
+  "QT_WEBUI_SMOKE_STARTUP_ERROR_MAPPED",
   "QT_WEBUI_SMOKE_THEME_DARK",
   "QT_WEBUI_SMOKE_RUNTIME_INFO",
   "QT_WEBUI_SMOKE_PARSE_RECOVERED",
@@ -49,7 +50,14 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_MODEL_CYCLED",
   "QT_WEBUI_SMOKE_THINKING_CYCLED",
   "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",
+  "QT_WEBUI_SMOKE_RESOURCES_LOADED",
+  "QT_WEBUI_SMOKE_RESOURCE_TOOLS_NONE",
+  "QT_WEBUI_SMOKE_RESOURCE_SKILLS_ENABLED",
+  "QT_WEBUI_SMOKE_RESOURCE_SAMPLING_SAVED",
+  "QT_WEBUI_SMOKE_RESOURCE_UNSUPPORTED_PRESERVED",
   "QT_WEBUI_SMOKE_TAB_OPENED",
+  "QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED",
+  "QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED",
   "QT_WEBUI_SMOKE_TAB_SWITCHED",
   "QT_WEBUI_SMOKE_SESSION_RESUMED",
   "QT_WEBUI_SMOKE_SESSION_NEW",
@@ -100,6 +108,7 @@ export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, ex
         QT_WEBUI_SMOKE_CAPTURE_PATH: ${JSON.stringify(capturePath)},
         QT_WEBUI_SMOKE_STATE_PATH: ${JSON.stringify(statePath)},
         QT_WEBUI_PI_STARTUP_TIMEOUT_MS: "1500",
+        QT_WEBUI_PI_REQUEST_TIMEOUT_MS: "10000",
       },
     });
     process.exitCode = code;
@@ -195,7 +204,9 @@ async function assertCapture(capturePath) {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
-  const prompts = commands.filter((command) => command.type === "prompt");
+  const helperPrompts = commands.filter((command) => command.type === "prompt" && String(command.message).startsWith("/qt-webui-helper "));
+  const helperRequests = helperPrompts.map((command) => JSON.parse(String(command.message).slice("/qt-webui-helper ".length)));
+  const prompts = commands.filter((command) => command.type === "prompt" && !String(command.message).startsWith("/qt-webui-helper "));
   assert.deepEqual(prompts.map((command) => command.message.split("\n")[0]), [
     "__QT_WEBUI_STREAM__",
     "__QT_WEBUI_MARKDOWN__",
@@ -214,7 +225,7 @@ async function assertCapture(capturePath) {
   assert.equal(attachmentPrompt.message, "__QT_WEBUI_IMMEDIATE__\n\nAttached file: main.mjs\n````\nexport const answer = 42;\n\n````", "text attachments travel as labelled fenced blocks");
   assert.equal(attachmentPrompt.images, undefined);
   assert.deepEqual(commands.filter((command) => command.type === "follow_up").map((command) => command.message), ["queued follow-up"], "the sequence queues its second entry");
-  assert.equal(commands.filter((command) => command.type === "get_commands").length, 2, "the composer loads commands once and the palette reloads them after the tab switch cleared the per-tab cache");
+  assert(commands.filter((command) => command.type === "get_commands").length >= 2, "the composer and palette load commands; resource-helper discovery may share those reads per tab");
   assert.deepEqual(commands.filter((command) => command.type === "switch_session").map((command) => path.basename(command.sessionPath)), ["2026-08-26_resume-me.jsonl"]);
   assert.equal(commands.filter((command) => command.type === "new_session").length, 1);
   assert.equal(commands.filter((command) => command.type === "get_messages").length, 1, "history is read once, after the resume");
@@ -222,12 +233,18 @@ async function assertCapture(capturePath) {
   assert(!prompts.some((command) => /^\/(review|fix-tests|skill:)/.test(command.message)), "palette commands are inserted, never sent");
   assert.equal(commands.filter((command) => command.type === "abort").length, 2,
     "one abort should be sent before delayed agent_start and exactly one after it");
-  assert.deepEqual(commands.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]), [["fixture-provider", "fixture-fast"]],
-    "the picker sends exactly one model change; re-picking the current thinking level sends nothing");
+  assert.deepEqual(commands.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]), [["fixture-provider", "fixture-fast"], ["fixture-provider", "fixture-model"]],
+    "the picker changes to the fast model and the resource flow returns to a model with different sampling capabilities");
   assert.deepEqual(commands.filter((command) => command.type === "set_thinking_level"), []);
   assert.equal(commands.filter((command) => command.type === "cycle_model").length, 1);
   assert.equal(commands.filter((command) => command.type === "cycle_thinking_level").length, 1);
   assert.deepEqual(commands.filter((command) => command.type === "compact"), [{ type: "compact" }].map((command) => ({ ...command, id: commands.find((entry) => entry.type === "compact").id })));
+  assert(helperRequests.filter((request) => request.action === "state").length >= 1, "resource state is refreshed through the helper");
+  const helperApplies = helperRequests.filter((request) => request.action === "apply").map((request) => request.payload || {});
+  assert(helperApplies.some((payload) => Array.isArray(payload.effective?.tools) && payload.effective.tools.length === 0), "intentional no-tools is applied as an empty enabled list");
+  assert(helperApplies.some((payload) => JSON.stringify(payload.effective?.skills) === JSON.stringify(["review"])), "enabled skills are applied by name");
+  assert(helperApplies.some((payload) => payload.session?.sampling?.top_k === 55 && payload.effective?.sampling?.top_k === 55), "supported session sampling is serialized exactly");
+  assert(helperApplies.some((payload) => payload.session === undefined && payload.effective?.sampling?.temperature === 0.4 && payload.effective?.sampling?.top_k === undefined), "unsupported top_k remains stored but is omitted from the applied payload after the model change");
   const dialogResponses = commands.filter((command) => command.type === "extension_ui_response");
   assert.deepEqual(dialogResponses, [
     { type: "extension_ui_response", id: "dialog-select", value: "Block" },

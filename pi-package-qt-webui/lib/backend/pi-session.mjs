@@ -198,6 +198,7 @@ export function createPiSession({
   requestTimeouts = LIMITS.requestTimeoutMs,
   now = () => Date.now(),
   helperExtensionPath = HELPER_EXTENSION_PATH,
+  helperTimeoutMs = LIMITS.helperTimeoutMs,
 }) {
   const session = {
     child: null,
@@ -296,7 +297,7 @@ export function createPiSession({
   }
 
   // Correlated Pi command with explicit timeout. Resolves with the Pi response record.
-  function sendCommand(command, { timeoutMs }) {
+  function sendCommand(command, { timeoutMs, onPending = null }) {
     return new Promise((resolve, reject) => {
       const id = nextId(command.type.replace(/_/g, "-"));
       if (session.pending.size >= LIMITS.maxPendingRequests) {
@@ -308,12 +309,21 @@ export function createPiSession({
         reject(new ProtocolError("timeout", `Pi did not answer ${command.type} within ${timeoutMs} ms`));
       }, timeoutMs);
       session.pending.set(id, { command: command.type, resolve, reject, timer });
+      if (onPending) onPending(id);
       if (!writeRaw({ id, ...command })) {
         clearTimeout(timer);
         session.pending.delete(id);
         reject(new ProtocolError("not_running", "Pi is not running"));
       }
     });
+  }
+
+  function cancelPendingCommand(id) {
+    const pending = session.pending.get(id);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    session.pending.delete(id);
+    return true;
   }
 
   function rejectPending(reason) {
@@ -567,20 +577,44 @@ export function createPiSession({
     const answer = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         session.helperPending.delete(requestId);
-        reject(new ProtocolError("timeout", `The Qt WebUI helper did not answer ${action} within ${LIMITS.helperTimeoutMs} ms`));
-      }, LIMITS.helperTimeoutMs);
+        reject(new ProtocolError("timeout", `The Qt WebUI helper did not answer ${action} within ${helperTimeoutMs} ms`));
+      }, helperTimeoutMs);
       session.helperPending.set(requestId, { resolve, reject, timer });
     });
-    const response = await sendCommand({ type: "prompt", message }, { timeoutMs: LIMITS.helperTimeoutMs });
-    if (response.success !== true) {
+    // Observe the helper leg immediately: an error notify may arrive before Pi's prompt response.
+    const answerOutcome = answer.then(
+      (data) => ({ kind: "answer", data }),
+      (error) => ({ kind: "answer_error", error }),
+    );
+    let commandId = "";
+    const commandOutcome = sendCommand(
+      { type: "prompt", message },
+      { timeoutMs: requestTimeouts.prompt, onPending: (id) => { commandId = id; } },
+    ).then(
+      (response) => ({ kind: "command", response }),
+      (error) => ({ kind: "command_error", error }),
+    );
+    const first = await Promise.race([answerOutcome, commandOutcome]);
+    if (first.kind === "answer" || first.kind === "answer_error") {
+      cancelPendingCommand(commandId);
+      if (first.kind === "answer_error") throw first.error;
+      return first.data;
+    }
+    if (first.kind === "command_error" || first.response.success !== true) {
       const pending = session.helperPending.get(requestId);
       if (pending) {
         clearTimeout(pending.timer);
         session.helperPending.delete(requestId);
+        pending.reject(first.kind === "command_error"
+          ? first.error
+          : new ProtocolError("pi_error", first.response.error || `Pi rejected the ${action} request`));
       }
-      throw new ProtocolError("pi_error", response.error || `Pi rejected the ${action} request`);
+      const settledAnswer = await answerOutcome;
+      throw settledAnswer.kind === "answer_error" ? settledAnswer.error : new ProtocolError("pi_error", `Pi rejected the ${action} request`);
     }
-    return answer;
+    const settledAnswer = await answerOutcome;
+    if (settledAnswer.kind === "answer_error") throw settledAnswer.error;
+    return settledAnswer.data;
   }
 
   function handleHelperNotify(raw) {

@@ -9,17 +9,24 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const packageDir = dirname(testDir);
 const { default: statsExtension } = await import(pathToFileURL(join(packageDir, "index.ts")).href);
 
+function localDayKey(date) {
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function dayKey(offset) {
   const date = new Date();
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() + offset);
-  return date.toISOString().slice(0, 10);
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() + offset);
+  return localDayKey(date);
 }
 
 function usageEntry(day, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, totalTokens, cost = 0, model = "model" } = {}) {
   return {
     type: "message",
-    timestamp: `${day}T12:00:00.000Z`,
+    timestamp: `${day}T12:00:00.000`,
     message: {
       role: "assistant",
       provider: "test",
@@ -130,7 +137,7 @@ test("range payload uses scoped sessions, nullable-safe formulas, and equal spen
   assert.match(payload.lines.cache[0], /^Cached-input share:/);
 });
 
-test("all scope spans every UTC calendar day between sparse usage records", async () => {
+test("all scope spans every local calendar day between sparse usage records", async () => {
   const payload = await buildPayload(sparseFiles, "all");
 
   assert.equal(payload.dayCount, 21);
@@ -142,6 +149,51 @@ test("all scope spans every UTC calendar day between sparse usage records", asyn
   assert.equal(payload.summary.spendComparison.windowDays, 7);
   assert.equal(payload.summary.spendComparison.recentCost, 10);
   assert.equal(payload.summary.spendComparison.priorCost, 2);
+});
+
+test("usage after the UTC date boundary stays on the local calendar day", async () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+
+  try {
+    const timestamp = new Date();
+    timestamp.setHours(22, 19, 0, 0);
+    const expectedDay = localDayKey(timestamp);
+    assert.notEqual(timestamp.toISOString().slice(0, 10), expectedDay);
+
+    const entry = usageEntry(expectedDay, { input: 10, totalTokens: 10, cost: 1 });
+    entry.timestamp = timestamp.toISOString();
+    const files = { boundary: [entry] };
+    const allPayload = await buildPayload(files, "all");
+    const todayPayload = await buildPayload(files, "1");
+
+    for (const payload of [allPayload, todayPayload]) {
+      assert.equal(payload.dayCount, 1);
+      assert.equal(payload.daily[0].day, expectedDay);
+      assert.equal(payload.daily[0].total, 10);
+      assert.equal(payload.expensiveSessions[0].day, expectedDay);
+    }
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  }
+});
+
+test("local day ranges cross daylight-saving changes without skipping dates", async () => {
+  const previousTimeZone = process.env.TZ;
+  process.env.TZ = "America/Los_Angeles";
+
+  try {
+    const payload = await buildPayload({
+      before: [usageEntry("2026-03-07", { input: 1, totalTokens: 1 })],
+      after: [usageEntry("2026-03-09", { input: 1, totalTokens: 1 })],
+    }, "all");
+
+    assert.deepEqual(payload.daily.map((day) => day.day), ["2026-03-07", "2026-03-08", "2026-03-09"]);
+  } finally {
+    if (previousTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimeZone;
+  }
 });
 
 test("zero denominators produce finite values or null, never NaN or Infinity", async () => {

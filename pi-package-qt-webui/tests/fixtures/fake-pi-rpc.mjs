@@ -19,9 +19,9 @@ let delayedContinuation = null;
 // Model inventory: the reasoning model exposes every level; the fast model has none. The odd
 // entries prove the backend drops malformed models and strips terminal color codes.
 const MODELS = [
-  { id: "fixture-model", name: "Fixture Model", provider: "fixture-provider", api: "fixture", baseUrl: "https://fixture.invalid", reasoning: true, input: ["text", "image"], contextWindow: 200_000, maxTokens: 16_384, cost: { input: 1, output: 2 } },
-  { id: "fixture-fast", name: "Fixture Fast \u001b[31mred\u001b[0m", provider: "fixture-provider", api: "fixture", reasoning: false, input: ["text"], contextWindow: 32_000, maxTokens: 4_096 },
-  { id: "other-model", name: "Other Model", provider: "other-provider", api: "other", reasoning: true, input: ["text"], contextWindow: 128_000, maxTokens: 8_192 },
+  { id: "fixture-model", name: "Fixture Model", provider: "fixture-provider", api: "openai-completions", baseUrl: "https://fixture.invalid", reasoning: true, input: ["text", "image"], contextWindow: 200_000, maxTokens: 16_384, cost: { input: 1, output: 2 } },
+  { id: "fixture-fast", name: "Fixture Fast \u001b[31mred\u001b[0m", provider: "fixture-provider", api: "fixture-unknown", reasoning: false, input: ["text"], contextWindow: 32_000, maxTokens: 4_096 },
+  { id: "other-model", name: "Other Model", provider: "other-provider", api: "google-generative-ai", reasoning: true, input: ["text"], contextWindow: 128_000, maxTokens: 8_192 },
   { id: "", name: "Nameless", provider: "broken" },
   "not a model",
   { id: "fixture-model", name: "Duplicate", provider: "fixture-provider", reasoning: true },
@@ -32,6 +32,19 @@ let compacting = false;
 let sessionSerial = 0;
 let currentSessionFile = "/tmp/fixture-session.jsonl";
 let currentSessionName = "Fixture session";
+let helperSession = { tools: null, skills: null, sampling: {} };
+let helperEffective = { tools: null, skills: null, sampling: {} };
+let helperCallCount = 0;
+
+const HELPER_TOOLS = [
+  { name: "read", description: "Read a file", source: "core" },
+  { name: "bash", description: "Run a command", source: "core" },
+  { name: "write", description: "Write a file", source: "core" },
+];
+const HELPER_SKILLS = [
+  { name: "brave-search", description: "Web search", filePath: "/tmp/skills/brave-search/SKILL.md", disableModelInvocation: false },
+  { name: "review", description: "Review code", filePath: "/tmp/skills/review/SKILL.md", disableModelInvocation: false },
+];
 
 // Persisted history replayed by get_messages: a session named resume-me has a complete exchange
 // with a tool call, one named interrupted ends with an unanswered user message.
@@ -345,6 +358,7 @@ function handle(command) {
 
   if (command.type === "get_commands") {
     response(command, true, { data: { commands: [
+      ...(process.env.QT_WEBUI_FIXTURE_NO_HELPER === "1" ? [] : [{ name: "qt-webui-helper", description: "Internal resource helper", source: "extension" }]),
       { name: "review", description: "Review the current diff", source: "extension", path: "/tmp/ext/review.ts" },
       { name: "fix-tests", description: "Fix failing tests [31m![0m", source: "prompt", location: "project", path: "/tmp/project/.pi/agent/prompts/fix-tests.md" },
       { name: "skill:brave-search", description: "Web search", source: "skill", location: "user", path: "/tmp/skills/brave-search/SKILL.md" },
@@ -437,6 +451,73 @@ function handle(command) {
     return;
   }
 
+  if (String(command.message).startsWith("/qt-webui-helper ")) {
+    helperCallCount += 1;
+    const callSelected = (name) => String(process.env[name] || "").split(",").filter(Boolean).map(Number).includes(helperCallCount);
+    const commandSilent = callSelected("QT_WEBUI_FIXTURE_HELPER_COMMAND_SILENT_AT");
+    const configuredNotifyDelay = process.env.QT_WEBUI_FIXTURE_HELPER_NOTIFY_DELAY_MS
+      || (process.env.QT_WEBUI_PI_REQUEST_TIMEOUT_MS === "10000" ? "40" : "0");
+    const notifyDelayMs = Number.parseInt(configuredNotifyDelay, 10) || 0;
+    let request;
+    try {
+      request = JSON.parse(String(command.message).slice("/qt-webui-helper ".length));
+    } catch (error) {
+      if (!commandSilent) response(command);
+      notify(`__QT_WEBUI_HELPER__${JSON.stringify({ requestId: "", ok: false, error: error.message })}`);
+      return;
+    }
+    if (callSelected("QT_WEBUI_FIXTURE_HELPER_EXIT_AT")) process.exit(24);
+    if (callSelected("QT_WEBUI_FIXTURE_HELPER_ERROR_BEFORE_RESPONSE_AT")) {
+      notify(`__QT_WEBUI_HELPER__${JSON.stringify({ requestId: request.requestId, ok: false, error: "deterministic early helper error" })}`);
+      setTimeout(() => response(command), 30);
+      return;
+    }
+    if (!commandSilent) response(command);
+    if (process.env.QT_WEBUI_FIXTURE_HELPER_SILENT === "1" || callSelected("QT_WEBUI_FIXTURE_HELPER_SILENT_AT")) return;
+    const answer = (record) => {
+      const send = () => notify(`__QT_WEBUI_HELPER__${JSON.stringify(record)}`);
+      if (notifyDelayMs > 0) setTimeout(send, notifyDelayMs);
+      else send();
+    };
+    try {
+      if (callSelected("QT_WEBUI_FIXTURE_HELPER_FAIL_AT")) throw new Error(`deterministic helper failure at call ${helperCallCount}`);
+      if (request.action === "apply") {
+        const session = request.payload && request.payload.session;
+        if (session && typeof session === "object") {
+          for (const field of ["tools", "skills", "sampling"]) {
+            if (Object.hasOwn(session, field)) helperSession[field] = session[field] === null ? null : structuredClone(session[field]);
+          }
+        }
+        if (request.payload && request.payload.effective) helperEffective = structuredClone(request.payload.effective);
+      } else if (request.action !== "state") throw new Error("unknown helper action");
+      const api = typeof currentModel.api === "string" ? currentModel.api : "";
+      const supported = api === "openai-completions" ? new Set(["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed"])
+        : api === "google-generative-ai" ? new Set(["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed", "top_k"])
+          : new Set();
+      const labels = { temperature: "temperature", top_p: "top p", frequency_penalty: "frequency penalty", presence_penalty: "presence penalty", seed: "seed", top_k: "top k", min_p: "min p" };
+      const capabilities = Object.fromEntries(Object.keys(labels).map((key) => [key, { supported: supported.has(key), reason: supported.has(key) ? "" : api ? `${api} does not accept ${labels[key]}` : "no active model" }]));
+      const activeTools = helperEffective.tools === null ? HELPER_TOOLS.map((entry) => entry.name) : helperEffective.tools;
+      const enabledSkills = helperEffective.skills === null ? HELPER_SKILLS.map((entry) => entry.name) : helperEffective.skills;
+      const data = {
+        model: { provider: currentModel.provider, id: currentModel.id, api },
+        thinkingLevel: currentThinkingLevel,
+        session: {
+          ...structuredClone(helperSession),
+          durability: process.env.QT_WEBUI_FIXTURE_EPHEMERAL === "1"
+            ? { durable: false, reason: "This Pi session is ephemeral; resource overrides apply only until it ends." }
+            : { durable: true, reason: "" },
+        },
+        tools: { all: HELPER_TOOLS.map((entry) => ({ ...entry, enabled: activeTools.includes(entry.name) })), active: activeTools, baseline: HELPER_TOOLS.map((entry) => entry.name) },
+        skills: { all: HELPER_SKILLS, enabled: enabledSkills },
+        sampling: { applied: structuredClone(helperEffective.sampling || {}), api, capabilities, thinkingActive: currentModel.reasoning === true && currentThinkingLevel !== "off" },
+      };
+      answer({ requestId: request.requestId, ok: true, data });
+    } catch (error) {
+      answer({ requestId: request?.requestId || "", ok: false, error: error.message });
+    }
+    return;
+  }
+
   // Attachments append fenced blocks below the typed prompt, so scenarios key on the first line.
   switch (String(command.message).split("\n")[0]) {
     case "__QT_WEBUI_STREAM__":
@@ -446,6 +527,10 @@ function handle(command) {
       runMarkdown(command);
       break;
     case "__QT_WEBUI_IMMEDIATE__":
+      response(command);
+      break;
+    case "__QT_WEBUI_EFFECTIVE__":
+      notify(`QT_WEBUI_HELPER_EFFECTIVE ${JSON.stringify(helperEffective)}`);
       response(command);
       break;
     case "__QT_WEBUI_PROVIDER_ERROR__":

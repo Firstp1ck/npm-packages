@@ -37,8 +37,12 @@ const [workingIndicator, statusSegment, pickerDialog, completionPopup, sequences
   readQml(path.join("components", "CompletionPopup.qml")), readQml(path.join("dialogs", "SequencesDialog.qml")), readQml(path.join("dialogs", "TextEditDialog.qml")),
   readQml(path.join("components", "TabStrip.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
 ]);
-const [eventsDialog, diagnosticsDialog] = await Promise.all([readQml(path.join("dialogs", "EventsDialog.qml")), readQml(path.join("dialogs", "DiagnosticsDialog.qml"))]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog, eventsDialog, diagnosticsDialog };
+const [eventsDialog, diagnosticsDialog, resourceProfilesDialog] = await Promise.all([
+  readQml(path.join("dialogs", "EventsDialog.qml")),
+  readQml(path.join("dialogs", "DiagnosticsDialog.qml")),
+  readQml(path.join("dialogs", "ResourceProfilesDialog.qml")),
+]);
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -75,10 +79,10 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   assert.match(shell, /text:\s*"thinking " \+ bridge\.currentThinkingLevel/);
   assert.match(shell, /text:\s*bridge\.compacting \? "Compacting…" : "Compact context"/);
   assert.match(shell, /StatusBadge\s*\{[\s\S]*kind:\s*bridge\.statusKind[\s\S]*text:\s*bridge\.statusText/);
-  for (const component of ["BackendBridge", "Theme", "Composer", "SearchBar", "EmptyState", "NoticeBar", "TranscriptRow", "ExtensionDialog", "LinkDialog", "PickerDialog"]) {
+  for (const component of ["BackendBridge", "Theme", "Composer", "SearchBar", "EmptyState", "NoticeBar", "TranscriptRow", "ExtensionDialog", "LinkDialog", "PickerDialog", "ResourceProfilesDialog"]) {
     assert.match(shell, new RegExp(`\\b${component}\\s*\\{`), `shell should use ${component}`);
   }
-  for (const sequence of ["Ctrl+F", "Ctrl+T", "Ctrl+Shift+M", "Ctrl+Shift+X", "Ctrl+L", "Ctrl+M", "Ctrl+Shift+P", "Ctrl+E", "Ctrl+Shift+E", "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+N", "Ctrl+O", "Ctrl+W", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+O", "Ctrl+Shift+N", "Ctrl+Shift+B", "F2", "Ctrl+K", "Ctrl+Shift+L", "Ctrl+Shift+D"]) {
+  for (const sequence of ["Ctrl+F", "Ctrl+T", "Ctrl+Shift+M", "Ctrl+Shift+X", "Ctrl+L", "Ctrl+M", "Ctrl+Shift+P", "Ctrl+E", "Ctrl+Shift+E", "Ctrl+Shift+R", "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+N", "Ctrl+O", "Ctrl+W", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+O", "Ctrl+Shift+N", "Ctrl+Shift+B", "F2", "Ctrl+K", "Ctrl+Shift+L", "Ctrl+Shift+D"]) {
     assert.match(shell, new RegExp(`sequence:\\s*"${sequence.replace(/\+/g, "\\+")}"`), `shortcut ${sequence}`);
   }
   assert.match(shell, /onLinkActivated:\s*link\s*=>\s*root\.confirmLink\(link\)/);
@@ -129,6 +133,11 @@ test("bridge talks only to the backend over strict LF JSONL with correlated, bou
   assert.match(request, /backendProcess\.write\(JSON\.stringify\(frame\) \+ "\\n"\)/);
   assert.match(request, /pendingRequestCount >= maxPendingRequests/);
   assert.match(request, /deadline: Date\.now\(\) \+ timeoutFor\(type\)/);
+  assert.match(request, /originTab: activeTabId/);
+  assert.match(request, /sessionScoped: sessionScopedRequestTypes\[type\] === true/);
+  const settle = functionBody(bridge, "settlePending");
+  assert.match(settle, /entry\.sessionScoped && entry\.originTab\.length > 0 && entry\.originTab !== activeTabId/);
+  assert.match(settle, /staleResponses\+\+[\s\S]*return true/);
   assert.match(functionBody(bridge, "sweepPending"), /code: "timeout"/);
   assert.match(functionBody(bridge, "handleFrame"), /frame\.v !== protocolVersion/);
   assert.match(functionBody(bridge, "handleFrame"), /staleResponses\+\+/);
@@ -193,14 +202,14 @@ test("model and thinking pickers choose only through explicit activation and ref
     assert.match(bridge, new RegExp(`function ${name}\\(`), `bridge should implement ${name}`);
   }
   for (const name of ["selectModel", "cycleModel", "setThinkingLevel", "cycleThinkingLevel"]) {
-    assert.match(functionBody(bridge, name), /if \(!ready \|\| active \|\| modelActionPending\) return false/, `${name} must refuse while a run or another change is active`);
+    assert.match(functionBody(bridge, name), /if \(!ready \|\| active \|\| modelActionPending \|\| resourceActionPending\) return false/, `${name} must refuse while a run or another change is active`);
   }
   assert.match(functionBody(bridge, "selectModel"), /provider === currentProvider && modelId === currentModelId\) return false/);
   assert.match(functionBody(bridge, "compactContext"), /if \(!ready \|\| active \|\| compacting\) return false/);
   assert.match(functionBody(bridge, "compactContext"), /boundedText\(instructions\.trim\(\), 1024\)/);
   assert.equal(LIMITS.maxCompactionInstructionCharacters, 1024);
   assert.match(bridge, /case "pi\.exit":[\s\S]*modelActionPending = false[\s\S]*compacting = false/);
-  assert.match(functionBody(shell, "openModelPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| bridge\.modelActionPending \|\| pickerDialogItem\.opened\) return false/);
+  assert.match(functionBody(shell, "openModelPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| bridge\.modelActionPending \|\| bridge\.resourceActionPending \|\| pickerDialogItem\.opened\) return false/);
   assert.match(functionBody(shell, "openThinkingPicker"), /searchable: false/);
   assert.match(functionBody(shell, "pickerPicked"), /bridge\.selectModel\(value\.slice\(0, slash\), value\.slice\(slash \+ 1\)\)/);
   assert.match(functionBody(shell, "pickerPicked"), /bridge\.setThinkingLevel\(value\)/);
@@ -223,6 +232,66 @@ test("model and thinking pickers choose only through explicit activation and ref
   assert.match(fixture, /"get_available_models"/);
   assert.match(fixture, /"cycle_thinking_level"/);
   assert.match(fixture, /__QT_WEBUI_COMPACT_FAIL__/);
+});
+
+test("resource profiles expose explicit scopes, inheritance, enabled names, supported sampling, and fail-closed controls", () => {
+  for (const name of ["refreshResources", "setEnabledTools", "setEnabledSkills", "setSampling", "setResourceProfile", "applyResourceState"]) {
+    assert.match(bridge, new RegExp(`function ${name}\\(`), `bridge should implement ${name}`);
+  }
+  assert.match(functionBody(bridge, "refreshResources"), /if \(!ready \|\| active \|\| resourceLoading \|\| resourceActionPending \|\| modelActionPending\)/);
+  assert.match(functionBody(bridge, "refreshResources"), /request\("resources_state"/);
+  for (const type of ["resources_state", "tools_set", "skills_set", "sampling_set", "model_set", "thinking_set"]) {
+    assert.match(bridge, new RegExp(`"${type}": true`), `${type} callbacks must remain bound to their originating tab`);
+  }
+  const mutation = functionBody(bridge, "setResourceProfile");
+  assert.match(mutation, /!resourcesAvailable/);
+  assert.match(mutation, /if \(type === "tools_set"\) request\("tools_set"/);
+  assert.match(mutation, /type === "skills_set"\) request\("skills_set"/);
+  assert.match(mutation, /request\("sampling_set"/);
+  assert.match(mutation, /sessionDurability\.durable === false/);
+  assert.match(mutation, /postNotice\("warning"/);
+  assert.match(functionBody(bridge, "setEnabledTools"), /"enabledTools"/);
+  assert.match(functionBody(bridge, "setEnabledSkills"), /"enabledSkills"/);
+  assert.doesNotMatch(bridge, /disabledSkills/, "the public bridge sends enabled skills only");
+  for (const name of ["selectModel", "cycleModel", "setThinkingLevel", "cycleThinkingLevel"]) {
+    assert.match(functionBody(bridge, name), /applyResourceState\(response\.data\.resources\)/, `${name} applies the backend's freshly resolved resources`);
+  }
+  assert.match(functionBody(bridge, "applySnapshot"), /resourceState = null[\s\S]*Qt\.callLater\(bridge\.refreshResources\)/, "tab snapshots clear then refresh resources");
+  assert.match(functionBody(bridge, "resetTabState"), /resourceState = null/);
+  assert.match(functionBody(bridge, "handleEvent"), /case "resources\.changed":[\s\S]*applyResourceState\(event\.state\)/);
+  assert.match(bridge, new RegExp(`readonly property int maxResourceNames:\\s*${LIMITS.maxResourceNames}\\b`));
+
+  assert.match(resourceProfilesDialog, /^AppDialog \{/m);
+  assert.match(resourceProfilesDialog, /property string scope: "session"/);
+  assert.match(resourceProfilesDialog, /property string section: "tools"/);
+  assert.match(resourceProfilesDialog, /\["session", "model", "global"\]/);
+  assert.match(resourceProfilesDialog, /\["tools", "skills", "sampling"\]/);
+  assert.match(functionBody(resourceProfilesDialog, "saveCurrent"), /setEnabledTools\(scope, listMode === "inherit" \? null : listDraft\.slice\(\)/);
+  assert.match(functionBody(resourceProfilesDialog, "saveCurrent"), /setEnabledSkills\(scope, listMode === "inherit" \? null : listDraft\.slice\(\)/);
+  assert.match(functionBody(resourceProfilesDialog, "chooseNone"), /listMode = "custom"[\s\S]*listDraft = \[\]/, "none is distinct from inherit");
+  assert.match(functionBody(resourceProfilesDialog, "chooseInherit"), /listMode = "inherit"/);
+  assert.match(functionBody(resourceProfilesDialog, "effectiveSource"), /field \+ "Source"/);
+  assert.match(functionBody(resourceProfilesDialog, "listSummary"), /"Pi defaults"[\s\S]*"Intentionally none"/);
+  assert.match(resourceProfilesDialog, /Effective " \+ dialog\.section[\s\S]*source:/);
+  assert.match(resourceProfilesDialog, /Stored here: intentionally none/);
+  assert.match(resourceProfilesDialog, /visibleInventory: inventoryForSection\(\)\.slice\(0, bridge\.maxResourceNames\)/);
+  assert.match(resourceProfilesDialog, /Accessible\.role: Accessible\.CheckBox/);
+  assert.match(resourceProfilesDialog, /Accessible\.checked: checked/);
+  assert.match(resourceProfilesDialog, /Accessible\.role: Accessible\.PageTab/);
+  assert.match(resourceProfilesDialog, /Accessible\.selected: active/);
+  assert.match(resourceProfilesDialog, /enabled: dialog\.controlsEnabled/);
+  assert.match(resourceProfilesDialog, /available && bridge\.ready && !bridge\.active/);
+  assert.match(resourceProfilesDialog, /Pi is working\. Resource controls stay disabled/);
+  assert.match(resourceProfilesDialog, /sessionDurability\.durable === false/);
+  assert.match(resourceProfilesDialog, /not saved durably/);
+  assert.match(resourceProfilesDialog, /Unsupported stored values remain saved but are not sent to the provider|Unsupported stored values remain saved/i);
+  assert.match(resourceProfilesDialog, /enabled: dialog\.controlsEnabled && samplingRow\.supported/);
+  assert.match(resourceProfilesDialog, /dialog\.samplingReason\(samplingRow\.modelData\)/);
+  assert.match(resourceProfilesDialog, /stored here: " \+ stored \+ " \(preserved\)"/);
+  for (const key of ["temperature", "top_p", "frequency_penalty", "presence_penalty", "seed", "top_k", "min_p"]) assert(resourceProfilesDialog.includes(key), `sampling control ${key}`);
+  assert.match(shell, /ResourceProfilesDialog\s*\{[\s\S]*returnFocusItem:\s*composer/);
+  assert.match(functionBody(shell, "openResourceProfiles"), /!bridge\.ready \|\| bridge\.active \|\| bridge\.modelActionPending \|\| bridge\.resourceActionPending/);
+  assert.match(functionBody(shell, "runPaletteAction"), /case "resource-profiles": return root\.openResourceProfiles\(\)/);
 });
 
 test("untrusted content renders as plain or whitelisted styled text and links open only after confirmation", () => {
@@ -336,7 +405,9 @@ test("tabs isolate session state, replay from the backend, confirm busy closes, 
     assert(reset.includes(cleared), `resetTabState must include ${cleared}`);
   }
   assert.doesNotMatch(reset, /answerDialog|extension_response/, "switching tabs never answers another tab's dialogs");
-  assert.match(functionBody(bridge, "applySnapshot"), /enqueueDialog\(dialog, false\)/);
+  const applySnapshot = functionBody(bridge, "applySnapshot");
+  assert.match(applySnapshot, /enqueueDialog\(dialog, false\)/);
+  assert.match(applySnapshot, /typeof snapshot\.error === "string" && snapshot\.error\.trim\(\)\.length > 0 \? boundedError\(snapshot\.error\) : ""/, "empty snapshot errors stay empty");
   assert.match(functionBody(bridge, "enqueueDialog"), /dialogQueue\.some\(entry => entry\.requestId === requestId\)\) return false/, "snapshots never duplicate queued dialogs");
   assert.match(functionBody(bridge, "closeTab"), /"force": force === true/);
   assert.match(functionBody(bridge, "createWorktree"), /"confirmed": true/);
@@ -433,10 +504,11 @@ test("smoke driver and fixture cover every recorded protocol edge", () => {
     "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED", "QT_WEBUI_SMOKE_SETTINGS_PERSISTED", "QT_WEBUI_SMOKE_CODE_HIGHLIGHTED", "QT_WEBUI_SMOKE_COMMANDS_LOADED",
     "QT_WEBUI_SMOKE_COMMAND_COMPLETED", "QT_WEBUI_SMOKE_PATH_COMPLETED", "QT_WEBUI_SMOKE_ATTACHMENT_ADDED", "QT_WEBUI_SMOKE_ATTACHMENT_SENT",
     "QT_WEBUI_SMOKE_DRAFT_PERSISTED", "QT_WEBUI_SMOKE_SEQUENCE_RUN", "QT_WEBUI_SMOKE_SEQUENCE_DELETED", "QT_WEBUI_SMOKE_MODEL_PICKER", "QT_WEBUI_SMOKE_MODEL_SELECTED",
-    "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
+    "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED", "QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
     "QT_WEBUI_SMOKE_WORKTREE_CREATED", "QT_WEBUI_SMOKE_TAB_CLOSED", "QT_WEBUI_SMOKE_USAGE_LOADED", "QT_WEBUI_SMOKE_PALETTE_ACTION",
     "QT_WEBUI_SMOKE_EVENTS_LISTED", "QT_WEBUI_SMOKE_DIAGNOSTICS_SHOWN",
     "QT_WEBUI_SMOKE_THINKING_PICKER", "QT_WEBUI_SMOKE_MODEL_CYCLED", "QT_WEBUI_SMOKE_THINKING_CYCLED", "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",
+    "QT_WEBUI_SMOKE_RESOURCES_LOADED", "QT_WEBUI_SMOKE_RESOURCE_TOOLS_NONE", "QT_WEBUI_SMOKE_RESOURCE_SKILLS_ENABLED", "QT_WEBUI_SMOKE_RESOURCE_SAMPLING_SAVED", "QT_WEBUI_SMOKE_RESOURCE_UNSUPPORTED_PRESERVED",
     "QT_WEBUI_SMOKE_FAILED_STATE_RECOVERABLE",
     "QT_WEBUI_SMOKE_MISSING_STATE_RECOVERABLE", "QT_WEBUI_SMOKE_RESTART_RECEIPT", "QT_WEBUI_SMOKE_BACKEND_CRASH_OBSERVED",
     "QT_WEBUI_SMOKE_BACKEND_CRASH_RECOVERED", "QT_WEBUI_SMOKE_COMPLETE",

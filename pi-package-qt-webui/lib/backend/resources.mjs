@@ -68,6 +68,29 @@ export function profileIsInherit(profile) {
   return !profile || (profile.tools === null && profile.skills === null && Object.keys(profile.sampling || {}).length === 0);
 }
 
+// Returns a validated copy with one field changed. Sampling objects are patches: null values
+// remove individual keys, while a null object clears the scope.
+export function updateProfile(profile, field, value) {
+  const next = validateProfile(profile);
+  next.tools = next.tools === null ? null : [...next.tools];
+  next.skills = next.skills === null ? null : [...next.skills];
+  next.sampling = { ...next.sampling };
+  if (field === "sampling") {
+    if (value === null) next.sampling = {};
+    else {
+      const { values, problems } = validateSamplingParams(value);
+      if (Object.keys(problems).length > 0) throw new ProtocolError("invalid_request", Object.values(problems).join("; "));
+      for (const [name, entry] of Object.entries(values)) {
+        if (entry === null) delete next.sampling[name];
+        else next.sampling[name] = entry;
+      }
+    }
+  } else if (field === "tools" || field === "skills") {
+    next[field] = value === null ? null : nameList(value, [], field);
+  } else throw new ProtocolError("invalid_request", `unknown resource field ${field}`);
+  return next;
+}
+
 // Combines the three scopes into what the session should run with, and records where each part
 // came from so the UI can distinguish "inherited" from "set here".
 export function resolveEffective({ session, model, global }) {
@@ -119,19 +142,10 @@ export function createResourceStore({ env = process.env, directory = settingsDir
         profile = emptyProfile();
         state.models[key] = profile;
       }
-      if (field === "sampling") {
-        if (value === null) profile.sampling = {};
-        else {
-          const { values, problems } = validateSamplingParams(value);
-          if (Object.keys(problems).length > 0) throw new ProtocolError("invalid_request", Object.values(problems).join("; "));
-          for (const [name, entry] of Object.entries(values)) {
-            if (entry === null) delete profile.sampling[name];
-            else profile.sampling[name] = entry;
-          }
-        }
-      } else {
-        profile[field] = value === null ? null : nameList(value, [], field);
-      }
+      const updated = updateProfile(profile, field, value);
+      profile.tools = updated.tools;
+      profile.skills = updated.skills;
+      profile.sampling = updated.sampling;
       if (scope === "model" && profileIsInherit(profile)) delete state.models[key];
       saved = scope === "global" ? state.global : state.models[key] ?? emptyProfile();
       return state;

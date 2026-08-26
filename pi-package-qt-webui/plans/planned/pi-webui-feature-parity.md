@@ -1,6 +1,6 @@
 # Pi WebUI feature map and Qt WebUI implementation checklist
 
-Status: in progress. The Desktop chat MVP and the first model, thinking, and context controls are implemented in the 0.2.0 worktree. Phase 0 is complete; phases 1, 2, and 4 are partial; phases 3, 5, and 6 have not started; phases 7–9 contain groundwork rather than complete workflows. The expanded live smoke currently fails after opening the model picker, so this tranche is not release-verified.
+Status: in progress. Phases 0 and 1 are complete. Phase 2 is complete except for Pi- or Quickshell-blocked queue mutation, pasted images, `!` shell, skill tags, and todo state. Phase 3 is complete except for summaries, close-all, and split views. Phase 4 now includes model, thinking, command-palette, tool-profile, skill-profile, and capability-gated sampling controls; scoped model ordering, subagent model-slot defaults, and optional provider controls remain. Phases 5 and 6 have not started beyond the phase 3 worktree service. Phases 7 and 8 include Events, diagnostics, density, and usage. Phase 9 remains open. The current package check passes 114/114 tests, including both 65-marker live smokes and packed installation. The resource-profile tranche is complete under the user's explicit, scoped waiver of the unavailable provider-diverse review quorum. The broader parity plan remains active.
 
 This plan maps the main user-facing capabilities in `@firstpick/pi-package-webui` 0.9.9 to `@firstpick/pi-package-qt-webui` 0.2.0. It is a product-parity guide, not a requirement to copy the browser interface or its implementation.
 
@@ -46,6 +46,8 @@ The Pi RPC contract used for the backend comes from `node_modules/@earendil-work
 - [x] 2026-08-26 (phase 3): the backend now owns one Pi child per tab (`tabs.mjs`, `transcript.mjs`, `sessions-index.mjs`, `directories.mjs`, `git.mjs`); events carry `tab`; the client rebuilds a selected tab from the backend mirror (`tabs.update` → `transcript.reset`/`transcript.row` → snapshot response). New QML: `TabStrip`, `DirectoryDialog`, `ConfirmDialog`, `InputDialog`, a sessions picker, and tab shortcuts. `tests/backend-tabs.test.mjs` (8 tests) and seven new smoke markers cover tabs, resume, directories, and worktrees. Two lessons recorded in `DEVELOPMENT.md`: test backends must isolate `XDG_STATE_HOME` (otherwise they restore each other's tabs), and the smoke workspace name `<b>project</b>` contains a slash.
 - [x] 2026-08-26 (later): verified the previous tranche — the uncommitted picker (`answered` flag, pick before close), table (`tableFlick` id), and driver (`advanceModels`) fixes make all 79 tests pass, including both live smokes. Then implemented the remaining phase 1 and phase 2 items on the same boundary: syntax highlighting, drafts, saved sequences, `/` and `@` completion, and file attachments (backend modules `highlight.mjs`, `store.mjs`, `state.mjs`, `sequences.mjs`, `attachments.mjs`, `workspace.mjs`; QML `CompletionPopup`, `SequencesDialog`, `TextEditDialog`, composer chips). New coverage: `tests/backend-composer.test.mjs` (10 tests) and nine new smoke markers; `npm run check` passes 90/90 with `--test-concurrency=1` (the parallel runner made two timing-sensitive session tests flaky while Quickshell ran).
 - [x] Corrected two plan assumptions found during implementation: (1) dropping "non-essential" records is not enough for a slow consumer. State transitions must never be dropped, so the backend pauses Pi's stdout instead (see "Slow consumers" in `DEVELOPMENT.md`). (2) A SIGKILLed backend cannot reap anything, so Pi is responsible for its own tool children once its stdin closes. This is documented as a known limit and covered by a test rather than claimed as solved.
+- [x] 2026-08-26 parity refresh: `npm --prefix pi-package-qt-webui run check` ran 101 tests; 100 passed and one static QML contract failed because `BackendBridge.qml` did not issue the newly declared `resources_state` request. Both live Quickshell smokes passed all 58 markers, including the default and 200% runs. `sampling.mjs`, `resources.mjs`, the Pi-side helper extension, and the resource request validators were present, but `main.mjs`, QML, focused tests, and user documentation did not expose the resource controls yet.
+- [x] 2026-08-26 phase 4 resource profiles: two serial workers connected backend dispatch, helper-backed session overrides, global and exact-model persistence, effective source resolution, enabled tool/skill controls, all seven sampling controls, a keyboard-first `ResourceProfilesDialog`, durability warnings, docs, and default/200% smoke coverage. The integration owner accepted and fixed six P1 review findings covering stale tab callbacks, cross-tab reconciliation, transaction honesty, helper response ordering, session durability, and lifecycle locking. Final parent verification: `npm run check` 114/114, both live smokes 65 markers, package dry-run 73 files with the new dialog included, Markdown/diff checks clean, and no staged files. The user explicitly waived only the unavailable provider-diverse review quorum for this phase 4 tranche.
 
 ## Current Qt baseline (0.1.0, verified)
 
@@ -67,22 +69,22 @@ Qt WebUI already had a useful thin-client foundation:
 
 | Feature family | Main behavior in Pi WebUI | Qt status (0.2.0) |
 | --- | --- | --- |
-| Sessions and workspaces | Multiple isolated tabs, grouped working directories, resume, rename, summaries, per-tab drafts, split terminals, directory switching, branch worktrees, and restart continuity | Not started (one session per window; session name shown) |
-| Conversation transcript | Streaming Markdown, fenced-code highlighting, diagrams, thinking sections, rich tool cards, grouped tool activity, compact output, copy and search | Markdown, thinking, tool cards, compact mode, copy, and search done; no syntax highlighting, diagrams, or grouped tool activity |
-| Composer and context | Multiline prompts, file and image attachments, clipboard paste, editable text attachments, slash commands, `@` paths, `!` user shell, tracked-skill tags, and conversation tags | Multiline prompt with send/steer/follow-up/abort; no attachments, completion, tags |
-| Run control and queues | Send, abort, steer, follow-up, queued prompts, saved prompt sequences, todo progress, workflow state, and context compaction | Send, abort, steer, follow-up, read-only queue display, and manual context compaction done; automatic compaction and retries surface as notices |
-| Models and thinking | Model picker, thinking-effort picker, scoped model ordering, model cycling, model-specific defaults, capability-gated sampling parameters, and optional Codex Fast mode | Searchable model picker, thinking-effort picker, and cycling done; scoped ordering, defaults, sampling controls, and Fast mode not started |
-| Tools, skills, commands, and extension UI | Session/global/model tool and skill profiles, command palette, command suggestions, resource inheritance, and typed select/confirm/input/editor requests from extensions | Typed extension dialogs done; notify, title, editor-text, and bounded plain or structured status requests handled; profiles and palette not started |
-| Files | Searchable tree, Git ignored-state hints, text editing, Markdown preview, image preview, file search, create/rename/move/delete, and open in the default editor | Not started |
-| Git and worktrees | Repository status, branch switching and creation, worktrees, staged/unstaged/untracked views, diffs, stage/unstage, history, commit, push, pull-request flow, and confirmations | Not started |
+| Sessions and workspaces | Multiple isolated tabs, grouped working directories, resume, rename, summaries, per-tab drafts, split terminals, directory switching, branch worktrees, and restart continuity | Isolated tabs, folders, resume, rename, per-session drafts, worktree creation, and restart restore done; summaries, close-all, and split terminals remain |
+| Conversation transcript | Streaming Markdown, fenced-code highlighting, diagrams, thinking sections, rich tool cards, grouped tool activity, compact output, copy and search | Markdown, syntax highlighting, thinking, tool cards, compact mode, copy, and search done; no diagrams or grouped tool activity |
+| Composer and context | Multiline prompts, file and image attachments, clipboard paste, editable text attachments, slash commands, `@` paths, `!` user shell, tracked-skill tags, and conversation tags | Multiline run modes, file/image attachments, editable text attachments, per-session drafts, saved sequences, and `/`/`@` completion done; no pasted files/images, `!` shell, active skill tags, or conversation tags |
+| Run control and queues | Send, abort, steer, follow-up, queued prompts, saved prompt sequences, todo progress, workflow state, and context compaction | Send, abort, steer, follow-up, read-only queue display, saved sequences, and manual context compaction done; queue mutation, todo, and workflow state remain unavailable |
+| Models and thinking | Model picker, thinking-effort picker, scoped model ordering, model cycling, model-specific defaults, capability-gated sampling parameters, and optional Codex Fast mode | Searchable model and thinking pickers, cycling, and capability-gated sampling profiles at session/global/exact-model scope done; scoped ordering, model-specific picker defaults, and Fast mode remain |
+| Tools, skills, commands, and extension UI | Session/global/model tool and skill profiles, command palette, command suggestions, resource inheritance, and typed select/confirm/input/editor requests from extensions | Tool and skill profiles with explicit inheritance/effective-source labels, command suggestions, palette, skill-file opening, typed extension dialogs, notify, title, editor-text, and bounded status requests done |
+| Files | Searchable tree, Git ignored-state hints, text editing, Markdown preview, image preview, file search, create/rename/move/delete, and open in the default editor | Not started beyond workspace path completion and confirmed opening of reported skill files |
+| Git and worktrees | Repository status, branch switching and creation, worktrees, staged/unstaged/untracked views, diffs, stage/unstage, history, commit, push, pull-request flow, and confirmations | Confirmed branch worktree creation with rollback is done; repository status, diffs, mutations, history, commit, push, and pull-request flows remain |
 | Project runners and terminals | Detect package scripts and project runners, custom runners, live ANSI output, progress-line reconciliation, pinned output, and terminal placement | Not started |
 | Subagents | Managed and external agent runs, workflow grouping, lifecycle and telemetry, output views, cancel/dismiss/clear actions, model-slot defaults, and persisted-session attachment | Not started |
 | Agent conversations | Read-only views for direct Intercom and supervisor conversations, with bounded sanitized history | Not started |
-| Events and diagnostics | Bounded event history, severity and type filters, compact/detailed rows, jump to transcript, session-tree navigation, notices, and health information | Transient notices with a bounded in-memory history; no Events view yet |
-| Control Deck and dashboard | Project/session overview, reorganizable sections, resizable panels, files, usage, extensions, settings, events, queues, Git, and agents | Not started |
-| Themes and interface | Built-in and custom themes, semantic syntax colors, density, control visibility, panel placement, durable layout, keyboard resizing, and reduced motion | Automatic light/dark palette, density (compact/comfortable), persisted display settings |
-| Usage and optional companions | Provider usage, token/cost statistics, optional package discovery and setup, `/btw`, voice, remote access, release tools, and companion-provided panels | Status from already-loaded extensions can appear in grouped footer segments; discovery, setup, usage cards, and companion workflows have not started |
-| Reliability and access | Session reconnection, bounded streams and files, safe path handling, update/rollback plans, keyboard navigation, screen-reader labels, touch/mobile layouts, and offline browser shell | Backend and Pi restart, bounded streams, keyboard paths, accessible names, 200% scaling smoke; no session reconnection or update flow |
+| Events and diagnostics | Bounded event history, severity and type filters, compact/detailed rows, jump to transcript, session-tree navigation, notices, and health information | Bounded Events view with severity/text filters, repeat grouping, copy, and clear plus a diagnostics report done; no type filter, transcript jump, or session tree |
+| Control Deck and dashboard | Project/session overview, reorganizable sections, resizable panels, files, usage, extensions, settings, events, queues, Git, and agents | No dashboard; usage, events, diagnostics, queue, settings, and extension status exist as separate controls |
+| Themes and interface | Built-in and custom themes, semantic syntax colors, density, control visibility, panel placement, durable layout, keyboard resizing, and reduced motion | Automatic light/dark palette, syntax tokens, compact/comfortable density, and persisted display settings done; custom themes, panel layout, high contrast, and reduced motion remain |
+| Usage and optional companions | Provider usage, token/cost statistics, optional package discovery and setup, `/btw`, voice, remote access, release tools, and companion-provided panels | Context, token, and cost usage plus grouped status from already-loaded extensions done; discovery, setup, and companion workflows remain |
+| Reliability and access | Session reconnection, bounded streams and files, safe path handling, update/rollback plans, keyboard navigation, screen-reader labels, touch/mobile layouts, and offline browser shell | Multi-tab session restore, backend/Pi restart, bounded streams and attachments, path confinement, keyboard paths, accessible names, and 200% scaling smoke done; no update flow or broad fractional-scale audit |
 
 ## Product decisions for the Qt client
 
@@ -113,10 +115,10 @@ Do not grow the QML bridge into a large mix of protocol parsing, Git commands, f
 Use a package-local Node backend process with a versioned JSON-lines protocol:
 
 1. The backend owns the Pi RPC child and translates raw Pi records into bounded, typed events. — done (`lib/backend/pi-session.mjs`)
-2. The backend owns filesystem, Git, runner, session, package, and subagent-registry operations. — settings, notifications, and links done; the rest arrive with their phases
+2. The backend owns filesystem, Git, runner, session, package, and subagent-registry operations. — settings, notifications, links, attachments, workspace indexing, directories, sessions, tabs, and worktree creation done; files, broad Git, runners, packages, and subagents arrive with their phases
 3. QML owns presentation, selection state, focus, dialogs, and short-lived view state. — done
 4. Every mutating request has an operation ID, typed result, visible error, and explicit confirmation policy. — done for the current request set; link opening requires confirmation
-5. Paths remain confined to the selected workspace unless the user explicitly chooses another directory. — no path operations exist yet
+5. Paths remain confined to the selected workspace unless the user explicitly chooses another directory. — done for attachments and workspace completion; native folder/file choices and confirmed worktree paths are explicit exceptions
 6. No command, path, or prompt is interpolated into shell text. Use argument arrays and `shell: false`. — done and tested
 7. The backend owns a process group or equivalent process-tree cleanup strategy. — done and tested (`tests/backend-lifecycle.test.mjs`); limit: a SIGKILLed backend relies on Pi stopping its own children
 
@@ -129,16 +131,28 @@ lib/backend/
   jsonl.mjs         strict LF JSONL reader with frame cap
   pi-session.mjs    Pi child ownership and event translation
   markdown.mjs      bounded Markdown → blocks with whitelisted StyledText
+  highlight.mjs     bounded syntax tokens
   settings.mjs      XDG settings store
+  store.mjs         atomic bounded JSON stores
+  state.mjs         drafts, tabs, directories, and recent actions
+  sequences.mjs     saved prompt sequences
+  attachments.mjs   confined text and image attachments
+  workspace.mjs     confined path indexing and completion
+  tabs.mjs          one isolated Pi session per tab
+  transcript.mjs    live mirrors and persisted-history translation
+  sessions-index.mjs, directories.mjs, git.mjs
   process-tree.mjs  process-group spawn and termination
   desktop.mjs       notify-send / xdg-open
+  sampling.mjs, resources.mjs  phase 4 groundwork, not yet dispatched to QML
+lib/pi-extension/
+  qt-webui-helper.mjs  phase 4 Pi-side tool, skill, and sampling groundwork
 qml/
   BackendBridge.qml, Theme.qml, shell.qml, SmokeDriver.qml
-  components/       AppButton, StatusBadge, StatusSegment, WorkingIndicator, NoticeBar, Composer, SearchBar, EmptyState, TranscriptRow, MarkdownBlocks, ToolCard
-  dialogs/          AppDialog, ExtensionDialog, LinkDialog, PickerDialog
+  components/       shared transcript, composer, completion, status, and tab controls
+  dialogs/          shared app, extension, picker, directory, session-adjacent, event, and diagnostic dialogs
 ```
 
-Still to add with later phases: `workspace.mjs`, `files.mjs`, `git.mjs`, `runners.mjs`, `subagents.mjs`, and `qml/models/`, `qml/views/`.
+Still to add with later phases: the backend/QML integration for resource profiles, `files.mjs`, broad Git operations, `runners.mjs`, `subagents.mjs`, and the larger `qml/models/` and `qml/views/` layouts.
 
 Share focused, UI-independent logic with Pi WebUI where practical. Do not import its browser application or duplicate the 30,000-line frontend.
 
@@ -224,11 +238,11 @@ Acceptance gate:
 - [x] Queued, steering, follow-up, and saved-sequence messages retain their distinct Pi semantics. — the backend test and smoke capture show `prompt` then `follow_up` commands for a sequence
 - [x] Saved sequences persist safely, validate every entry, and never run from a destructive list action. — 0600 file, per-entry validation on read, delete/move/save paths contain no run call (QML contract)
 
-### Phase 3: sessions and workspaces — done except summaries and close-all
+### Phase 3: sessions and workspaces — done except summaries, close-all, and split views
 
 - [x] Add a tab model with one isolated Pi session per tab. — `tabs.mjs` registry (8 tabs), every session event tagged with `tab`, per-tab attachments, path index, and an 80-row transcript mirror; the bridge materializes only the active tab
 - [x] Group tabs by working directory without hiding the active session. — the strip names tabs by folder (tooltip shows the full path); the active tab is always shown
-- [x] Add new, close, close-all, rename, duplicate/split, and reorder actions. — new (`Ctrl+N`), open folder (`Ctrl+O`), close (`Ctrl+W`), rename (`F2`, also `set_session_name`), reorder (`tab_move`, keyboard entry arrives with the palette); "close all" and "split" are not offered — each tab is one folder plus one session, so `Ctrl+N` is the duplicate
+- [ ] Add new, close, close-all, rename, duplicate/split, and reorder actions. — new (`Ctrl+N`), open folder (`Ctrl+O`), close (`Ctrl+W`), rename (`F2`, also `set_session_name`), duplicate through `Ctrl+N`, and reorder (`tab_move`, keyboard entry through the palette) are done; close-all and split views are not offered
 - [x] Warn before closing a busy session and explain what is terminated. — backend refuses with `busy` unless `force`; `ConfirmDialog` (Cancel focused first) explains that the run is aborted and the Pi process stops
 - [x] List and resume persisted Pi sessions. — `sessions-index.mjs` reads Pi's session directory with Pi's encoding (cross-checked in tests); `session_switch` replays `get_messages` into rows
 - [ ] Add automatic titles and optional session summaries. — titles come from the tab name, the Pi session name, or the folder; summaries need a model call and are deferred
@@ -247,14 +261,69 @@ Acceptance gate:
 
 ### Phase 4: models, thinking, tools, skills, and command palette — partially done
 
+#### Active tranche: resource profiles and sampling controls
+
+Classification: complex. This tranche crosses the backend protocol, persisted resource profiles, the Pi-side helper extension, per-tab runtime state, QML controls, tests, and user documentation. It also changes which tools and skills Pi can use and how provider requests are serialized.
+
+Integration owner: the parent Pi session. Workers must not edit this plan or the final report.
+
+Implementation status: complete. Code, focused tests, full tests, live smokes, package dry-run, documentation, accepted review fixes, strict HTML report validation, and the scoped review-quorum waiver are recorded. The broader parity plan stays active for later phases.
+
+Success criteria:
+
+- `resources_state`, `tools_set`, `skills_set`, and `sampling_set` work for session, global, and exact-model scopes while Pi is idle.
+- Session values override exact-model values, which override global values, which override Pi defaults. `null` means inherit; an empty tool or skill selection means intentionally none.
+- The client shows effective values and their source, disables unsupported sampling parameters with a reason, preserves unsupported stored values, and refreshes resource state after model or thinking changes.
+- Resource changes fail closed when the helper or capability state is unavailable, never run during an active model request, and do not leak between tabs.
+- Numeric limits, one-over-limit cases, helper timeouts, capability loss, reset, exact payload serialization, keyboard access, focus return, and the default and 200% live flows have coverage.
+- `npm run check`, package dry-run, Markdown checks, two independent reviews, and the strict HTML report validator pass.
+
+Scope and invariants:
+
+- Keep the existing version 1 JSON-lines protocol and the package-local Pi helper boundary.
+- Use the existing `resources.json` store for global and exact-model profiles. Keep session overrides in Pi session history through the helper, separate from the effective values applied from broader scopes.
+- Persist tool and skill profiles as enabled-name lists. The helper may translate the effective skill list to Pi's internal disabled-skill set, but that internal representation must not reverse `null` and empty-list inheritance semantics.
+- Do not add scoped model ordering, subagent model-slot defaults, Codex Fast mode, shell execution, package installation, or release work in this tranche.
+- Do not apply unsupported sampling values or discard them from persisted profiles. Unknown provider APIs support no sampling controls.
+- Apply tool and skill changes only after an explicit user action. Show scope and inheritance before saving.
+
+Execution waves:
+
+1. **Backend integration worker** owns `lib/backend/`, `lib/pi-extension/`, backend fixtures, and backend-focused tests. It connects storage, helper state, effective resolution, request dispatch, refresh after model/thinking changes, validation, and failure handling. Unique handoff: runtime-managed `handoffs/phase4-backend.md`.
+2. **QML and documentation worker** starts after wave 1 settles. It owns `qml/`, QML/smoke/docs tests, `README.md`, `TECHNICAL.md`, and `DEVELOPMENT.md`. It adds keyboard-first profile controls, effective/source labels, unsupported reasons, user-flow coverage, and documentation. Unique handoff: runtime-managed `handoffs/phase4-qml-docs.md`.
+3. The integration owner inspects both changes and runs the affected and full checks.
+4. Two fresh, read-only reviewers from provider families different from each other and the primary implementation provider inspect the integrated result. Every finding receives an `accepted`, `rejected`, `deferred`, or `needs verification` disposition here before fixes.
+
+Rollback: revert this tranche's backend dispatch, QML controls, tests, and docs together. The helper and `resources.json` reader must continue to ignore invalid or unavailable profile data without blocking core chat startup. No migration deletes stored values.
+
+Final report: [Phase 4 resource profiles report](../../reports/phase4-resource-profiles.html).
+
+Review findings and dispositions:
+
+Review attempt 1 used the configured three-reviewer gate. The architecture reviewer completed as run `291d131a-b81e-4d46-8d52-50a1fc215779` with `openai-codex/gpt-5.6-sol:high`; its report is the runtime artifact `reviews/phase4-architecture.md`. The DeepSeek and Kimi reviewer slots exhausted their two read-only attempts: OpenRouter returned the workspace monthly-key limit, the Anthropic fallback returned rate-limit errors, and the Cursor fallback rejected the API key. Only one review output qualified, from the same provider family as the primary implementation worker.
+
+Waiver: after reviewing the completed implementation, 114-test result, both live smokes, package dry-run, accepted-fix evidence, and strict report validation, the user explicitly selected **Waive this review quorum**. This waiver applies only to the missing provider-diverse reviewer quorum for the phase 4 resource-profile tranche. It does not waive any test, finding disposition, clean-checkout requirement, later parity phase, release, publication, or deployment gate.
+
+| Finding | Disposition | Evidence and required action |
+| --- | --- | --- |
+| Delayed resource responses can overwrite the active state after a tab switch | accepted | `BackendBridge.request` records no originating tab and `settlePending` invokes callbacks after `activeTabId` changes. Bind session-scoped callbacks to their origin and test delayed reads and writes across a switch. |
+| Global and exact-model changes leave other matching tabs on stale applied profiles | accepted | `setResource` applies only to the requesting session. Reconcile every affected idle tab before commit, and refuse broader-scope changes while an affected tab is active. |
+| A save can report failure after helper or persisted state already changed | accepted | `setResource` applies, persists, then performs another required helper round trip; rollback failure is swallowed. Build the response from validated apply results, keep commit ordering explicit, and test each failure point. |
+| Early helper errors can reject an unobserved promise and trigger fatal backend shutdown | accepted | `helperCall` creates the answer promise before awaiting the Pi prompt response, but does not attach its rejection path immediately. Coordinate both legs and clean up the losing leg on every outcome. |
+| Session history persistence failures are reported as successful saves | accepted | The helper suppresses every `appendEntry` error. Return an explicit durability result or a real error and show it in backend/QML state. |
+| The plan still describes resource profiles as unfinished | accepted | Update checkboxes, verification evidence, and release status after accepted fixes, validation, and the review gate settle. |
+| Broader-profile locking does not fence compaction or session lifecycle transitions | accepted | Follow-up review run `5adc5cd0-c375-434f-b98e-145fdcf6fd4f` verified four original P1 findings but showed `compact`, restart, close, switch, and new-session handlers bypassing the per-tab resource lock. Centralize the exclusive-operation check and add delayed reconciliation coverage for each lifecycle request. |
+
+Accepted-fix verification: worker runs `21bf3456-2777-4980-ae09-5d548c23fe5a` and `0ed2f526-351f-4acb-8f22-6c1d2747a00a` implemented every accepted finding. Parent inspection confirmed origin-tab callback fencing, all-target profile reconciliation, transaction rollback reporting, coordinated helper completion, explicit session durability, and lifecycle exclusion. The final 114-test run includes delayed commit and rollback cases for compaction, restart, close, session switch, and new session. No accepted finding remains open. The unavailable provider-diverse review quorum is covered by the scoped user waiver above.
+
 - [x] Add searchable model selection using Pi's reported provider/model inventory.
 - [x] Add supported thinking-effort selection.
-- [ ] Add capability-gated sampling controls for temperature, top-p, frequency and presence penalties, seed, top-k, and min-p.
-- [ ] Preserve unsupported sampling values without applying or discarding them, and fail closed when capability discovery is stale or unavailable.
+- [x] Add capability-gated sampling controls for temperature, top-p, frequency and presence penalties, seed, top-k, and min-p. — session/global/exact-model controls use backend capability reasons and exact provider payload translation
+- [x] Preserve unsupported sampling values without applying or discarding them, and fail closed when capability discovery is stale or unavailable. — unsupported values stay in profiles, unknown APIs apply none, and helper/capability loss disables edits without blocking core chat
 - [x] Add model cycling and clear current/effective-model labels. — `Ctrl+Shift+P` / `Ctrl+Shift+E`; the header shows the values Pi confirmed (a model change re-reads state so a reset thinking level is shown, not assumed); Pi's `isScoped` flag is passed through but not yet labelled — cycling and the current model label are done; effective-model and scoped-state labels are not
-- [ ] Add session, global, and exact-model tool profiles.
-- [ ] Add session, global, and exact-model skill profiles.
-- [ ] Preserve the inheritance order and distinguish inherited defaults from an intentionally empty selection.
+- [x] Add session, global, and exact-model tool profiles. — enabled-name lists, intentional none, inheritance, cross-tab reconciliation, and session durability are implemented and tested
+- [x] Add session, global, and exact-model skill profiles. — enabled-name lists remain public while the helper translates effective values to Pi's internal disabled set
+- [x] Preserve the inheritance order and distinguish inherited defaults from an intentionally empty selection. — session → exact model → global → Pi defaults is shown in QML; `null` means inherit and `[]` means intentionally none
 - [x] Add a keyboard-first command palette for actions, tabs, models, sessions, and Pi commands. — `Ctrl+K` over `PickerDialog`; commands are inserted into the prompt, never sent; skill files open after confirmation through `open_path`
 - [x] Add grouped results, stable ranking, recent actions, shortcuts, and invalidation when capabilities change. — grouped rows with fixed order, recents first (`recent_action`, 20 kept), shortcuts in the detail column, models/sessions/commands reloaded on every open
 - [ ] Add model-slot defaults for built-in subagent roles only when the launch path can enforce them safely.
@@ -262,9 +331,9 @@ Acceptance gate:
 
 Acceptance gate:
 
-- [ ] A model change refreshes dependent thinking, sampling, tool, and skill state without stale UI. — thinking is refreshed from `get_state` after every model change (tested); sampling, tool, and skill state do not exist yet — the backend refreshes and tests the thinking level after a model change; sampling, tool, and skill state do not exist yet
-- [ ] Sampling tests cover each supported parameter, unsupported-value preservation, capability loss, reset, validation, and exact request serialization.
-- [ ] Profile edits show their scope and whether a Pi session reload is required.
+- [x] A model change refreshes dependent thinking, sampling, tool, and skill state without stale UI. — model/thinking responses carry fresh resource state, tab callbacks are origin-bound, and broader profiles reconcile affected tabs before commit
+- [x] Sampling tests cover each supported parameter, unsupported-value preservation, capability loss, reset, validation, and exact request serialization.
+- [x] Profile edits show their scope and whether a Pi session reload is required. — the dialog names session/exact-model/global scope and applies changes immediately while idle; ephemeral session state is labelled non-durable
 - [x] Every palette action remains reachable without a pointer. — the palette is a `PickerDialog` (filter, arrows, Enter, Escape) and every action it lists also has a shortcut or a header button
 
 ### Phase 5: files and project navigation
@@ -316,7 +385,7 @@ Acceptance gate:
 - [ ] Add read-only output views and only show cancel, refresh, dismiss, or detach actions supported by the owner.
 - [ ] Add clear-finished and opt-in auto-clear without deleting producer artifacts.
 - [ ] Show direct Intercom and supervisor conversations in a bounded, sanitized read-only view.
-- [x] Add an Events view with severity/type filters, retention bounds, repeat grouping, copy, clear, and jump-to-message. — `EventsDialog` (`Ctrl+Shift+L`) over 200 kept notices with tab labels, severity and text filters, consecutive-repeat grouping, copy, and clear; jump-to-message is not offered because notices carry no transcript row reference
+- [ ] Add an Events view with severity/type filters, retention bounds, repeat grouping, copy, clear, and jump-to-message. — `EventsDialog` (`Ctrl+Shift+L`) covers 200 kept notices with tab labels, severity and text filters, consecutive-repeat grouping, copy, and clear; type filters and jump-to-message remain unavailable because notices carry no transcript row reference
 - [ ] Add queue, todo, workflow, and gate status views. — the live queue strip exists; todo, workflow, and gate views need a typed capability from Pi or an extension
 - [x] Add an advanced diagnostics view for process IDs, session IDs, paths, protocol health, and recent errors. — `DiagnosticsDialog` (`Ctrl+Shift+D`) over the `diagnostics` request plus client counters, with copy
 
@@ -332,7 +401,7 @@ Acceptance gate:
 - [ ] Use one canonical state selector for each repeated status value.
 - [ ] Add resizable and collapsible desktop panels with durable sizes and placement.
 - [x] Add comfortable and compact density settings.
-- [ ] Expand the semantic theme token set for transcript, syntax, diff, status, focus, warning, and destructive states. — transcript, code, status, focus, warning, and destructive tokens exist; syntax and diff tokens arrive with highlighting and Git
+- [ ] Expand the semantic theme token set for transcript, syntax, diff, status, focus, warning, and destructive states. — transcript, syntax, status, focus, warning, and destructive tokens exist; diff-specific tokens arrive with Git
 - [ ] Add built-in theme selection and custom-theme import only after validation and preview are available.
 - [ ] Respect reduced motion, high contrast, and Qt palette changes. — Qt palette changes are respected; reduced motion and high contrast are not
 - [x] Add provider usage cards when Pi or a companion exposes supported usage data. — the **Usage** footer group shows context fill, tokens, and cost from `get_session_stats`, refreshed after each run and on tab selection
@@ -357,19 +426,19 @@ Acceptance gate:
 - [ ] Audit every shipped view for missing accessibility names, roles, focus order, shortcuts, announcements, and scale behavior; fix gaps before broad parity. — current buttons expose accessible names, focus rings, and checked state for active toggles; the broad audit remains open
 - [ ] Verify behavior under 200% scaling and common fractional Wayland scale factors. — 200% is verified in the smoke suite; fractional factors are not
 - [ ] Verify packaging from a clean npm install with Quickshell 0.3 and the newest supported release. — packed-install test covers the npm side; only Quickshell 0.3.1 is available locally
-- [ ] Update `README.md`, `TECHNICAL.md`, and `DEVELOPMENT.md` in the same change as each user-visible tranche. — the current user docs still omit the new model, thinking, cycling, and compaction controls, and `TECHNICAL.md` still says model selection is unavailable
+- [x] Update `README.md`, `TECHNICAL.md`, and `DEVELOPMENT.md` in the same change as each user-visible tranche. — current docs cover models, thinking, compaction, resource profiles and durability, composer features, tabs, worktrees, palette, usage, Events, and diagnostics
 
 Acceptance gate:
 
-- [ ] `npm test` and `npm run check` pass from a clean checkout. — current worktree result is 77/79; both live smokes time out after opening the model picker
-- [ ] The live smoke suite covers startup, prompt, stream, tool, abort, restart, model and thinking changes, compaction, session restore, and one representative file/Git flow. — the new model-picker path currently blocks both smokes; session restore and file/Git flows arrive with phases 3, 5, and 6
+- [ ] `npm test` and `npm run check` pass from a clean checkout. — the current integrated working tree passes 114/114 and the packed-install test passes; a separate clean-checkout run remains
+- [ ] The live smoke suite covers startup, prompt, stream, tool, abort, restart, model and thinking changes, compaction, session restore, and one representative file/Git flow. — both 65-marker smokes pass at default and 200% scale and cover resource profiles, session restore, and worktree creation; a representative phase 5 file workflow and broader phase 6 Git flow remain
 - [x] Known parity gaps remain listed explicitly rather than implied complete.
 
 ## Suggested release slices
 
 ### Desktop chat MVP — implemented for 0.2.0
 
-Phases 0 and 1, plus the safe parts of phase 2 (run modes, read-only queue, and manual compaction), provide the daily chat client. The first phase 4 controls add model and thinking selection and cycling. Attachments remain open, and the expanded smoke must pass before this newer tranche is release-ready.
+Phases 0 and 1, the implemented phase 2 composer features, and the completed phase 4 model, thinking, tool, skill, and sampling controls provide the daily chat client. Attachments, drafts, sequences, completion, resource profiles, cycling, and compaction are implemented, and both expanded smokes pass. The phase 4 tranche is release-verified under its scoped review-quorum waiver. The broader phase 9 clean-checkout and remaining parity gates still apply.
 
 ### Workspace MVP
 
@@ -391,11 +460,12 @@ Do not call the Qt client feature-complete merely because every Pi WebUI panel h
 
 - Pi WebUI combines a mature backend with a very large browser client. Copying its UI code or endpoint layout would import browser-specific complexity into QML.
 - Direct Pi RPC does not provide every file, Git, package, session, and subagent service needed for parity. The backend boundary now exists; each new service must extend the versioned protocol and its limits.
-- Rich Markdown, code, diff, ANSI, and image rendering can become injection or resource-exhaustion paths. Markdown is covered; diffs, ANSI, and images must follow the same escaped, bounded, whitelisted approach.
-- Multi-session process ownership is the first large lifecycle jump. One-session ownership is built and tested; phase 3 must generalize it before adding broad panel state.
+- Rich Markdown, code, diff, ANSI, and image rendering can become injection or resource-exhaustion paths. Markdown, syntax tokens, and attachment images are bounded; diffs and runner ANSI still need the same escaped, bounded treatment.
+- Multi-session process ownership and restart restoration are built and tested. The next lifecycle risk is keeping future file, Git, runner, and agent state isolated per tab.
 - Optional companions change capabilities at runtime. The Qt UI needs discovery contracts, not hardcoded assumptions.
-- The expanded smoke reaches the model picker but does not complete selection. Until that path passes at normal and 200% scale, the model, thinking, and compaction tranche is implemented but not release-verified.
+- Resource profiles can change tool and skill availability across tabs. The implementation now reconciles affected idle tabs transactionally and fences lifecycle operations, but future profile changes must preserve those cross-tab and rollback contracts.
+- Provider-diverse review was unavailable because OpenRouter exhausted its workspace key limit, Anthropic returned rate limits, and the Cursor fallback rejected its API key. The user waived that quorum only for this tranche; future complex work must obtain its own quorum or separate explicit waiver.
 
 ## Confidence
 
-Confidence: 96/100 for the feature inventory and 94/100 for the implementation mapping. The backend and static QML evidence is strong, but release confidence is lower because both live smokes currently stop after opening the model picker.
+Confidence: 98/100 for the feature inventory and 97/100 for the implementation mapping. Repository files, docs, 114 passing tests, package contents, both live smokes, accepted review fixes, and the scoped waiver agree on the resource-profile workflows. Tranche release confidence is 94/100; the remaining uncertainty is the waived provider-diverse perspective and the broader phase 9 clean-checkout gate.
