@@ -14,24 +14,42 @@ QtObject {
     readonly property int animationDuration: 120
     readonly property string monospaceFamily: "monospace"
 
-    readonly property color windowBackground: dark ? "#0f172a" : "#f8fafc"
-    readonly property color surface: dark ? "#111827" : "#ffffff"
-    readonly property color surfaceRaised: dark ? "#1f2937" : "#f1f5f9"
+    // Keep the original slate-and-blue palette while exposing semantic workspace roles.
+    readonly property color mainSurface: dark ? "#0f172a" : "#f8fafc"
+    readonly property color sidebarSurface: dark ? "#1f2937" : "#f1f5f9"
+    readonly property color sidebarBorder: dark ? "#475569" : "#cbd5e1"
+    readonly property color panelSurface: dark ? "#111827" : "#ffffff"
+
+    readonly property color windowBackground: mainSurface
+    readonly property color surface: panelSurface
+    readonly property color surfaceRaised: sidebarSurface
     readonly property color assistantBubble: dark ? "#1e293b" : "#f1f5f9"
     readonly property color userBubble: dark ? "#172554" : "#dbeafe"
     readonly property color foreground: dark ? "#e2e8f0" : "#0f172a"
     readonly property color heading: dark ? "#f8fafc" : "#020617"
     readonly property color muted: dark ? "#94a3b8" : "#64748b"
-    readonly property color border: dark ? "#475569" : "#cbd5e1"
+    readonly property color border: sidebarBorder
     readonly property color accent: dark ? "#3b82f6" : "#2563eb"
     readonly property color accentForeground: dark ? "#bfdbfe" : "#1d4ed8"
     readonly property color link: dark ? "#93c5fd" : "#1d4ed8"
     readonly property color focusRing: dark ? "#facc15" : "#ca8a04"
     readonly property color userBorder: dark ? "#1d4ed8" : "#93c5fd"
     readonly property color assistantBorder: dark ? "#475569" : "#cbd5e1"
+
+    readonly property color controlSurface: surfaceRaised
+    readonly property color controlHover: dark ? "#334155" : "#e8edf3"
+    readonly property color controlPressed: dark ? "#475569" : "#e2e8f0"
+    readonly property color controlActive: userBubble
+    readonly property color controlBorder: border
+    readonly property color controlActiveBorder: accent
     readonly property color disabledSurface: dark ? "#334155" : "#e2e8f0"
     readonly property color disabledForeground: dark ? "#94a3b8" : "#64748b"
     readonly property color buttonForeground: "#ffffff"
+
+    readonly property color composerSurface: surface
+    readonly property color composerBorder: border
+    readonly property color composerShadow: dark ? "#99000000" : "#2e0f172a"
+
     readonly property color destructive: dark ? "#ef4444" : "#dc2626"
     readonly property color warning: dark ? "#f59e0b" : "#d97706"
     readonly property color selection: dark ? "#1d4ed8" : "#bfdbfe"

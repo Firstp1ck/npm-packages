@@ -712,395 +712,502 @@ ShellRoot {
                 onRejected: composer.focusEditor()
             }
 
-            ColumnLayout {
+            RowLayout {
                 anchors.fill: parent
-                anchors.margins: 16
-                spacing: 10
+                spacing: 0
 
-                // Top bar: identity and status on the left, view controls on the right --------
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-
-                    Label {
-                        text: "Qt WebUI"
-                        textFormat: Text.PlainText
-                        color: appTheme.heading
-                        font.pixelSize: 18
-                        font.bold: true
-                        Accessible.role: Accessible.Heading
-                    }
-
-                    StatusBadge {
-                        theme: appTheme
-                        kind: bridge.statusKind
-                        text: bridge.statusText
-                        fontSize: 11
-                        Accessible.name: "Status " + bridge.statusText
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: bridge.sessionName
-                        textFormat: Text.PlainText
-                        color: appTheme.muted
-                        font.pixelSize: 12
-                        elide: Text.ElideRight
-                    }
-
-                    AppButton {
-                        theme: appTheme
-                        variant: "ghost"
-                        active: bridge.showThinking
-                        text: "Thinking"
-                        accessibleName: (bridge.showThinking ? "Hide" : "Show") + " thinking sections"
-                        accessibleDescription: "Ctrl+T"
-                        onClicked: bridge.updateSetting("showThinking", !bridge.showThinking)
-                    }
-
-                    AppButton {
-                        theme: appTheme
-                        variant: "ghost"
-                        active: bridge.compactTranscript
-                        text: "Compact"
-                        accessibleName: bridge.compactTranscript ? "Use comfortable transcript rows" : "Use compact transcript rows"
-                        accessibleDescription: "Ctrl+Shift+M"
-                        onClicked: bridge.updateSetting("compactTranscript", !bridge.compactTranscript)
-                    }
-
-                    AppButton {
-                        theme: appTheme
-                        variant: "ghost"
-                        text: "Palette"
-                        accessibleName: "Open the command palette"
-                        accessibleDescription: "Ctrl+K"
-                        onClicked: root.openPalette()
-                    }
-
-                    AppButton {
-                        theme: appTheme
-                        variant: "ghost"
-                        active: root.searchOpen
-                        text: "Search"
-                        accessibleName: "Search transcript"
-                        accessibleDescription: "Ctrl+F"
-                        onClicked: root.searchOpen ? root.closeSearch() : root.openSearch()
-                    }
-
-                    AppButton {
-                        theme: appTheme
-                        variant: bridge.backendRunning && bridge.ready ? "ghost" : "warning"
-                        text: bridge.restarting ? "Restarting…" : (bridge.backendRunning ? "Restart Pi" : "Start backend")
-                        accessibleName: bridge.restarting ? "Pi is restarting" : "Restart Pi"
-                        enabled: !bridge.active && !bridge.restarting
-                        onClicked: bridge.restartProcess()
-                    }
-                }
-
-                // Tabs: one Pi session per tab ---------------------------------------------------
-                TabStrip {
-                    Layout.fillWidth: true
-                    theme: appTheme
-                    tabs: bridge.tabs
-                    activeTabId: bridge.activeTabId
-                    maxTabs: bridge.maxTabs
-                    homeDirectory: bridge.homeDirectory
-                    onSelectRequested: tabId => bridge.selectTab(tabId)
-                    onCloseRequested: tabId => root.closeTab(tabId)
-                    onNewTabRequested: bridge.openTab("", "")
-                    onOpenDirectoryRequested: root.openDirectoryPicker()
-                }
-
-                // Context line: where Pi works, and which model and thinking effort answer -------
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    Accessible.role: Accessible.Grouping
-                    Accessible.name: "Workspace " + bridge.workspaceCwd + (bridge.runtimeInfoText.length > 0 ? ", model " + bridge.runtimeInfoText : "")
-
-                    Label {
-                        Layout.fillWidth: true
-                        text: bridge.displayCwd
-                        textFormat: Text.PlainText
-                        color: appTheme.muted
-                        elide: Text.ElideMiddle
-                        font.pixelSize: 12
-                        Accessible.role: Accessible.StaticText
-                        Accessible.name: "Workspace " + bridge.workspaceCwd
-                    }
-
-                    AppButton {
-                        visible: bridge.ready
-                        theme: appTheme
-                        variant: "ghost"
-                        text: "Sessions"
-                        accessibleName: "Resume a saved session in this tab"
-                        accessibleDescription: "Ctrl+Shift+O opens the list, Ctrl+Shift+N starts a new session"
-                        enabled: !bridge.active
-                        padding: 4
-                        leftPadding: 8
-                        rightPadding: 8
-                        onClicked: root.openSessionsPicker()
-                    }
-
-                    AppButton {
-                        visible: bridge.ready
-                        theme: appTheme
-                        variant: "ghost"
-                        text: "Worktree"
-                        accessibleName: "Create a Git worktree in a new tab"
-                        accessibleDescription: "Ctrl+Shift+B"
-                        padding: 4
-                        leftPadding: 8
-                        rightPadding: 8
-                        onClicked: root.planWorktree()
-                    }
-
-                    AppButton {
-                        id: modelButton
-                        visible: bridge.runtimeInfoText.length > 0
-                        theme: appTheme
-                        variant: "ghost"
-                        text: bridge.currentProvider + "/" + bridge.currentModelId
-                        accessibleName: "Model " + bridge.currentProvider + "/" + bridge.currentModelId + (bridge.currentModelName.length > 0 ? " (" + bridge.currentModelName + ")" : "") + ", choose a model"
-                        accessibleDescription: "Ctrl+M opens the list, Ctrl+Shift+P cycles"
-                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending
-                        padding: 4
-                        leftPadding: 8
-                        rightPadding: 8
-                        onClicked: root.openModelPicker()
-                        ToolTip.visible: hovered && bridge.currentModelName.length > 0
-                        ToolTip.text: bridge.currentModelName
-                        ToolTip.delay: 400
-                    }
-
-                    AppButton {
-                        id: thinkingButton
-                        visible: bridge.runtimeInfoText.length > 0
-                        theme: appTheme
-                        variant: "ghost"
-                        text: "thinking " + bridge.currentThinkingLevel
-                        accessibleName: "Thinking effort " + bridge.currentThinkingLevel + ", choose a level"
-                        accessibleDescription: "Ctrl+E opens the list, Ctrl+Shift+E cycles"
-                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending
-                        padding: 4
-                        leftPadding: 8
-                        rightPadding: 8
-                        onClicked: root.openThinkingPicker()
-                    }
-
-                    AppButton {
-                        id: resourceProfilesButton
-                        visible: bridge.ready
-                        theme: appTheme
-                        variant: "ghost"
-                        text: bridge.resourceLoading ? "Resources…" : "Resources"
-                        accessibleName: "Configure tool, skill, and sampling profiles"
-                        accessibleDescription: "Ctrl+Shift+R; session, exact-model, and global scopes"
-                        enabled: !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending && !bridge.resourceLoading
-                        padding: 4
-                        leftPadding: 8
-                        rightPadding: 8
-                        onClicked: root.openResourceProfiles()
-                    }
-
-                    AppButton {
-                        visible: bridge.ready && bridge.transcriptModel.count > 0
-                        theme: appTheme
-                        variant: "ghost"
-                        text: bridge.compacting ? "Compacting…" : "Compact context"
-                        accessibleName: bridge.compacting ? "Context compaction is running" : "Compact the conversation context"
-                        accessibleDescription: "Summarizes older conversation so Pi keeps room for new work"
-                        enabled: !bridge.active && !bridge.compacting
-                        padding: 4
-                        leftPadding: 8
-                        rightPadding: 8
-                        onClicked: root.compactContext()
-                    }
-                }
-
-                // Error panel ----------------------------------------------------------------
+                // Persistent workspace rail: identity, current status, tabs, and workspace actions.
                 Rectangle {
-                    Layout.fillWidth: true
-                    visible: bridge.visibleError.length > 0
-                    implicitHeight: errorLabel.implicitHeight + 20
-                    radius: 8
-                    color: appTheme.errorPanelBackground
-                    border.width: 1
-                    border.color: appTheme.errorPanelBorder
-                    Accessible.role: Accessible.AlertMessage
-                    Accessible.name: "Error: " + bridge.visibleError
+                    id: workspaceRail
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: Math.min(208, Math.max(148, contentRoot.width * 0.24))
+                    Layout.minimumWidth: 148
+                    Layout.maximumWidth: 208
+                    color: appTheme.surfaceRaised
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: "Workspace navigation"
 
-                    Label {
-                        id: errorLabel
+                    Rectangle {
+                        anchors.right: parent.right
+                        width: 1
+                        height: parent.height
+                        color: appTheme.border
+                    }
+
+                    ColumnLayout {
                         anchors.fill: parent
                         anchors.margins: 10
-                        text: bridge.visibleError
-                        color: appTheme.errorPanelForeground
-                        wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
-                        font.pixelSize: 12
-                    }
-                }
+                        spacing: 8
 
-                SearchBar {
-                    id: searchBar
-                    Layout.fillWidth: true
-                    visible: root.searchOpen
-                    theme: appTheme
-                    matchCount: root.searchMatchCount
-                    currentIndex: root.searchIndex
-                    onQueryEdited: query => {
-                        root.searchQuery = query
-                        root.runSearch()
-                    }
-                    onNextRequested: root.searchNext()
-                    onPreviousRequested: root.searchPrevious()
-                    onCloseRequested: root.closeSearch()
-                }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
 
-                // Transcript -------------------------------------------------------------------
-                Item {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
+                            Label {
+                                Layout.fillWidth: true
+                                text: "Qt WebUI"
+                                textFormat: Text.PlainText
+                                color: appTheme.heading
+                                font.pixelSize: 16
+                                font.bold: true
+                                elide: Text.ElideRight
+                                Accessible.role: Accessible.Heading
+                            }
 
-                    ListView {
-                        id: transcriptList
-                        anchors.fill: parent
-                        anchors.rightMargin: 4
-                        model: bridge.transcriptModel
-                        spacing: bridge.compactTranscript ? 6 : 12
-                        boundsBehavior: Flickable.StopAtBounds
-                        cacheBuffer: 400
-                        property bool followOutput: true
-                        property bool positioning: false
-                        Accessible.role: Accessible.List
-                        Accessible.name: "Conversation transcript"
-
-                        ScrollBar.vertical: ScrollBar {
-                            policy: ScrollBar.AsNeeded
+                            StatusBadge {
+                                theme: appTheme
+                                kind: bridge.statusKind
+                                text: bridge.statusText
+                                fontSize: 10
+                                Accessible.name: "Status " + bridge.statusText
+                            }
                         }
 
-                        function followToEnd() {
-                            positioning = true
-                            positionViewAtEnd()
-                            positioning = false
+                        Label {
+                            Layout.fillWidth: true
+                            text: "WORKSPACES"
+                            textFormat: Text.PlainText
+                            color: appTheme.muted
+                            font.pixelSize: 10
+                            font.bold: true
                         }
 
-                        onContentYChanged: if (!positioning) followOutput = contentHeight - (contentY + height) < 48
-                        onContentHeightChanged: if (followOutput) Qt.callLater(followToEnd)
-                        onCountChanged: if (followOutput) Qt.callLater(followToEnd)
-
-                        footer: WorkingIndicator {
-                            width: transcriptList.width
+                        // Tabs remain the canonical session navigation; the rail only changes mode.
+                        TabStrip {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            orientation: "vertical"
                             theme: appTheme
-                            running: bridge.active
-                            statusText: bridge.statusText
+                            tabs: bridge.tabs
+                            activeTabId: bridge.activeTabId
+                            maxTabs: bridge.maxTabs
+                            homeDirectory: bridge.homeDirectory
+                            onSelectRequested: tabId => bridge.selectTab(tabId)
+                            onCloseRequested: tabId => root.closeTab(tabId)
+                            onNewTabRequested: bridge.openTab("", "")
+                            onOpenDirectoryRequested: root.openDirectoryPicker()
                         }
 
-                        delegate: TranscriptRow {
-                            required property int index
-                            width: transcriptList.width
-                            theme: appTheme
-                            compact: bridge.compactTranscript
-                            showThinking: bridge.showThinking
-                            highlightCode: bridge.syntaxHighlighting
-                            searchMatch: root.searchMatches.indexOf(index) !== -1
-                            searchCurrent: root.searchCurrentRow === index
-                            onCopyRequested: text => bridge.copyToClipboard(text)
-                            onLinkActivated: link => root.confirmLink(link)
-                        }
-                    }
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: childrenRect.height
+                            spacing: 4
 
-                    EmptyState {
-                        anchors.fill: parent
-                        visible: transcriptList.count === 0
-                        theme: appTheme
-                        ready: bridge.ready
-                        backendReady: bridge.backendReady
-                        onRestartRequested: bridge.restartProcess()
-                        onFocusComposerRequested: composer.focusEditor()
-                        onResumeRequested: root.openSessionsPicker()
-                        onOpenDirectoryRequested: root.openDirectoryPicker()
+                            AppButton {
+                                visible: bridge.ready
+                                theme: appTheme
+                                variant: "ghost"
+                                text: "Sessions"
+                                accessibleName: "Resume a saved session in this tab"
+                                accessibleDescription: "Ctrl+Shift+O opens the list, Ctrl+Shift+N starts a new session"
+                                enabled: !bridge.active
+                                padding: 4
+                                leftPadding: 8
+                                rightPadding: 8
+                                onClicked: root.openSessionsPicker()
+                            }
+
+                            AppButton {
+                                visible: bridge.ready
+                                theme: appTheme
+                                variant: "ghost"
+                                text: "Worktree"
+                                accessibleName: "Create a Git worktree in a new tab"
+                                accessibleDescription: "Ctrl+Shift+B"
+                                padding: 4
+                                leftPadding: 8
+                                rightPadding: 8
+                                onClicked: root.planWorktree()
+                            }
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: childrenRect.height
+                            spacing: 4
+
+                            AppButton {
+                                theme: appTheme
+                                variant: "ghost"
+                                text: "Palette"
+                                accessibleName: "Open the command palette"
+                                accessibleDescription: "Ctrl+K"
+                                padding: 4
+                                leftPadding: 8
+                                rightPadding: 8
+                                onClicked: root.openPalette()
+                            }
+
+                            AppButton {
+                                theme: appTheme
+                                variant: bridge.backendRunning && bridge.ready ? "ghost" : "warning"
+                                text: bridge.restarting ? "Restarting…" : (bridge.backendRunning ? "Restart Pi" : "Start backend")
+                                accessibleName: bridge.restarting ? "Pi is restarting" : "Restart Pi"
+                                enabled: !bridge.active && !bridge.restarting
+                                padding: 4
+                                leftPadding: 8
+                                rightPadding: 8
+                                onClicked: bridge.restartProcess()
+                            }
+                        }
                     }
                 }
 
-                // Queue strip ------------------------------------------------------------------
                 Rectangle {
                     Layout.fillWidth: true
-                    visible: bridge.steeringQueue.length > 0 || bridge.followUpQueue.length > 0
-                    implicitHeight: queueLabel.implicitHeight + 16
-                    radius: 8
-                    color: appTheme.surfaceRaised
-                    border.width: 1
-                    border.color: appTheme.border
-                    Accessible.role: Accessible.StaticText
-                    Accessible.name: queueLabel.text
+                    Layout.fillHeight: true
+                    color: appTheme.windowBackground
 
-                    Label {
-                        id: queueLabel
+                    ColumnLayout {
                         anchors.fill: parent
-                        anchors.margins: 8
-                        text: (bridge.steeringQueue.length > 0 ? "Steering queued: " + bridge.steeringQueue.join(" · ") : "")
-                            + (bridge.steeringQueue.length > 0 && bridge.followUpQueue.length > 0 ? "\n" : "")
-                            + (bridge.followUpQueue.length > 0 ? "Follow-up queued: " + bridge.followUpQueue.join(" · ") : "")
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
-                        maximumLineCount: 4
-                        elide: Text.ElideRight
-                        color: appTheme.muted
-                        font.pixelSize: 12
-                    }
-                }
+                        anchors.leftMargin: contentRoot.width <= 640 ? 10 : 18
+                        anchors.rightMargin: contentRoot.width <= 640 ? 10 : 18
+                        anchors.topMargin: 10
+                        anchors.bottomMargin: 10
+                        spacing: 8
 
-                NoticeBar {
-                    id: noticeBar
-                    Layout.fillWidth: true
-                    theme: appTheme
-                }
+                        // Compact main header: active workspace, path, and transcript search.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
 
-                Composer {
-                    id: composer
-                    Layout.fillWidth: true
-                    active: bridge.active
-                    ready: bridge.ready
-                    processRunning: bridge.backendRunning
-                    theme: appTheme
-                    maxCharacters: bridge.maxMessageCharacters
-                    attachments: bridge.attachments
-                    onSendRequested: (text, mode) => {
-                        if (bridge.sendPrompt(text, mode)) {
-                            clearAndFocus()
-                            draftTimer.stop()
-                            bridge.saveDraft("")
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 1
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: bridge.sessionName
+                                    textFormat: Text.PlainText
+                                    color: appTheme.heading
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                    Accessible.role: Accessible.Heading
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: bridge.displayCwd
+                                    textFormat: Text.PlainText
+                                    color: appTheme.muted
+                                    elide: Text.ElideMiddle
+                                    font.pixelSize: 11
+                                    Accessible.role: Accessible.StaticText
+                                    Accessible.name: "Workspace " + bridge.workspaceCwd
+                                }
+                            }
+
+                            AppButton {
+                                theme: appTheme
+                                variant: "ghost"
+                                active: root.searchOpen
+                                text: "Search"
+                                accessibleName: "Search transcript"
+                                accessibleDescription: "Ctrl+F"
+                                padding: 4
+                                leftPadding: 8
+                                rightPadding: 8
+                                onClicked: root.searchOpen ? root.closeSearch() : root.openSearch()
+                            }
                         }
-                    }
-                    onAbortRequested: bridge.abortRun()
-                    onRestartRequested: bridge.restartProcess()
-                    onAttachRequested: fileDialog.open()
-                    onSequencesRequested: root.openSequences()
-                    onAttachmentRemoveRequested: attachmentId => bridge.removeAttachment(attachmentId)
-                    onAttachmentEditRequested: attachmentId => root.editAttachment(attachmentId)
-                    onCompletionRequested: (kind, query) => root.requestCompletion(kind, query)
-                    onDraftEdited: text => draftTimer.restart()
-                }
 
-                // Footer: extension metrics as grouped segments; plain statuses on their own line -
-                Flow {
-                    Layout.fillWidth: true
-                    visible: root.statusGroups.length > 0
-                    spacing: 8
-                    Accessible.role: Accessible.Grouping
-                    Accessible.name: "Extension status"
+                        // Transcript, composer, queues, notices, and status share one readable width.
+                        Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
 
-                    Repeater {
-                        model: root.statusGroups
-                        delegate: StatusSegment {
-                            required property var modelData
-                            theme: appTheme
-                            groupName: modelData.name
-                            entries: modelData.entries
+                            ColumnLayout {
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.min(parent.width, 820)
+                                spacing: 8
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: bridge.visibleError.length > 0
+                                    implicitHeight: errorLabel.implicitHeight + 20
+                                    radius: 8
+                                    color: appTheme.errorPanelBackground
+                                    border.width: 1
+                                    border.color: appTheme.errorPanelBorder
+                                    Accessible.role: Accessible.AlertMessage
+                                    Accessible.name: "Error: " + bridge.visibleError
+
+                                    Label {
+                                        id: errorLabel
+                                        anchors.fill: parent
+                                        anchors.margins: 10
+                                        text: bridge.visibleError
+                                        color: appTheme.errorPanelForeground
+                                        wrapMode: Text.Wrap
+                                        textFormat: Text.PlainText
+                                        font.pixelSize: 12
+                                    }
+                                }
+
+                                SearchBar {
+                                    id: searchBar
+                                    Layout.fillWidth: true
+                                    visible: root.searchOpen
+                                    theme: appTheme
+                                    matchCount: root.searchMatchCount
+                                    currentIndex: root.searchIndex
+                                    onQueryEdited: query => {
+                                        root.searchQuery = query
+                                        root.runSearch()
+                                    }
+                                    onNextRequested: root.searchNext()
+                                    onPreviousRequested: root.searchPrevious()
+                                    onCloseRequested: root.closeSearch()
+                                }
+
+                                Item {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    clip: true
+
+                                    ListView {
+                                        id: transcriptList
+                                        anchors.fill: parent
+                                        anchors.rightMargin: 4
+                                        model: bridge.transcriptModel
+                                        spacing: bridge.compactTranscript ? 6 : 12
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        cacheBuffer: 400
+                                        property bool followOutput: true
+                                        property bool positioning: false
+                                        Accessible.role: Accessible.List
+                                        Accessible.name: "Conversation transcript"
+
+                                        ScrollBar.vertical: ScrollBar {
+                                            policy: ScrollBar.AsNeeded
+                                        }
+
+                                        function followToEnd() {
+                                            positioning = true
+                                            positionViewAtEnd()
+                                            positioning = false
+                                        }
+
+                                        onContentYChanged: if (!positioning) followOutput = contentHeight - (contentY + height) < 48
+                                        onContentHeightChanged: if (followOutput) Qt.callLater(followToEnd)
+                                        onCountChanged: if (followOutput) Qt.callLater(followToEnd)
+
+                                        footer: WorkingIndicator {
+                                            width: transcriptList.width
+                                            theme: appTheme
+                                            running: bridge.active
+                                            statusText: bridge.statusText
+                                        }
+
+                                        delegate: TranscriptRow {
+                                            required property int index
+                                            width: transcriptList.width
+                                            theme: appTheme
+                                            compact: bridge.compactTranscript
+                                            showThinking: bridge.showThinking
+                                            highlightCode: bridge.syntaxHighlighting
+                                            searchMatch: root.searchMatches.indexOf(index) !== -1
+                                            searchCurrent: root.searchCurrentRow === index
+                                            onCopyRequested: text => bridge.copyToClipboard(text)
+                                            onLinkActivated: link => root.confirmLink(link)
+                                        }
+                                    }
+
+                                    EmptyState {
+                                        anchors.fill: parent
+                                        visible: transcriptList.count === 0
+                                        theme: appTheme
+                                        ready: bridge.ready
+                                        backendReady: bridge.backendReady
+                                        onRestartRequested: bridge.restartProcess()
+                                        onFocusComposerRequested: composer.focusEditor()
+                                        onResumeRequested: root.openSessionsPicker()
+                                        onOpenDirectoryRequested: root.openDirectoryPicker()
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: bridge.steeringQueue.length > 0 || bridge.followUpQueue.length > 0
+                                    implicitHeight: queueLabel.implicitHeight + 16
+                                    radius: 8
+                                    color: appTheme.surfaceRaised
+                                    border.width: 1
+                                    border.color: appTheme.border
+                                    Accessible.role: Accessible.StaticText
+                                    Accessible.name: queueLabel.text
+
+                                    Label {
+                                        id: queueLabel
+                                        anchors.fill: parent
+                                        anchors.margins: 8
+                                        text: (bridge.steeringQueue.length > 0 ? "Steering queued: " + bridge.steeringQueue.join(" · ") : "")
+                                            + (bridge.steeringQueue.length > 0 && bridge.followUpQueue.length > 0 ? "\n" : "")
+                                            + (bridge.followUpQueue.length > 0 ? "Follow-up queued: " + bridge.followUpQueue.join(" · ") : "")
+                                        textFormat: Text.PlainText
+                                        wrapMode: Text.Wrap
+                                        maximumLineCount: 4
+                                        elide: Text.ElideRight
+                                        color: appTheme.muted
+                                        font.pixelSize: 12
+                                    }
+                                }
+
+                                NoticeBar {
+                                    id: noticeBar
+                                    Layout.fillWidth: true
+                                    theme: appTheme
+                                }
+
+                                Composer {
+                                    id: composer
+                                    Layout.fillWidth: true
+                                    active: bridge.active
+                                    ready: bridge.ready
+                                    processRunning: bridge.backendRunning
+                                    theme: appTheme
+                                    maxCharacters: bridge.maxMessageCharacters
+                                    attachments: bridge.attachments
+                                    onSendRequested: (text, mode) => {
+                                        if (bridge.sendPrompt(text, mode)) {
+                                            clearAndFocus()
+                                            draftTimer.stop()
+                                            bridge.saveDraft("")
+                                        }
+                                    }
+                                    onAbortRequested: bridge.abortRun()
+                                    onRestartRequested: bridge.restartProcess()
+                                    onAttachRequested: fileDialog.open()
+                                    onSequencesRequested: root.openSequences()
+                                    onAttachmentRemoveRequested: attachmentId => bridge.removeAttachment(attachmentId)
+                                    onAttachmentEditRequested: attachmentId => root.editAttachment(attachmentId)
+                                    onCompletionRequested: (kind, query) => root.requestCompletion(kind, query)
+                                    onDraftEdited: text => draftTimer.restart()
+                                }
+
+                                // Response and transcript controls belong with the prompt they affect,
+                                // rather than occupying a second row beneath the workspace title.
+                                Flow {
+                                    id: responseControls
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: childrenRect.height
+                                    Layout.leftMargin: 4
+                                    Layout.rightMargin: 4
+                                    spacing: 4
+                                    Accessible.role: Accessible.Grouping
+                                    Accessible.name: "Response and transcript controls for workspace " + bridge.workspaceCwd
+
+                                    AppButton {
+                                        id: modelButton
+                                        visible: bridge.runtimeInfoText.length > 0
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        text: bridge.currentProvider + "/" + bridge.currentModelId
+                                        accessibleName: "Model " + bridge.currentProvider + "/" + bridge.currentModelId + (bridge.currentModelName.length > 0 ? " (" + bridge.currentModelName + ")" : "") + ", choose a model"
+                                        accessibleDescription: "Ctrl+M opens the list, Ctrl+Shift+P cycles"
+                                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: root.openModelPicker()
+                                        ToolTip.visible: hovered && bridge.currentModelName.length > 0
+                                        ToolTip.text: bridge.currentModelName
+                                        ToolTip.delay: 400
+                                    }
+
+                                    AppButton {
+                                        id: thinkingButton
+                                        visible: bridge.runtimeInfoText.length > 0
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        text: "thinking " + bridge.currentThinkingLevel
+                                        accessibleName: "Thinking effort " + bridge.currentThinkingLevel + ", choose a level"
+                                        accessibleDescription: "Ctrl+E opens the list, Ctrl+Shift+E cycles"
+                                        enabled: bridge.ready && !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: root.openThinkingPicker()
+                                    }
+
+                                    AppButton {
+                                        id: resourceProfilesButton
+                                        visible: bridge.ready
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        text: bridge.resourceLoading ? "Resources…" : "Resources"
+                                        accessibleName: "Configure tool, skill, and sampling profiles"
+                                        accessibleDescription: "Ctrl+Shift+R; session, exact-model, and global scopes"
+                                        enabled: !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending && !bridge.resourceLoading
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: root.openResourceProfiles()
+                                    }
+
+                                    AppButton {
+                                        visible: bridge.ready && bridge.transcriptModel.count > 0
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        text: bridge.compacting ? "Compacting…" : "Compact context"
+                                        accessibleName: bridge.compacting ? "Context compaction is running" : "Compact the conversation context"
+                                        accessibleDescription: "Summarizes older conversation so Pi keeps room for new work"
+                                        enabled: !bridge.active && !bridge.compacting
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: root.compactContext()
+                                    }
+
+                                    AppButton {
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        active: bridge.showThinking
+                                        text: "Thinking"
+                                        accessibleName: (bridge.showThinking ? "Hide" : "Show") + " thinking sections"
+                                        accessibleDescription: "Ctrl+T"
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: bridge.updateSetting("showThinking", !bridge.showThinking)
+                                    }
+
+                                    AppButton {
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        active: bridge.compactTranscript
+                                        text: "Compact"
+                                        accessibleName: bridge.compactTranscript ? "Use comfortable transcript rows" : "Use compact transcript rows"
+                                        accessibleDescription: "Ctrl+Shift+M"
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: bridge.updateSetting("compactTranscript", !bridge.compactTranscript)
+                                    }
+                                }
+
+                                Flow {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: childrenRect.height
+                                    visible: root.statusGroups.length > 0
+                                    spacing: 8
+                                    Accessible.role: Accessible.Grouping
+                                    Accessible.name: "Extension status"
+
+                                    Repeater {
+                                        model: root.statusGroups
+                                        delegate: StatusSegment {
+                                            required property var modelData
+                                            theme: appTheme
+                                            groupName: modelData.name
+                                            entries: modelData.entries
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

@@ -96,11 +96,29 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   assert.match(shell, /text:\s*bridge\.restarting \? "Restarting…"/);
 });
 
+test("workspace shell keeps the approved rail, centered conversation, and small-window structure", () => {
+  const rail = objectBodyContaining(shell, "Rectangle", "id: workspaceRail");
+  assert.match(shell, /minimumSize:\s*Qt\.size\(560, 520\)/);
+  assert.match(rail, /Layout\.minimumWidth:\s*148/);
+  assert.match(rail, /Layout\.maximumWidth:\s*208/);
+  assert.match(rail, /Accessible\.name:\s*"Workspace navigation"/);
+  assert.match(rail, /TabStrip\s*\{[\s\S]*orientation:\s*"vertical"/);
+  assert.match(shell, /width:\s*Math\.min\(parent\.width, 820\)/);
+  assert.match(shell, /Accessible\.name:\s*"Conversation transcript"/);
+  assert.match(emptyState, /Flickable\s*\{[\s\S]*boundsBehavior:\s*Flickable\.StopAtBounds/);
+  assert.match(emptyState, /accessibleName:\s*"Focus the prompt"/);
+  assert.equal((shell.match(/\bComposer\s*\{/g) ?? []).length, 1);
+  const composerIndex = shell.indexOf("id: composer");
+  const responseControlsIndex = shell.indexOf("id: responseControls");
+  assert(responseControlsIndex > composerIndex, "response controls should sit beneath the composer instead of beneath the workspace title");
+  assert.match(shell, /id:\s*responseControls[\s\S]*Accessible\.name:\s*"Response and transcript controls for workspace "/);
+});
+
 test("theme owns every palette color and follows the desktop color scheme", () => {
   assert.match(theme, /Qt\.styleHints\.colorScheme\s*===\s*Qt\.Dark/);
   assert.match(theme, /requestedMode === "dark"/);
   assert.match(theme, /portalMode === "dark"/);
-  for (const token of ["windowBackground", "foreground", "accent", "link", "focusRing", "codeBackground", "codeForeground", "quoteBorder", "tableBorder", "thinkingForeground", "dialogOverlay", "searchHighlight", "selection"]) {
+  for (const token of ["mainSurface", "sidebarSurface", "sidebarBorder", "panelSurface", "windowBackground", "foreground", "accent", "link", "focusRing", "controlSurface", "controlHover", "controlPressed", "controlActive", "composerSurface", "composerBorder", "composerShadow", "codeBackground", "codeForeground", "quoteBorder", "tableBorder", "thinkingForeground", "dialogOverlay", "searchHighlight", "selection"]) {
     assert.match(theme, new RegExp(`readonly property color ${token}\\b`), `theme token ${token}`);
   }
   for (const statusKind of ["ready", "running", "tool", "error"]) assert.match(theme, new RegExp(`kind === "${statusKind}"`));
@@ -323,6 +341,12 @@ test("untrusted content renders as plain or whitelisted styled text and links op
 });
 
 test("composer exposes send, steer, follow-up, abort, and restart with keyboard paths", () => {
+  assert.match(composer, /color:\s*theme\.composerSurface/);
+  assert.match(composer, /border\.color:\s*prompt\.activeFocus \? theme\.focusRing : theme\.composerBorder/);
+  assert.match(composer, /layer\.effect:\s*MultiEffect\s*\{[\s\S]*shadowColor:\s*composer\.theme\.composerShadow/);
+  assert.match(composer, /id:\s*chip[\s\S]*width:\s*Math\.min\(implicitWidth, parent \? parent\.width : implicitWidth\)/);
+  assert.match(composer, /id:\s*chipRow[\s\S]*anchors\.left:\s*parent\.left[\s\S]*anchors\.right:\s*parent\.right/);
+  assert.match(composer, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*Layout\.maximumWidth:\s*240/);
   assert.match(composer, /signal sendRequested\(string text, string mode\)/);
   assert.match(composer, /composer\.trySend\(composer\.active \? "steer" : "send"\)/);
   assert.match(composer, /composer\.trySend\(composer\.active \? "followUp" : "send"\)/);
@@ -486,6 +510,14 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(appButton, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/);
   assert.match(appButton, /hoverEnabled:\s*true/);
   assert.match(appButton, /Accessible\.checked:\s*active/);
+  assert.match(appButton, /down \? \(filled \? Qt\.darker\(baseColor/);
+  assert.match(appButton, /hovered \? \(filled \? Qt\.lighter\(baseColor/);
+  assert.match(appButton, /active \? theme\.controlActive/);
+  assert.match(appButton, /implicitHeight:\s*30/);
+  assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, availableWidth\)/);
+  assert.match(statusSegment, /Flow\s*\{[\s\S]*id:\s*statusFlow/);
+  assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, statusFlow\.width\)/);
+  assert.match(statusSegment, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*elide:\s*Text\.ElideRight/);
   assert.match(shell, /active:\s*bridge\.showThinking/);
   assert.match(shell, /active:\s*bridge\.compactTranscript/);
   for (const [name, source] of [["composer", composer], ["searchBar", searchBar], ["toolCard", toolCard], ["row", row], ["statusBadge", statusBadge], ["noticeBar", noticeBar], ["emptyState", emptyState], ["blocks", blocks]]) {
@@ -494,6 +526,8 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(searchBar, /Keys\.onPressed[\s\S]*Qt\.Key_Escape[\s\S]*bar\.closeRequested\(\)/);
   assert.match(searchBar, /event\.modifiers & Qt\.ShiftModifier\) bar\.previousRequested\(\)/);
   assert.match(row, /Accessible\.name:\s*roleLabel/);
+  assert.match(row, /!row\.fromUser && row\.kind !== "thinking" && !row\.searchCurrent\) \? "transparent"/);
+  assert.match(row, /row\.fromUser \|\| row\.kind === "thinking" \? 1 : 0/);
 });
 
 test("smoke driver and fixture cover every recorded protocol edge", () => {

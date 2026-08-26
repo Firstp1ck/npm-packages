@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import QtQuick.Layouts
 
 // Prompt editor with explicit run modes: Send while idle; Steer, Follow-up, and Abort while a run
@@ -39,10 +40,17 @@ Rectangle {
     signal draftEdited(string text)
 
     implicitHeight: column.implicitHeight + 24
-    radius: 10
-    color: theme.surface
+    radius: 12
+    color: theme.composerSurface
     border.width: prompt.activeFocus ? 2 : 1
-    border.color: prompt.activeFocus ? theme.focusRing : theme.border
+    border.color: prompt.activeFocus ? theme.focusRing : theme.composerBorder
+    layer.enabled: true
+    layer.effect: MultiEffect {
+        shadowEnabled: true
+        shadowColor: composer.theme.composerShadow
+        shadowBlur: 0.45
+        shadowVerticalOffset: 3
+    }
 
     Behavior on border.color {
         ColorAnimation { duration: composer.theme.animationDuration }
@@ -151,7 +159,7 @@ Rectangle {
         id: column
         anchors.fill: parent
         anchors.margins: 12
-        spacing: 8
+        spacing: 7
 
         CompletionPopup {
             id: completionPopup
@@ -165,7 +173,7 @@ Rectangle {
 
         ScrollView {
             Layout.fillWidth: true
-            Layout.preferredHeight: 92
+            Layout.preferredHeight: 84
             clip: true
 
             TextArea {
@@ -239,6 +247,7 @@ Rectangle {
                     id: chip
                     required property var modelData
                     implicitWidth: chipRow.implicitWidth + 12
+                    width: Math.min(implicitWidth, parent ? parent.width : implicitWidth)
                     implicitHeight: chipRow.implicitHeight + 8
                     radius: 6
                     color: composer.theme.surfaceRaised
@@ -249,23 +258,31 @@ Rectangle {
 
                     RowLayout {
                         id: chipRow
-                        anchors.centerIn: parent
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 6
+                        anchors.rightMargin: 6
                         spacing: 6
 
                         Label {
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 48
+                            Layout.maximumWidth: 240
                             text: String(chip.modelData.kind === "image" ? "🖼 " : "📄 ") + String(chip.modelData.name)
                             textFormat: Text.PlainText
                             color: composer.theme.foreground
                             font.pixelSize: 12
                             elide: Text.ElideMiddle
-                            Layout.maximumWidth: 240
                         }
 
                         Label {
+                            Layout.maximumWidth: 76
                             text: composer.sizeLabel(chip.modelData.size) + (chip.modelData.edited ? " · edited" : "")
                             textFormat: Text.PlainText
                             color: composer.theme.muted
                             font.pixelSize: 11
+                            elide: Text.ElideRight
                         }
 
                         AppButton {

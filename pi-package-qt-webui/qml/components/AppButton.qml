@@ -1,8 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// Reusable themed button: always framed, hover feedback with a hand cursor, a visible focus ring,
-// an accessible name, and keyboard activation.
+// Reusable compact button with explicit hover, pressed, active, disabled, and focus states.
 Button {
     id: control
 
@@ -10,15 +9,18 @@ Button {
     property string variant: "secondary" // primary | secondary | destructive | warning | ghost
     property string accessibleName: text
     property string accessibleDescription: ""
-    property bool active: false // toggle-style buttons render a checked look
+    property bool active: false
+    readonly property bool filled: variant === "primary" || variant === "destructive" || variant === "warning"
     readonly property color baseColor: !enabled ? theme.disabledSurface
-        : active ? theme.userBubble
+        : active ? theme.controlActive
         : variant === "primary" ? theme.accent
         : variant === "destructive" ? theme.destructive
         : variant === "warning" ? theme.warning
-        : variant === "ghost" ? theme.surface
-        : theme.surfaceRaised
-    readonly property bool filled: variant === "primary" || variant === "destructive" || variant === "warning"
+        : variant === "ghost" ? "transparent"
+        : theme.controlSurface
+    readonly property color interactionColor: down ? (filled ? Qt.darker(baseColor, 1.12) : theme.controlPressed)
+        : hovered ? (filled ? Qt.lighter(baseColor, theme.dark ? 1.12 : 1.06) : theme.controlHover)
+        : baseColor
 
     focusPolicy: Qt.StrongFocus
     hoverEnabled: true
@@ -27,26 +29,26 @@ Button {
     Accessible.description: accessibleDescription
     Accessible.checked: active
     Accessible.onPressAction: if (enabled) clicked()
-    padding: 8
-    leftPadding: 14
-    rightPadding: 14
+    padding: 5
+    leftPadding: 10
+    rightPadding: 10
 
     HoverHandler {
         cursorShape: control.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
     }
 
     background: Rectangle {
-        implicitWidth: 72
-        implicitHeight: 34
-        radius: 7
-        color: control.enabled && (control.hovered || control.down)
-            ? Qt.lighter(control.baseColor, control.theme.dark ? (control.down ? 1.35 : 1.2) : (control.down ? 0.92 : 0.96))
-            : control.baseColor
+        implicitWidth: 64
+        implicitHeight: 30
+        radius: 6
+        color: control.interactionColor
         border.width: control.activeFocus ? 2 : 1
         border.color: control.activeFocus ? control.theme.focusRing
             : !control.enabled ? control.theme.disabledSurface
-            : control.filled ? Qt.darker(control.baseColor, 1.25)
-            : control.active || control.hovered ? control.theme.accent : control.theme.border
+            : control.active ? control.theme.controlActiveBorder
+            : control.filled ? Qt.darker(control.baseColor, 1.2)
+            : control.variant === "ghost" && !control.hovered && !control.down ? "transparent"
+            : control.theme.controlBorder
         Behavior on color { ColorAnimation { duration: control.theme.animationDuration } }
         Behavior on border.color { ColorAnimation { duration: control.theme.animationDuration } }
     }
@@ -58,8 +60,8 @@ Button {
             : control.filled ? control.theme.buttonForeground : control.theme.foreground
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        font.bold: control.variant !== "ghost"
-        font.pixelSize: 13
+        font.weight: control.variant === "primary" ? Font.DemiBold : Font.Medium
+        font.pixelSize: 12
         elide: Text.ElideRight
     }
 }

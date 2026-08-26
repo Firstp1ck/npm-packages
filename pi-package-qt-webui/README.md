@@ -9,10 +9,11 @@ Use Pi in a Linux desktop window built with Quickshell and Qt Quick.
 - See what Pi is doing: thinking sections you can show or hide, and a card for every tool call with its status, duration, and output.
 - Answer questions from Pi extensions in native dialogs: pick an option, confirm, type a value, or edit text.
 - Steer a running task, queue a follow-up, or abort it; restart Pi or the local backend after a failure.
+- Work in a focused desktop layout with workspace tabs in a left rail, a readable centered conversation, and an elevated prompt editor.
 - Search the transcript, copy any message, and switch between comfortable and compact rows.
 - Get a desktop notification when a run finishes or Pi needs input while the window is in the background.
-- See the active provider, model ID, and thinking effort in the header, plus status chips from extensions such as the Git footer.
-- Switch models and thinking effort from the header, choose session, exact-model, or global profiles for enabled tools and skills, tune supported sampling values, and compact long conversations.
+- See the active provider, model ID, and thinking effort beside the prompt, plus status chips from extensions such as the Git footer.
+- Switch models and thinking effort from the prompt control strip, choose session, exact-model, or global profiles for enabled tools and skills, tune supported sampling values, and compact long conversations.
 - Open several projects in tabs, each with its own Pi session, resume any saved session for a folder, and start a Git worktree for a new branch in its own tab.
 - Reach every action, tab, model, session, and Pi command from one keyboard-first palette (`Ctrl+K`), watch context and token usage in the footer, and review events and diagnostics without leaving the window.
 - Work in the project directory where you started `qt-webui` (your tabs come back after a restart), and follow the desktop's light or dark color scheme.
@@ -32,7 +33,7 @@ cd ~/projects/example
 qt-webui
 ```
 
-Type a prompt and press `Enter` (`Shift+Enter` adds a new line). While Pi is working, `Enter` sends a steering message and `Alt+Enter` queues a follow-up; the **Abort** button stops the run, and an animated indicator under the last entry shows that Pi is still working. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
+Choose a workspace tab from the left rail, then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). While Pi is working, `Enter` sends a steering message and `Alt+Enter` queues a follow-up; the **Abort** button stops the run, and an animated indicator under the last entry shows that Pi is still working. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
 
 Useful shortcuts:
 

@@ -46,16 +46,17 @@ Item {
         id: bubble
         anchors.left: row.fromUser ? undefined : parent.left
         anchors.right: row.fromUser ? parent.right : undefined
-        width: row.kind === "tool" ? parent.width
-            : Math.min(parent.width * (row.compact ? 0.98 : 0.92), Math.max(row.fromUser ? 120 : 240, content.implicitWidth + 32))
-        implicitHeight: content.implicitHeight + (row.compact ? 16 : 24)
-        radius: 10
-        color: row.kind === "tool" ? "transparent"
+        width: row.kind === "tool" || (!row.fromUser && row.kind !== "thinking") ? parent.width
+            : Math.min(parent.width * (row.compact ? 0.92 : 0.84), Math.max(row.fromUser ? 120 : 240, content.implicitWidth + 32))
+        implicitHeight: content.implicitHeight + (row.kind === "tool" ? 0 : row.compact ? 14 : 20)
+        radius: 9
+        color: row.kind === "tool" || (!row.fromUser && row.kind !== "thinking" && !row.searchCurrent) ? "transparent"
             : row.searchCurrent ? row.theme.searchHighlight
             : row.fromUser ? row.theme.userBubble
-            : row.kind === "thinking" ? row.theme.thinkingBackground
-            : row.theme.assistantBubble
-        border.width: row.kind === "tool" ? 0 : (row.searchMatch ? 2 : 1)
+            : row.theme.thinkingBackground
+        border.width: row.kind === "tool" ? 0
+            : row.searchMatch ? 2
+            : row.fromUser || row.kind === "thinking" ? 1 : 0
         border.color: row.searchCurrent ? row.theme.focusRing
             : row.searchMatch ? row.theme.accent
             : row.fromUser ? row.theme.userBorder
@@ -67,8 +68,10 @@ Item {
         ColumnLayout {
             id: content
             anchors.fill: parent
-            anchors.margins: row.kind === "tool" ? 0 : (row.compact ? 8 : 12)
-            spacing: row.compact ? 3 : 6
+            anchors.margins: row.kind === "tool" ? 0
+                : !row.fromUser && row.kind !== "thinking" ? (row.compact ? 4 : 6)
+                : (row.compact ? 7 : 10)
+            spacing: row.compact ? 3 : 5
 
             RowLayout {
                 Layout.fillWidth: true
@@ -80,8 +83,8 @@ Item {
                     textFormat: Text.PlainText
                     color: row.fromUser ? row.theme.accentForeground
                         : row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.muted
-                    font.bold: true
-                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                    font.pixelSize: 11
                 }
 
                 Label {
@@ -130,7 +133,7 @@ Item {
                 color: row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.foreground
                 font.pixelSize: row.compact ? 13 : 14
                 font.italic: row.kind === "thinking"
-                lineHeight: 1.2
+                lineHeight: 1.3
             }
 
             Label {

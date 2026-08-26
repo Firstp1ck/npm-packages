@@ -2,8 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Shown while the transcript is empty. The header already names the workspace and model, so this
-// stays to a greeting, the essential shortcuts, and the one action that matters right now.
+// Shown while the transcript is empty. The workspace rail and header already provide context, so
+// this panel stays focused on starting or resuming work and remains scrollable in a short window.
 Item {
     id: empty
 
@@ -16,85 +16,96 @@ Item {
     signal resumeRequested()
     signal openDirectoryRequested()
 
-    implicitHeight: column.implicitHeight
+    implicitHeight: content.implicitHeight
     Accessible.role: Accessible.Grouping
     Accessible.name: "Empty transcript"
 
-    ColumnLayout {
-        id: column
-        anchors.centerIn: parent
-        width: Math.min(parent.width - 40, 440)
-        spacing: 14
+    Flickable {
+        anchors.fill: parent
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        contentWidth: width
+        contentHeight: Math.max(height, content.implicitHeight + 32)
 
-        Label {
-            Layout.fillWidth: true
-            text: empty.ready ? "Ready when you are" : empty.backendReady ? "Starting Pi…" : "Starting Qt WebUI…"
-            textFormat: Text.PlainText
-            color: empty.theme.heading
-            font.pixelSize: 20
-            font.bold: true
-            horizontalAlignment: Text.AlignHCenter
-        }
+        ColumnLayout {
+            id: content
+            x: Math.max(12, (parent.width - width) / 2)
+            y: Math.max(16, (parent.height - implicitHeight) / 2)
+            width: Math.max(0, Math.min(parent.width - 24, 420))
+            spacing: 12
 
-        GridLayout {
-            Layout.alignment: Qt.AlignHCenter
-            columns: 2
-            columnSpacing: 14
-            rowSpacing: 4
+            Label {
+                Layout.fillWidth: true
+                text: empty.ready ? "Start a conversation" : empty.backendReady ? "Starting Pi…" : "Starting Qt WebUI…"
+                textFormat: Text.PlainText
+                color: empty.theme.heading
+                font.pixelSize: 20
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+            }
 
-            Repeater {
-                model: [
-                    "Enter", "Send · Shift+Enter adds a line",
-                    "Ctrl+F", "Search the transcript",
-                    "Ctrl+T", "Show or hide thinking",
-                    "Ctrl+Shift+M", "Compact rows",
-                    "Ctrl+N / Ctrl+O", "New tab here / open a folder",
-                    "Ctrl+Shift+O", "Resume a saved session",
-                ]
-                delegate: Label {
-                    required property int index
-                    required property string modelData
-                    text: modelData
-                    textFormat: Text.PlainText
-                    color: index % 2 === 0 ? empty.theme.foreground : empty.theme.muted
-                    font.family: index % 2 === 0 ? empty.theme.monospaceFamily : Qt.application.font.family
-                    font.pixelSize: 12
-                    horizontalAlignment: index % 2 === 0 ? Text.AlignRight : Text.AlignLeft
-                    Layout.alignment: index % 2 === 0 ? Qt.AlignRight : Qt.AlignLeft
+            Label {
+                Layout.fillWidth: true
+                text: empty.ready ? "Ask about this workspace, resume earlier work, or open another folder." : "Your workspace will be ready shortly."
+                textFormat: Text.PlainText
+                color: empty.theme.muted
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
+            }
+
+            Flow {
+                Layout.fillWidth: true
+                Layout.preferredHeight: childrenRect.height
+                visible: empty.ready
+                spacing: 8
+
+                AppButton {
+                    theme: empty.theme
+                    text: "Focus prompt"
+                    accessibleName: "Focus the prompt"
+                    accessibleDescription: "Ctrl+L"
+                    onClicked: empty.focusComposerRequested()
+                }
+
+                AppButton {
+                    theme: empty.theme
+                    text: "Resume session"
+                    accessibleName: "Resume a saved session in this tab"
+                    accessibleDescription: "Ctrl+Shift+O"
+                    onClicked: empty.resumeRequested()
+                }
+
+                AppButton {
+                    theme: empty.theme
+                    text: "Open folder"
+                    accessibleName: "Open another folder in a new tab"
+                    accessibleDescription: "Ctrl+O"
+                    onClicked: empty.openDirectoryRequested()
                 }
             }
-        }
 
-        RowLayout {
-            Layout.alignment: Qt.AlignHCenter
-            visible: empty.ready
-            spacing: 8
-
-            AppButton {
-                theme: empty.theme
-                text: "Resume a session"
-                accessibleName: "Resume a saved session in this tab"
-                accessibleDescription: "Ctrl+Shift+O"
-                onClicked: empty.resumeRequested()
+            Label {
+                Layout.fillWidth: true
+                visible: empty.ready
+                text: "Enter sends  ·  Shift+Enter adds a line  ·  Ctrl+F searches  ·  Ctrl+K opens the palette"
+                textFormat: Text.PlainText
+                color: empty.theme.muted
+                font.family: empty.theme.monospaceFamily
+                font.pixelSize: 11
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
             }
 
             AppButton {
+                Layout.alignment: Qt.AlignHCenter
+                visible: !empty.ready
                 theme: empty.theme
-                text: "Open a folder"
-                accessibleName: "Open another folder in a new tab"
-                accessibleDescription: "Ctrl+O"
-                onClicked: empty.openDirectoryRequested()
+                variant: "warning"
+                text: "Restart Pi"
+                accessibleName: "Restart Pi"
+                onClicked: empty.restartRequested()
             }
-        }
-
-        AppButton {
-            Layout.alignment: Qt.AlignHCenter
-            visible: !empty.ready
-            theme: empty.theme
-            variant: "warning"
-            text: "Restart Pi"
-            accessibleName: "Restart Pi"
-            onClicked: empty.restartRequested()
         }
     }
 }
