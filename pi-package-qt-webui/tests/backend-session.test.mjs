@@ -308,6 +308,7 @@ test("models and thinking levels can be listed, selected, and cycled with bounde
   ], "malformed and duplicate models are dropped and names are ANSI-stripped");
   assert.deepEqual(listed.data.current, { provider: "fixture-provider", modelId: "fixture-model" });
   assert.equal(listed.data.omitted, 0);
+  assert.deepEqual(listed.data.scope, { explicit: false, source: "available", count: 3, unavailable: 0 }, "an empty Pi scope falls back to every available model");
 
   const levels = await backend.send("thinking_levels");
   assert.deepEqual(levels.data, { levels: ["off", "minimal", "low", "medium", "high"], current: "high" });
@@ -353,6 +354,27 @@ test("models and thinking levels can be listed, selected, and cycled with bounde
   assert.deepEqual(commands.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]),
     [["fixture-provider", "missing"], ["fixture-provider", "fixture-fast"]]);
   assert.deepEqual(commands.filter((command) => command.type === "set_thinking_level").map((command) => command.level), ["high", "low"]);
+});
+
+test("explicit model scope preserves Pi order, excludes unscoped models, and stays available from cache during a run", async (t) => {
+  const backend = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_MODEL_SCOPE: "explicit" } });
+  const listed = await backend.send("models_list");
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.data.models.map((model) => [model.provider, model.id, model.pinnedThinkingLevel]), [
+    ["other-provider", "other-model", "medium"],
+    ["fixture-provider", "fixture-model", ""],
+  ]);
+  assert.deepEqual(listed.data.scope, { explicit: true, source: "session", count: 2, unavailable: 0 });
+  assert.equal(listed.data.models.some((model) => model.id === "fixture-fast"), false, "an available but unscoped model must not leak");
+  const helperPromptsBefore = (await backend.readCapture()).filter((command) => command.type === "prompt" && String(command.message).startsWith("/qt-webui-helper ")).length;
+
+  await backend.send("prompt", { message: "__QT_WEBUI_DELAYED_ABORT__" });
+  const activeList = await backend.send("models_list");
+  assert.deepEqual(activeList.data.models.map((model) => model.id), ["other-model", "fixture-model"]);
+  const helperPromptsAfter = (await backend.readCapture()).filter((command) => command.type === "prompt" && String(command.message).startsWith("/qt-webui-helper ")).length;
+  assert.equal(helperPromptsAfter, helperPromptsBefore, "active listing uses established scope and never sends a helper prompt into the run");
+  await backend.send("abort");
+  await backend.waitForEvent("run.end");
 });
 
 test("resource profiles preserve inheritance and unsupported sampling while applying exact effective payloads", async (t) => {
@@ -553,6 +575,18 @@ test("oversized model inventories are bounded and reported", async (t) => {
   const listed = await backend.send("models_list");
   assert.equal(listed.data.models.length, LIMITS.maxModels);
   assert.equal(listed.data.omitted, 303 - LIMITS.maxModels);
+  assert.deepEqual(listed.data.scope, { explicit: false, source: "available", count: 303, unavailable: 0 });
+  await backend.waitForEvent("notice", (event) => /configured models are not listed/.test(event.message));
+});
+
+test("oversized explicit model scopes keep scope order within the backend bound", async (t) => {
+  const backend = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_MANY_MODELS: "1", QT_WEBUI_FIXTURE_MODEL_SCOPE: "many" } });
+  const listed = await backend.send("models_list");
+  assert.equal(listed.data.models.length, LIMITS.maxModels);
+  assert.equal(listed.data.models[0].id, "bulk-299");
+  assert.equal(listed.data.models.at(-1).id, "bulk-44");
+  assert.equal(listed.data.omitted, 300 - LIMITS.maxModels);
+  assert.deepEqual(listed.data.scope, { explicit: true, source: "session", count: 300, unavailable: 0 });
   await backend.waitForEvent("notice", (event) => /configured models are not listed/.test(event.message));
 });
 

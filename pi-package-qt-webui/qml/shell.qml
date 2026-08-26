@@ -15,6 +15,8 @@ ShellRoot {
     readonly property var extensionDialog: extensionDialogItem
     readonly property bool linkDialogOpened: linkDialogItem.opened
     readonly property var pickerDialog: pickerDialogItem
+    readonly property var modelDropUp: modelDropUpItem
+    readonly property var thinkingDropUp: thinkingDropUpItem
     readonly property var composerItem: composer
     readonly property var sequencesDialog: sequencesDialogItem
     readonly property var attachmentEditor: attachmentEditorItem
@@ -28,6 +30,13 @@ ShellRoot {
     property var paletteSessions: []
     property string draftKeyInUse: ""
     property string pickerKind: ""
+    property int composerPickerGeneration: 0
+    property int modelPickerGeneration: -1
+    property int thinkingPickerGeneration: -1
+    property string modelPickerTabId: ""
+    property string thinkingPickerTabId: ""
+    property bool modelPickerLoading: false
+    property bool thinkingPickerLoading: false
     property string pendingPathQuery: ""
     property bool searchOpen: false
     property string searchQuery: ""
@@ -275,43 +284,115 @@ ShellRoot {
 
     // ---- models, thinking, and compaction ------------------------------------------------
 
+    function composerPickerOpen() {
+        return pickerDialogItem.opened || modelDropUpItem.opened || thinkingDropUpItem.opened || modelPickerLoading || thinkingPickerLoading
+    }
+
+    function invalidateComposerPickers() {
+        composerPickerGeneration++
+        modelPickerLoading = false
+        thinkingPickerLoading = false
+        modelPickerGeneration = -1
+        thinkingPickerGeneration = -1
+        modelPickerTabId = ""
+        thinkingPickerTabId = ""
+        if (modelDropUpItem.opened) modelDropUpItem.close()
+        if (thinkingDropUpItem.opened) thinkingDropUpItem.close()
+    }
+
+    function modelPickerResult(originTab, generation, response) {
+        if (generation !== composerPickerGeneration || generation !== modelPickerGeneration || originTab !== modelPickerTabId) return false
+        modelPickerLoading = false
+        if (!response.ok) {
+            modelPickerGeneration = -1
+            modelPickerTabId = ""
+            return false
+        }
+        const items = []
+        for (const model of response.data.models) {
+            const identity = model.provider + "/" + model.id
+            const traits = [model.reasoning ? "thinking" : "no thinking", model.acceptsImages ? "images" : "", model.contextWindow > 0 ? Math.round(model.contextWindow / 1000) + "k context" : ""]
+            items.push({ value: identity, label: model.name.length > 0 ? model.name + "  ·  " + identity : identity,
+                         detail: traits.filter(trait => trait.length > 0).join(" · "),
+                         current: model.provider === bridge.currentProvider && model.id === bridge.currentModelId })
+        }
+        if (!bridge.ready || bridge.active || bridge.activeTabId !== originTab || generation !== composerPickerGeneration
+                || generation !== modelPickerGeneration || originTab !== modelPickerTabId || pickerDialogItem.opened || thinkingDropUpItem.opened) {
+            modelPickerGeneration = -1
+            modelPickerTabId = ""
+            return false
+        }
+        modelDropUpItem.present({ title: "Choose a model", message: response.data.omitted > 0 ? response.data.omitted + " configured models are not listed" : "", items: items, searchable: true, emptyText: "Pi reports no configured models" })
+        return true
+    }
+
+    function thinkingPickerResult(originTab, generation, response) {
+        if (generation !== composerPickerGeneration || generation !== thinkingPickerGeneration || originTab !== thinkingPickerTabId) return false
+        thinkingPickerLoading = false
+        if (!response.ok) {
+            thinkingPickerGeneration = -1
+            thinkingPickerTabId = ""
+            return false
+        }
+        const items = []
+        for (const level of response.data.levels) items.push({ value: level, label: level, detail: "", current: level === bridge.currentThinkingLevel })
+        if (!bridge.ready || bridge.active || bridge.activeTabId !== originTab || generation !== composerPickerGeneration
+                || generation !== thinkingPickerGeneration || originTab !== thinkingPickerTabId || pickerDialogItem.opened || modelDropUpItem.opened) {
+            thinkingPickerGeneration = -1
+            thinkingPickerTabId = ""
+            return false
+        }
+        thinkingDropUpItem.present({ title: "Thinking effort", message: response.data.levels.length <= 1 ? "The current model has no thinking levels" : "", items: items, searchable: false })
+        return true
+    }
+
     function openModelPicker() {
-        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || pickerDialogItem.opened) return false
-        return bridge.loadModels(response => {
-            if (!response.ok) return
-            const items = []
-            for (const model of response.data.models) {
-                const identity = model.provider + "/" + model.id
-                const traits = [model.reasoning ? "thinking" : "no thinking", model.acceptsImages ? "images" : "", model.contextWindow > 0 ? Math.round(model.contextWindow / 1000) + "k context" : ""]
-                items.push({ value: identity, label: model.name.length > 0 ? model.name + "  ·  " + identity : identity,
-                             detail: traits.filter(trait => trait.length > 0).join(" · "),
-                             current: model.provider === bridge.currentProvider && model.id === bridge.currentModelId })
-            }
-            root.pickerKind = "model"
-            pickerDialogItem.present({ title: "Choose a model", message: response.data.omitted > 0 ? response.data.omitted + " configured models are not listed" : "", items: items, searchable: true, emptyText: "Pi reports no configured models" })
-        })
+        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || composerPickerOpen()) return false
+        const originTab = bridge.activeTabId
+        const generation = ++composerPickerGeneration
+        modelPickerGeneration = generation
+        modelPickerTabId = originTab
+        modelPickerLoading = true
+        const requested = bridge.loadModels(response => root.modelPickerResult(originTab, generation, response))
+        if (!requested && generation === composerPickerGeneration && generation === modelPickerGeneration) {
+            modelPickerLoading = false
+            modelPickerGeneration = -1
+            modelPickerTabId = ""
+        }
+        return requested
     }
 
     function openThinkingPicker() {
-        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || pickerDialogItem.opened) return false
-        return bridge.loadThinkingLevels(response => {
-            if (!response.ok) return
-            const items = []
-            for (const level of response.data.levels) items.push({ value: level, label: level, detail: "", current: level === bridge.currentThinkingLevel })
-            root.pickerKind = "thinking"
-            pickerDialogItem.present({ title: "Thinking effort", message: response.data.levels.length <= 1 ? "The current model has no thinking levels" : "", items: items, searchable: false })
-        })
+        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || composerPickerOpen()) return false
+        const originTab = bridge.activeTabId
+        const generation = ++composerPickerGeneration
+        thinkingPickerGeneration = generation
+        thinkingPickerTabId = originTab
+        thinkingPickerLoading = true
+        const requested = bridge.loadThinkingLevels(response => root.thinkingPickerResult(originTab, generation, response))
+        if (!requested && generation === composerPickerGeneration && generation === thinkingPickerGeneration) {
+            thinkingPickerLoading = false
+            thinkingPickerGeneration = -1
+            thinkingPickerTabId = ""
+        }
+        return requested
+    }
+
+    function modelPicked(value) {
+        if (!bridge.ready || bridge.active || bridge.activeTabId !== modelPickerTabId || modelPickerGeneration !== composerPickerGeneration) return
+        const slash = value.indexOf("/")
+        if (slash > 0) bridge.selectModel(value.slice(0, slash), value.slice(slash + 1))
+    }
+
+    function thinkingPicked(value) {
+        if (!bridge.ready || bridge.active || bridge.activeTabId !== thinkingPickerTabId || thinkingPickerGeneration !== composerPickerGeneration) return
+        bridge.setThinkingLevel(value)
     }
 
     function pickerPicked(value) {
         const kind = root.pickerKind
         root.pickerKind = ""
-        if (kind === "model") {
-            const slash = value.indexOf("/")
-            if (slash > 0) bridge.selectModel(value.slice(0, slash), value.slice(slash + 1))
-        } else if (kind === "thinking") {
-            bridge.setThinkingLevel(value)
-        } else if (kind === "session") {
+        if (kind === "session") {
             bridge.switchSession(value)
         } else if (kind === "palette") {
             root.palettePicked(value)
@@ -682,10 +763,15 @@ ShellRoot {
             Connections {
                 target: bridge
                 function onReadyChanged() {
-                    if (bridge.ready) {
+                    if (!bridge.ready) {
+                        root.invalidateComposerPickers()
+                    } else {
                         root.draftKeyInUse = bridge.draftKey
                         bridge.loadDraft()
                     }
+                }
+                function onActiveChanged() {
+                    if (bridge.active) root.invalidateComposerPickers()
                 }
                 function onDraftKeyChanged() {
                     root.handleDraftKeyChanged()
@@ -694,6 +780,7 @@ ShellRoot {
                     root.restoreDraft(key, text)
                 }
                 function onTabSwitched(tabId) {
+                    root.invalidateComposerPickers()
                     composer.text = ""
                     root.closeSearch()
                 }
@@ -1165,21 +1252,8 @@ ShellRoot {
                                     AppButton {
                                         theme: appTheme
                                         variant: "ghost"
-                                        active: bridge.showThinking
-                                        text: "Thinking"
-                                        accessibleName: (bridge.showThinking ? "Hide" : "Show") + " thinking sections"
-                                        accessibleDescription: "Ctrl+T"
-                                        padding: 4
-                                        leftPadding: 8
-                                        rightPadding: 8
-                                        onClicked: bridge.updateSetting("showThinking", !bridge.showThinking)
-                                    }
-
-                                    AppButton {
-                                        theme: appTheme
-                                        variant: "ghost"
                                         active: bridge.compactTranscript
-                                        text: "Compact"
+                                        text: bridge.compactTranscript ? "Compact" : "Detailed"
                                         accessibleName: bridge.compactTranscript ? "Use comfortable transcript rows" : "Use compact transcript rows"
                                         accessibleDescription: "Ctrl+Shift+M"
                                         padding: 4
@@ -1226,6 +1300,33 @@ ShellRoot {
                 bridge: bridge
                 returnFocusItem: composer
                 onLinkOpened: (url, response) => root.linkOpenResult(url, response)
+            }
+
+            DropUpPicker {
+                id: modelDropUpItem
+                theme: appTheme
+                boundsItem: contentRoot
+                anchorItem: modelButton
+                returnFocusItem: modelButton
+                onPicked: value => root.modelPicked(value)
+                onCancelled: {
+                    root.modelPickerGeneration = -1
+                    root.modelPickerTabId = ""
+                }
+            }
+
+            DropUpPicker {
+                id: thinkingDropUpItem
+                theme: appTheme
+                boundsItem: contentRoot
+                anchorItem: thinkingButton
+                returnFocusItem: thinkingButton
+                maximumWidth: 320
+                onPicked: value => root.thinkingPicked(value)
+                onCancelled: {
+                    root.thinkingPickerGeneration = -1
+                    root.thinkingPickerTabId = ""
+                }
             }
 
             PickerDialog {

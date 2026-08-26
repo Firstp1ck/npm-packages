@@ -32,8 +32,8 @@ const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, 
   readFile(path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs"), "utf8"),
 ]);
 
-const [workingIndicator, statusSegment, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog] = await Promise.all([
-  readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
+const [workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog] = await Promise.all([
+  readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("components", "DropUpPicker.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
   readQml(path.join("components", "CompletionPopup.qml")), readQml(path.join("dialogs", "SequencesDialog.qml")), readQml(path.join("dialogs", "TextEditDialog.qml")),
   readQml(path.join("components", "TabStrip.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
 ]);
@@ -42,7 +42,7 @@ const [eventsDialog, diagnosticsDialog, resourceProfilesDialog] = await Promise.
   readQml(path.join("dialogs", "DiagnosticsDialog.qml")),
   readQml(path.join("dialogs", "ResourceProfilesDialog.qml")),
 ]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -215,7 +215,7 @@ test("extension dialogs answer exactly once with typed values and cancel on clos
   assert.match(appDialog, /Accessible\.role:\s*Accessible\.Dialog/);
 });
 
-test("model and thinking pickers choose only through explicit activation and refuse changes while Pi is busy", () => {
+test("model and thinking drop-ups are bounded, keyboard accessible, explicit, and busy guarded", () => {
   for (const name of ["loadModels", "selectModel", "cycleModel", "loadThinkingLevels", "setThinkingLevel", "cycleThinkingLevel", "compactContext"]) {
     assert.match(bridge, new RegExp(`function ${name}\\(`), `bridge should implement ${name}`);
   }
@@ -227,25 +227,48 @@ test("model and thinking pickers choose only through explicit activation and ref
   assert.match(functionBody(bridge, "compactContext"), /boundedText\(instructions\.trim\(\), 1024\)/);
   assert.equal(LIMITS.maxCompactionInstructionCharacters, 1024);
   assert.match(bridge, /case "pi\.exit":[\s\S]*modelActionPending = false[\s\S]*compacting = false/);
-  assert.match(functionBody(shell, "openModelPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| bridge\.modelActionPending \|\| bridge\.resourceActionPending \|\| pickerDialogItem\.opened\) return false/);
-  assert.match(functionBody(shell, "openThinkingPicker"), /searchable: false/);
-  assert.match(functionBody(shell, "pickerPicked"), /bridge\.selectModel\(value\.slice\(0, slash\), value\.slice\(slash \+ 1\)\)/);
-  assert.match(functionBody(shell, "pickerPicked"), /bridge\.setThinkingLevel\(value\)/);
-  assert.match(pickerDialog, /^AppDialog \{/m);
-  assert.match(pickerDialog, /signal picked\(string value\)/);
-  assert.match(pickerDialog, /initialFocusItem:\s*searchable \? filterField : optionList/);
-  assert.match(pickerDialog, /keyNavigationEnabled:\s*true/);
-  assert.match(pickerDialog, /Keys\.onReturnPressed:\s*dialog\.pickCurrent\(\)/);
-  assert.match(pickerDialog, /event\.key === Qt\.Key_Down[\s\S]*dialog\.moveSelection\(1\)/);
-  assert.match(functionBody(pickerDialog, "pickIndex"), /if \(answered\) return false[\s\S]*answered = true[\s\S]*picked\(value\)[\s\S]*close\(\)/, "a pick is emitted once, before the close that would otherwise cancel");
-  assert.match(pickerDialog, /onClosed:\s*if \(!answered\) cancelled\(\)/);
-  assert.doesNotMatch(functionBody(pickerDialog, "filterItems"), /picked\(/, "filtering must never pick");
-  assert.doesNotMatch(functionBody(pickerDialog, "moveSelection"), /picked\(/, "navigation must never pick");
-  assert.match(pickerDialog, /Accessible\.role:\s*Accessible\.ListItem/);
-  assert.match(pickerDialog, /Accessible\.selected:\s*ListView\.isCurrentItem/);
-  assert.match(pickerDialog, /\(current \? ", current" : ""\)/);
-  assert.match(pickerDialog, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/);
-  assert.match(shell, /PickerDialog\s*\{[\s\S]*returnFocusItem:\s*composer[\s\S]*onPicked:\s*value => root\.pickerPicked\(value\)/);
+
+  assert.match(functionBody(shell, "composerPickerOpen"), /pickerDialogItem\.opened \|\| modelDropUpItem\.opened \|\| thinkingDropUpItem\.opened/);
+  assert.match(functionBody(shell, "openModelPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| bridge\.modelActionPending \|\| bridge\.resourceActionPending \|\| composerPickerOpen\(\)\) return false/);
+  assert.match(functionBody(shell, "invalidateComposerPickers"), /composerPickerGeneration\+\+[\s\S]*modelPickerLoading = false[\s\S]*thinkingPickerLoading = false[\s\S]*modelDropUpItem\.close\(\)[\s\S]*thinkingDropUpItem\.close\(\)/);
+  assert.match(functionBody(shell, "openModelPicker"), /const originTab = bridge\.activeTabId[\s\S]*const generation = \+\+composerPickerGeneration[\s\S]*bridge\.loadModels\(response => root\.modelPickerResult\(originTab, generation, response\)\)/);
+  assert.match(functionBody(shell, "openThinkingPicker"), /const originTab = bridge\.activeTabId[\s\S]*const generation = \+\+composerPickerGeneration[\s\S]*bridge\.loadThinkingLevels\(response => root\.thinkingPickerResult\(originTab, generation, response\)\)/);
+  for (const name of ["modelPickerResult", "thinkingPickerResult"]) {
+    const result = functionBody(shell, name);
+    assert.match(result, /generation !== composerPickerGeneration/);
+    assert.match(result, /!bridge\.ready \|\| bridge\.active \|\| bridge\.activeTabId !== originTab/);
+    assert.match(result, /\.present\(/);
+  }
+  assert.match(shell, /function onReadyChanged\(\)[\s\S]*if \(!bridge\.ready\)[\s\S]*root\.invalidateComposerPickers\(\)/);
+  assert.match(shell, /function onActiveChanged\(\)[\s\S]*if \(bridge\.active\) root\.invalidateComposerPickers\(\)/);
+  assert.match(shell, /function onTabSwitched\(tabId\)[\s\S]*root\.invalidateComposerPickers\(\)/);
+  assert.match(functionBody(shell, "modelPicked"), /bridge\.activeTabId !== modelPickerTabId[\s\S]*modelPickerGeneration !== composerPickerGeneration[\s\S]*bridge\.selectModel\(value\.slice\(0, slash\), value\.slice\(slash \+ 1\)\)/);
+  assert.match(functionBody(shell, "thinkingPicked"), /bridge\.activeTabId !== thinkingPickerTabId[\s\S]*thinkingPickerGeneration !== composerPickerGeneration[\s\S]*bridge\.setThinkingLevel\(value\)/);
+
+  assert.match(dropUpPicker, /^Popup \{/m);
+  assert.match(dropUpPicker, /modal:\s*false/);
+  assert.match(dropUpPicker, /closePolicy:\s*Popup\.CloseOnEscape \| Popup\.CloseOnPressOutside/);
+  assert.match(dropUpPicker, /readonly property real dropUpAvailableHeight:\s*Math\.max\(0, anchorPosition\.y - edgeMargin - anchorGap\)/);
+  assert.match(dropUpPicker, /height:\s*Math\.min\(implicitHeight, maximumHeight, dropUpAvailableHeight\)/);
+  assert.match(dropUpPicker, /x:\s*Math\.max\(edgeMargin, Math\.min\(anchorPosition\.x, boundsItem\.width - width - edgeMargin\)\)/);
+  assert.match(dropUpPicker, /y:\s*Math\.max\(edgeMargin, anchorPosition\.y - height - anchorGap\)/);
+  assert.match(dropUpPicker, /onClosed:[\s\S]*returnFocusItem\.forceActiveFocus\(\)/);
+  assert.match(dropUpPicker, /keyNavigationEnabled:\s*true/);
+  const listKeys = functionBody(dropUpPicker, "handleOptionListKey");
+  assert.match(listKeys, /Qt\.Key_Down[\s\S]*moveSelection\(1\)/);
+  assert.match(listKeys, /Qt\.Key_Up[\s\S]*moveSelection\(-1\)/);
+  assert.match(listKeys, /Qt\.Key_Return \|\| key === Qt\.Key_Enter \|\| key === Qt\.Key_Space[\s\S]*pickCurrent\(\)/);
+  assert.match(dropUpPicker, /Keys\.onPressed:\s*event => \{[\s\S]*popup\.handleOptionListKey\(event\.key\)[\s\S]*event\.accepted = true/);
+  assert.match(dropUpPicker, /currentIndex:\s*popup\.currentIndex/);
+  assert.doesNotMatch(functionBody(dropUpPicker, "filterItems"), /picked\(/, "filtering must never pick");
+  assert.doesNotMatch(functionBody(dropUpPicker, "moveSelection"), /picked\(/, "navigation must never pick");
+  assert.match(functionBody(dropUpPicker, "pickIndex"), /picked\(value\)[\s\S]*close\(\)/);
+  assert.match(dropUpPicker, /Accessible\.role:\s*Accessible\.ListItem/);
+  assert.match(dropUpPicker, /Accessible\.selected:\s*index === popup\.currentIndex/);
+  assert.match(dropUpPicker, /\(current \? ", current" : ""\)/);
+  assert.match(dropUpPicker, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/);
+  assert.match(shell, /DropUpPicker\s*\{[\s\S]*id:\s*modelDropUpItem[\s\S]*anchorItem:\s*modelButton[\s\S]*returnFocusItem:\s*modelButton/);
+  assert.match(shell, /DropUpPicker\s*\{[\s\S]*id:\s*thinkingDropUpItem[\s\S]*anchorItem:\s*thinkingButton[\s\S]*returnFocusItem:\s*thinkingButton/);
   assert.match(shell, /enabled:\s*bridge\.ready && !bridge\.active && !bridge\.modelActionPending/);
   assert.match(fixture, /"get_available_models"/);
   assert.match(fixture, /"cycle_thinking_level"/);
@@ -518,8 +541,13 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(statusSegment, /Flow\s*\{[\s\S]*id:\s*statusFlow/);
   assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, statusFlow\.width\)/);
   assert.match(statusSegment, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*elide:\s*Text\.ElideRight/);
-  assert.match(shell, /active:\s*bridge\.showThinking/);
-  assert.match(shell, /active:\s*bridge\.compactTranscript/);
+  const responseControls = objectBodyContaining(shell, "Flow", "id: responseControls");
+  assert.doesNotMatch(responseControls, /active:\s*bridge\.showThinking|updateSetting\("showThinking"/, "the visible thinking-section toggle leaves the response controls");
+  assert.match(shell, /sequence:\s*"Ctrl\+T"[\s\S]*updateSetting\("showThinking"/, "the thinking visibility shortcut remains");
+  assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-thinking": bridge\.updateSetting\("showThinking"/, "the palette thinking visibility action remains");
+  assert.match(shell, /showThinking:\s*bridge\.showThinking/, "transcript filtering remains wired");
+  assert.match(responseControls, /active:\s*bridge\.compactTranscript/);
+  assert.match(responseControls, /text:\s*bridge\.compactTranscript \? "Compact" : "Detailed"/);
   for (const [name, source] of [["composer", composer], ["searchBar", searchBar], ["toolCard", toolCard], ["row", row], ["statusBadge", statusBadge], ["noticeBar", noticeBar], ["emptyState", emptyState], ["blocks", blocks]]) {
     assert.match(source, /Accessible\.(role|name)/, `${name} should describe itself to assistive technology`);
   }
@@ -537,11 +565,11 @@ test("smoke driver and fixture cover every recorded protocol edge", () => {
     "QT_WEBUI_SMOKE_PROVIDER_ERROR_PRESERVED", "QT_WEBUI_SMOKE_FAILED_RESPONSE_RECOVERED", "QT_WEBUI_SMOKE_DELAYED_ABORT_RECEIPT",
     "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED", "QT_WEBUI_SMOKE_SETTINGS_PERSISTED", "QT_WEBUI_SMOKE_CODE_HIGHLIGHTED", "QT_WEBUI_SMOKE_COMMANDS_LOADED",
     "QT_WEBUI_SMOKE_COMMAND_COMPLETED", "QT_WEBUI_SMOKE_PATH_COMPLETED", "QT_WEBUI_SMOKE_ATTACHMENT_ADDED", "QT_WEBUI_SMOKE_ATTACHMENT_SENT",
-    "QT_WEBUI_SMOKE_DRAFT_PERSISTED", "QT_WEBUI_SMOKE_SEQUENCE_RUN", "QT_WEBUI_SMOKE_SEQUENCE_DELETED", "QT_WEBUI_SMOKE_MODEL_PICKER", "QT_WEBUI_SMOKE_MODEL_SELECTED",
-    "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED", "QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
+    "QT_WEBUI_SMOKE_DRAFT_PERSISTED", "QT_WEBUI_SMOKE_SEQUENCE_RUN", "QT_WEBUI_SMOKE_SEQUENCE_DELETED", "QT_WEBUI_SMOKE_ACTIVE_PICKER_INVALIDATED", "QT_WEBUI_SMOKE_STALE_PICKER_RESULT_REFUSED", "QT_WEBUI_SMOKE_PICKER_LOADING_RECOVERED", "QT_WEBUI_SMOKE_REAL_LIST_ARROW_SELECTION", "QT_WEBUI_SMOKE_MODEL_DROPUP_BOUNDED", "QT_WEBUI_SMOKE_MODEL_DROPUP_FOCUS_RETURNED", "QT_WEBUI_SMOKE_MODEL_PICKER", "QT_WEBUI_SMOKE_MODEL_SELECTED",
+    "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_TAB_PICKER_INVALIDATED", "QT_WEBUI_SMOKE_TAB_PICKER_LOADING_RECOVERED", "QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED", "QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
     "QT_WEBUI_SMOKE_WORKTREE_CREATED", "QT_WEBUI_SMOKE_TAB_CLOSED", "QT_WEBUI_SMOKE_USAGE_LOADED", "QT_WEBUI_SMOKE_PALETTE_ACTION",
     "QT_WEBUI_SMOKE_EVENTS_LISTED", "QT_WEBUI_SMOKE_DIAGNOSTICS_SHOWN",
-    "QT_WEBUI_SMOKE_THINKING_PICKER", "QT_WEBUI_SMOKE_MODEL_CYCLED", "QT_WEBUI_SMOKE_THINKING_CYCLED", "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",
+    "QT_WEBUI_SMOKE_THINKING_DROPUP_BOUNDED", "QT_WEBUI_SMOKE_THINKING_DROPUP_FOCUS_RETURNED", "QT_WEBUI_SMOKE_THINKING_PICKER", "QT_WEBUI_SMOKE_MODEL_CYCLED", "QT_WEBUI_SMOKE_THINKING_CYCLED", "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",
     "QT_WEBUI_SMOKE_RESOURCES_LOADED", "QT_WEBUI_SMOKE_RESOURCE_TOOLS_NONE", "QT_WEBUI_SMOKE_RESOURCE_SKILLS_ENABLED", "QT_WEBUI_SMOKE_RESOURCE_SAMPLING_SAVED", "QT_WEBUI_SMOKE_RESOURCE_UNSUPPORTED_PRESERVED",
     "QT_WEBUI_SMOKE_FAILED_STATE_RECOVERABLE",
     "QT_WEBUI_SMOKE_MISSING_STATE_RECOVERABLE", "QT_WEBUI_SMOKE_RESTART_RECEIPT", "QT_WEBUI_SMOKE_BACKEND_CRASH_OBSERVED",

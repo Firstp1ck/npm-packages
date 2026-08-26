@@ -21,7 +21,7 @@ import {
   stripAnsi,
   validateRequest,
 } from "../lib/backend/protocol.mjs";
-import { normalizeModel, normalizeModels, normalizeThinkingLevels } from "../lib/backend/pi-session.mjs";
+import { normalizeModel, normalizeModels, normalizeModelScope, normalizeThinkingLevels } from "../lib/backend/pi-session.mjs";
 import { createResourceStore, resolveEffective, updateProfile, validateResources } from "../lib/backend/resources.mjs";
 import { applySamplingToPayload, samplingCapabilities, validateSamplingParams } from "../lib/backend/sampling.mjs";
 import { createSettingsStore, defaultSettings } from "../lib/backend/settings.mjs";
@@ -202,6 +202,10 @@ test("Pi helper persists enabled-name session overrides and translates effective
   qtWebUiHelper(pi);
   const ctx = {
     model: { provider: "p", id: "m", api: "openai-completions", reasoning: false },
+    scopedModels: [
+      { model: { provider: "scope", id: "second" }, thinkingLevel: "high" },
+      { model: { provider: "scope", id: "first" } },
+    ],
     thinkingLevel: "off",
     sessionManager: { getBranch: () => [], isPersisted: () => persisted },
     getSystemPromptOptions: () => ({ skills: allSkills }),
@@ -218,6 +222,14 @@ test("Pi helper persists enabled-name session overrides and translates effective
   const answer = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
   assert.deepEqual(answer.data.session, { tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 }, durability: { durable: true, reason: "" } });
   assert.deepEqual(answer.data.skills.enabled, ["review"], "the enabled list is translated to the helper's disabled set");
+  assert.deepEqual(answer.data.scopedModels, {
+    explicit: true,
+    items: [
+      { provider: "scope", id: "second", thinkingLevel: "high" },
+      { provider: "scope", id: "first", thinkingLevel: "" },
+    ],
+    omitted: 0,
+  });
   assert.deepEqual(handlers.get("before_provider_request")({ payload: { model: "m" } }, ctx), { model: "m", temperature: 0.3 }, "unsupported stored values are not serialized");
 
   await apply(JSON.stringify({ requestId: "b", action: "apply", payload: {
@@ -251,6 +263,17 @@ test("Pi helper persists enabled-name session overrides and translates effective
     reason: "This Pi session is ephemeral; resource overrides apply only until it ends.",
   });
   assert.deepEqual(activeTools, [], "an explicitly non-durable override still applies in memory");
+
+  ctx.scopedModels = Array.from({ length: 514 }, (_, index) => ({
+    model: { provider: "scope", id: `model-${index}` },
+    thinkingLevel: index === 0 ? "medium" : undefined,
+  }));
+  await apply(JSON.stringify({ requestId: "e", action: "state" }), ctx);
+  const boundedScope = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length)).data.scopedModels;
+  assert.equal(boundedScope.items.length, 512);
+  assert.equal(boundedScope.omitted, 2);
+  assert.deepEqual(boundedScope.items[0], { provider: "scope", id: "model-0", thinkingLevel: "medium" });
+  assert.deepEqual(boundedScope.items.at(-1), { provider: "scope", id: "model-511", thinkingLevel: "" });
 });
 
 test("model inventories and thinking levels are normalized, deduplicated, and bounded", () => {
@@ -268,6 +291,26 @@ test("model inventories and thinking levels are normalized, deduplicated, and bo
   assert.equal(over.models.length, LIMITS.maxModels);
   assert.equal(over.omitted, 1, "duplicates and malformed entries do not count as omitted");
   assert.deepEqual(normalizeModels(undefined), { models: [], omitted: 0 });
+
+  assert.deepEqual(normalizeModelScope({
+    explicit: true,
+    items: [
+      { provider: "p", id: "second", thinkingLevel: "high" },
+      { provider: "p", id: "first", thinkingLevel: "bogus" },
+      { provider: "p", id: "second", thinkingLevel: "low" },
+      { provider: "", id: "bad" },
+    ],
+    omitted: 2,
+  }), {
+    explicit: true,
+    items: [
+      { provider: "p", id: "second", thinkingLevel: "high" },
+      { provider: "p", id: "first", thinkingLevel: "" },
+    ],
+    omitted: 2,
+  });
+  assert.deepEqual(normalizeModelScope({ explicit: false, items: [{ provider: "p", id: "ignored" }], omitted: 3 }), { explicit: false, items: [], omitted: 0 });
+  assert.equal(normalizeModelScope(undefined), null);
 
   assert.deepEqual(normalizeThinkingLevels(["high", "bogus", "off", "low", "off"]), ["off", "low", "high"]);
   assert.deepEqual(normalizeThinkingLevels([]), ["off"]);

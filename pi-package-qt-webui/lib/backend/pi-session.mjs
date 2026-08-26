@@ -150,6 +150,32 @@ export function normalizeModels(list) {
   return { models, omitted };
 }
 
+export function normalizeModelScope(value) {
+  if (!value || typeof value !== "object" || typeof value.explicit !== "boolean" || !Array.isArray(value.items)) return null;
+  const items = [];
+  const seen = new Set();
+  let omitted = Number.isFinite(value.omitted) && value.omitted > 0 ? Math.floor(value.omitted) : 0;
+  for (const entry of value.items) {
+    if (!entry || typeof entry !== "object") continue;
+    const provider = boundedString(stripAnsi(entry.provider), LIMITS.maxProviderCharacters, "").trim();
+    const id = boundedString(stripAnsi(entry.id), LIMITS.maxModelIdCharacters, "").trim();
+    if (!provider || !id) continue;
+    const identity = `${provider}/${id}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    if (items.length >= LIMITS.maxModels * 2) {
+      omitted += 1;
+      continue;
+    }
+    items.push({
+      provider,
+      id,
+      thinkingLevel: THINKING_LEVELS.includes(entry.thinkingLevel) ? entry.thinkingLevel : "",
+    });
+  }
+  return { explicit: value.explicit, items: value.explicit ? items : [], omitted: value.explicit ? omitted : 0 };
+}
+
 // Only known levels survive, in Pi's canonical order, so the client never shows a level it
 // cannot send back through thinking_set.
 export function normalizeThinkingLevels(list) {
@@ -234,6 +260,7 @@ export function createPiSession({
     helperChecked: false,
     helperPending: new Map(),
     helperSerial: 0,
+    modelScope: null,
   };
 
   function setStatus(kind, text) {
@@ -634,8 +661,11 @@ export function createPiSession({
     if (!pending) return true;
     clearTimeout(pending.timer);
     session.helperPending.delete(parsed.requestId);
-    if (parsed.ok === true) pending.resolve(parsed.data ?? null);
-    else pending.reject(new ProtocolError("pi_error", boundedError(parsed.error || "helper request failed")));
+    if (parsed.ok === true) {
+      const scope = normalizeModelScope(parsed.data?.scopedModels);
+      if (scope) session.modelScope = scope;
+      pending.resolve(parsed.data ?? null);
+    } else pending.reject(new ProtocolError("pi_error", boundedError(parsed.error || "helper request failed")));
     return true;
   }
 
@@ -684,9 +714,54 @@ export function createPiSession({
   async function listModels() {
     requireReady();
     const data = await piCommand({ type: "get_available_models" }, requestTimeouts.models_list, "could not list models");
-    const { models, omitted } = normalizeModels(data ? data.models : []);
+    if (!session.active) {
+      try {
+        await helperState();
+      } catch (error) {
+        if (!session.modelScope || error?.code !== "busy") throw error;
+      }
+    }
+    if (!session.modelScope) throw new ProtocolError("busy", "Model scope is not available until the current run finishes");
+    const catalogue = Array.isArray(data?.models) ? data.models : [];
+    let models;
+    let omitted;
+    let scope;
+    if (session.modelScope.explicit) {
+      const available = new Map();
+      for (const entry of catalogue) {
+        const model = normalizeModel(entry);
+        if (!model) continue;
+        const identity = `${model.provider}/${model.id}`;
+        if (!available.has(identity)) available.set(identity, model);
+      }
+      models = [];
+      let unavailable = 0;
+      let boundedOut = 0;
+      for (const entry of session.modelScope.items) {
+        const model = available.get(`${entry.provider}/${entry.id}`);
+        if (!model) {
+          unavailable += 1;
+          continue;
+        }
+        if (models.length >= LIMITS.maxModels) {
+          boundedOut += 1;
+          continue;
+        }
+        models.push({ ...model, pinnedThinkingLevel: entry.thinkingLevel });
+      }
+      omitted = session.modelScope.omitted + boundedOut;
+      scope = {
+        explicit: true,
+        source: "session",
+        count: session.modelScope.items.length + session.modelScope.omitted,
+        unavailable,
+      };
+    } else {
+      ({ models, omitted } = normalizeModels(catalogue));
+      scope = { explicit: false, source: "available", count: models.length + omitted, unavailable: 0 };
+    }
     if (omitted > 0) emit("notice", { level: "warning", message: `${omitted} configured models are not listed (limit ${LIMITS.maxModels})` });
-    return { models, omitted, current: { provider: session.runtime.provider, modelId: session.runtime.modelId } };
+    return { models, omitted, scope, current: { provider: session.runtime.provider, modelId: session.runtime.modelId } };
   }
 
   async function setModel({ provider, modelId }) {
@@ -1148,6 +1223,7 @@ export function createPiSession({
     session.shuttingDown = false;
     session.ready = false;
     session.active = false;
+    session.modelScope = null;
     session.preserveRunError = false;
     session.compacting = false;
     resetRunState();
@@ -1217,6 +1293,7 @@ export function createPiSession({
     rejectHelperPending("Pi exited");
     cancelDialogs("Pi exited");
     session.helperAvailable = false;
+    session.modelScope = null;
     session.helperChecked = false;
     clearRuntime();
     session.queues = { steering: [], followUp: [] };

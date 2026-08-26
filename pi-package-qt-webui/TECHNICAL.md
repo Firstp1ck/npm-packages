@@ -47,7 +47,7 @@ Development mode does not add a separate file watcher or restart loop. Quickshel
 
 ## The window
 
-A persistent left rail holds Qt WebUI identity, Pi status, workspace tabs, folder actions, session actions, and secondary utilities. The compact main header shows the session name, active workspace directory, and transcript search. A wrapping control strip below the prompt editor shows the active provider and model ID followed by the thinking effort, for example `openai-codex/gpt-5.6-sol` and `thinking high`, alongside resource, compaction, and transcript-view controls. The model and thinking values are buttons: see [Models, thinking effort, and compaction](#models-thinking-effort-and-compaction).
+A persistent left rail holds Qt WebUI identity, Pi status, workspace tabs, folder actions, session actions, and secondary utilities. The compact main header shows the session name, active workspace directory, and transcript search. A wrapping control strip below the prompt editor shows the active provider and model ID followed by the thinking effort, for example `openai-codex/gpt-5.6-sol` and `thinking high`, alongside resource, compaction, and transcript-view controls. The model and thinking controls open bounded lists above the strip; see [Models, thinking effort, and compaction](#models-thinking-effort-and-compaction).
 
 The conversation and prompt editor share a centered maximum width instead of stretching across the full window. Assistant messages use the quiet conversation surface, while your messages and thinking sections remain visually distinct. The prompt editor stays in the normal page flow, with a raised surface and visible focus border, so suggestions, attachments, queues, notices, and status remain usable at the minimum window size.
 
@@ -55,7 +55,7 @@ Status values published by extensions appear in the footer under the prompt edit
 
 The transcript shows your prompts, Pi's answers, thinking sections, and tool cards in the order they arrive. Answers render Markdown headings, paragraphs, bold, italic, strikethrough, inline code, lists, task lists, quotes, tables, horizontal rules, and fenced code blocks with a language label and a **Copy** button. Code in common languages (JavaScript, TypeScript, Python, shell, JSON, YAML, TOML, CSS, HTML, SQL, Rust, Go, C-family, diffs, and more) is syntax highlighted; **Select text** switches a block to a plain selectable view and back, and **Copy** always copies the original code. Blocks longer than 8,192 characters and unknown languages stay plain. Thinking sections appear in a distinct color and can be hidden with **Hide thinking** or `Ctrl+T`. Tool cards show the tool name, a short summary of its arguments, a running/done/failed state, the duration, and the output behind **Show output**.
 
-**Compact** (`Ctrl+Shift+M`) tightens spacing and hides tool argument summaries. **Search** (`Ctrl+F`) matches the original text of messages and tool output, highlights the current match, and moves with **Next**, **Previous**, `Enter`, and `Shift+Enter`. **Copy** on a message copies its original text, not the styled rendering.
+The density control shows the active mode as **Detailed** or **Compact**. Compact mode (`Ctrl+Shift+M`) tightens spacing and hides tool argument summaries; it does not ask Pi for a shorter answer. **Search** (`Ctrl+F`) matches the original text of messages and tool output, highlights the current match, and moves with **Next**, **Previous**, `Enter`, and `Shift+Enter`. **Copy** on a message copies its original text, not the styled rendering.
 
 The transcript follows new output while you are near the bottom and stops following when you scroll up to read history.
 
@@ -101,9 +101,11 @@ The prompt you have not sent yet is saved as a draft shortly after you stop typi
 
 ## Models, thinking effort, and compaction
 
-The model button beneath the prompt editor (or `Ctrl+M`) lists every model configured in Pi with its provider, ID, display name, and capabilities (thinking, images, context size). Type to filter, use the arrow keys, and press `Enter` to switch; the current model is marked. `Ctrl+Shift+P` cycles to the next configured model without opening the list. The thinking button (or `Ctrl+E`) lists the effort levels the current model supports, from `off` to `max`; `Ctrl+Shift+E` cycles through them. When a model does not support thinking, the list contains only `off` and cycling reports that there is nothing to cycle.
+The model control beneath the prompt editor (or `Ctrl+M`) opens a list above the strip. It mirrors the ordered models Pi exposes for the current session through `/scoped-models`, with provider, ID, display name, and capabilities such as thinking, images, and context size. When Pi has no explicit model scope, its documented behavior is that every available model is usable, so the list falls back to the available catalogue. Type to filter, use the arrow keys, and press `Enter` or `Space` to switch; `Escape` closes the list and returns focus to the model control. `Ctrl+Shift+P` cycles to Pi's next model without opening the list.
 
-Changing the model can change the thinking effort, because Pi applies the new model's supported levels; the prompt control strip always shows the values Pi confirmed. Both controls are disabled while Pi is working, and a change that Pi rejects is shown as a notice with Pi's reason. Choosing the entry that is already active does nothing. Up to 256 models are listed; the dialog says how many more are configured.
+The thinking control (or `Ctrl+E`) opens another list above the strip with the effort levels the current model supports, from `off` to `max`; `Ctrl+Shift+E` cycles through them. When a model does not support thinking, the list contains only `off` and cycling reports that there is nothing to cycle. This control sets reasoning effort. Showing or hiding rendered thinking sections remains a separate display setting available through `Ctrl+T` and the command palette.
+
+Changing the model can change the thinking effort, because Pi applies the new model's supported levels; the prompt control strip always shows the values Pi confirmed. Both controls are disabled while Pi is working, and a change that Pi rejects is shown as a notice with Pi's reason. Choosing the entry that is already active does nothing. Up to 256 scoped or available models are listed; the list reports how many more were omitted.
 
 **Resources** (`Ctrl+Shift+R`) opens profiles for enabled tools, enabled skills, and sampling values. First choose the scope:
 
@@ -167,7 +169,7 @@ Everything Pi and its extensions produce is treated as untrusted text. Raw HTML 
 | `Ctrl+Shift+X` | Abort the active run |
 | `Ctrl+F` | Open transcript search; `Enter` next, `Shift+Enter` previous, `Escape` close |
 | `Ctrl+T` | Show or hide thinking sections |
-| `Ctrl+Shift+M` | Toggle compact rows |
+| `Ctrl+Shift+M` | Switch between Detailed and Compact transcript rows |
 | `Ctrl+L` | Focus the prompt editor |
 | `Ctrl+M` | Choose a model; `Ctrl+Shift+P` cycles to the next model |
 | `Ctrl+E` | Choose the thinking effort; `Ctrl+Shift+E` cycles through the levels |

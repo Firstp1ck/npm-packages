@@ -33,6 +33,33 @@ function skillsFrom(options) {
   }));
 }
 
+function scopedModelsFrom(ctx) {
+  const source = Array.isArray(ctx?.scopedModels) ? ctx.scopedModels : [];
+  const items = [];
+  const seen = new Set();
+  let omitted = 0;
+  for (const entry of source) {
+    const model = entry && typeof entry === "object" ? entry.model : null;
+    if (!model || typeof model.provider !== "string" || typeof model.id !== "string") continue;
+    const provider = model.provider.slice(0, 64).trim();
+    const id = model.id.slice(0, 128).trim();
+    if (!provider || !id) continue;
+    const identity = `${provider}/${id}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    if (items.length >= MAX_NAMES) {
+      omitted += 1;
+      continue;
+    }
+    items.push({
+      provider,
+      id,
+      thinkingLevel: typeof entry.thinkingLevel === "string" ? entry.thinkingLevel.slice(0, 32) : "",
+    });
+  }
+  return { explicit: source.length > 0, items, omitted };
+}
+
 export default function qtWebUiHelper(pi) {
   let baselineTools = null;
   let sessionTools = null;
@@ -105,6 +132,7 @@ export default function qtWebUiHelper(pi) {
         all: allSkills,
         enabled: allSkills.filter((skill) => !disabledSkills.has(skill.name)).map((skill) => skill.name),
       },
+      scopedModels: scopedModelsFrom(ctx),
       sampling: {
         applied: { ...appliedSampling },
         api,

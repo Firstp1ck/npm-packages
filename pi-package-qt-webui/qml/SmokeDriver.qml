@@ -78,6 +78,7 @@ Item {
         log("QT_WEBUI_SMOKE_NOTICES " + notices.join(" | "))
         log("QT_WEBUI_SMOKE_TABS active=" + bridge.activeTabId + " count=" + bridge.tabCount + " ready=" + bridge.ready + " status=" + bridge.statusKind + " " + JSON.stringify(bridge.tabs.map(tab => tab.id + ":" + tab.statusKind + ":" + tab.cwd.slice(-20))))
         bridge.showError("Smoke failure: " + reason)
+        bridge.shutdown()
     }
 
     function schedule(action) {
@@ -293,31 +294,52 @@ Item {
             if (bridge.workspaceCwd.indexOf("/other") === -1 || bridge.displayCwd.indexOf("other") === -1) return fail("second tab workspace " + bridge.workspaceCwd)
             if (!bridge.resourcesAvailable && !bridge.resourceLoading && !bridge.refreshResources()) return fail("second tab resource refresh refused")
             waitFor("second tab initial resources", () => bridge.activeTabId === secondTab && bridge.resourcesAvailable && !bridge.resourceLoading, () => {
-            log("QT_WEBUI_SMOKE_TAB_OPENED")
-            bridge.sendPrompt("__QT_WEBUI_IMMEDIATE__", "send")
-            waitFor("second tab prompt", () => !bridge.active && bridge.statusKind === "ready" && lastRowOfKind("user") !== null, () => {
-                const staleBeforeRead = bridge.staleResponses
-                if (!bridge.refreshResources() || !bridge.selectTab(firstTab)) return fail("delayed resource read switch refused")
-                waitFor("stale resource read", () => bridge.activeTabId === firstTab && bridge.staleResponses > staleBeforeRead, () => {
-                    log("QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED")
-                    waitFor("first tab resources", () => bridge.ready && bridge.resourcesAvailable && bridge.resourceState.profiles.session.sampling.top_k === 55, () => {
-                        if (!bridge.selectTab(secondTab)) return fail("second tab reselect refused")
-                        waitFor("second tab resources", () => bridge.activeTabId === secondTab && bridge.ready && bridge.resourcesAvailable && !bridge.resourceLoading, () => {
-                            const staleBeforeMutation = bridge.staleResponses
-                            if (!bridge.setEnabledTools("session", ["write"]) || !bridge.selectTab(firstTab)) return fail("delayed resource mutation switch refused")
-                            waitFor("stale resource mutation", () => bridge.activeTabId === firstTab && bridge.staleResponses > staleBeforeMutation, () => {
-                                log("QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED")
-                                waitFor("first tab replayed", () => bridge.ready && bridge.transcriptModel.count === firstRows && bridge.resourcesAvailable && bridge.resourceState.profiles.session.tools === null, () => {
-                                    if (bridge.workspaceCwd !== bridge.callerCwd) return fail("first tab workspace " + bridge.workspaceCwd)
-                                    if (lastRowOfKind("user") === null || lastRowOfKind("user").text !== "queued follow-up") return fail("first tab rows " + (lastRowOfKind("user") ? lastRowOfKind("user").text : "none"))
-                                    log("QT_WEBUI_SMOKE_TAB_SWITCHED")
-                                    tabsSessions(firstTab)
-                                })
+                tabsPickerInvalidation(firstTab, secondTab, firstRows)
+            })
+        })
+    }
+
+    function tabsPickerInvalidation(firstTab, secondTab, firstRows) {
+        log("QT_WEBUI_SMOKE_TAB_OPENED")
+        if (!shell.openModelPicker() || !shell.modelPickerLoading) return fail("tab-switch model picker did not start loading")
+        const staleGeneration = shell.modelPickerGeneration
+        if (!bridge.selectTab(firstTab)) return fail("picker tab-switch request refused")
+        waitFor("picker tab invalidation", () => bridge.activeTabId === firstTab && bridge.ready, () => {
+            if (shell.modelPickerLoading || shell.thinkingPickerLoading || shell.modelDropUp.opened || shell.thinkingDropUp.opened
+                    || shell.modelPickerGeneration === staleGeneration) return fail("tab switch did not invalidate composer pickers")
+            if (shell.modelPickerResult(secondTab, staleGeneration, { ok: true, data: { models: [], omitted: 0 } }) || shell.modelDropUp.opened) return fail("stale tab model result presented")
+            log("QT_WEBUI_SMOKE_TAB_PICKER_INVALIDATED")
+            log("QT_WEBUI_SMOKE_TAB_PICKER_LOADING_RECOVERED")
+            if (!bridge.selectTab(secondTab)) return fail("picker second tab reselect refused")
+            waitFor("picker second tab restored", () => bridge.activeTabId === secondTab && bridge.ready && bridge.resourcesAvailable && !bridge.resourceLoading, () => {
+                tabsSecondPrompt(firstTab, secondTab, firstRows)
+            })
+        })
+    }
+
+    function tabsSecondPrompt(firstTab, secondTab, firstRows) {
+        bridge.sendPrompt("__QT_WEBUI_IMMEDIATE__", "send")
+        waitFor("second tab prompt", () => !bridge.active && bridge.statusKind === "ready" && lastRowOfKind("user") !== null, () => {
+            const staleBeforeRead = bridge.staleResponses
+            if (!bridge.refreshResources() || !bridge.selectTab(firstTab)) return fail("delayed resource read switch refused")
+            waitFor("stale resource read", () => bridge.activeTabId === firstTab && bridge.staleResponses > staleBeforeRead, () => {
+                log("QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED")
+                waitFor("first tab resources", () => bridge.ready && bridge.resourcesAvailable && bridge.resourceState.profiles.session.sampling.top_k === 55, () => {
+                    if (!bridge.selectTab(secondTab)) return fail("second tab reselect refused")
+                    waitFor("second tab resources", () => bridge.activeTabId === secondTab && bridge.ready && bridge.resourcesAvailable && !bridge.resourceLoading, () => {
+                        const staleBeforeMutation = bridge.staleResponses
+                        if (!bridge.setEnabledTools("session", ["write"]) || !bridge.selectTab(firstTab)) return fail("delayed resource mutation switch refused")
+                        waitFor("stale resource mutation", () => bridge.activeTabId === firstTab && bridge.staleResponses > staleBeforeMutation, () => {
+                            log("QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED")
+                            waitFor("first tab replayed", () => bridge.ready && bridge.transcriptModel.count === firstRows && bridge.resourcesAvailable && bridge.resourceState.profiles.session.tools === null, () => {
+                                if (bridge.workspaceCwd !== bridge.callerCwd) return fail("first tab workspace " + bridge.workspaceCwd)
+                                if (lastRowOfKind("user") === null || lastRowOfKind("user").text !== "queued follow-up") return fail("first tab rows " + (lastRowOfKind("user") ? lastRowOfKind("user").text : "none"))
+                                log("QT_WEBUI_SMOKE_TAB_SWITCHED")
+                                tabsSessions(firstTab)
                             })
                         })
                     })
                 })
-            })
             })
         })
     }
@@ -452,19 +474,52 @@ Item {
     // points, cycle both values, then compact. Each step waits for the bridge state it changes.
     function startModels() {
         phase = "models"
-        modelStep = "picker"
+        modelStep = "active-popup"
         if (!shell.openModelPicker()) return fail("model picker request refused")
     }
 
+    function checkActiveModelPicker() {
+        const picker = shell.modelDropUp
+        if (!picker.opened) return fail("model drop-up did not open before active invalidation")
+        const popupGeneration = shell.modelPickerGeneration
+        const originTab = bridge.activeTabId
+        bridge.active = true
+        if (picker.opened || shell.modelPickerLoading || shell.thinkingPickerLoading || shell.modelPickerGeneration === popupGeneration) return fail("active run did not invalidate open composer pickers")
+        bridge.active = false
+        if (shell.modelPickerResult(originTab, popupGeneration, { ok: true, data: { models: [], omitted: 0 } }) || picker.opened) return fail("stale model result presented after active invalidation")
+        log("QT_WEBUI_SMOKE_ACTIVE_PICKER_INVALIDATED")
+        log("QT_WEBUI_SMOKE_STALE_PICKER_RESULT_REFUSED")
+
+        modelStep = "pending-active"
+        if (!shell.openModelPicker() || !shell.modelPickerLoading) return fail("pending model picker was not loading")
+        const pendingGeneration = shell.modelPickerGeneration
+        bridge.active = true
+        if (shell.modelPickerLoading || shell.thinkingPickerLoading || picker.opened || shell.modelPickerGeneration === pendingGeneration) return fail("active run did not recover picker loading flags")
+        bridge.active = false
+        if (shell.modelPickerResult(originTab, pendingGeneration, { ok: true, data: { models: [], omitted: 0 } }) || picker.opened) return fail("pending stale model result presented")
+        log("QT_WEBUI_SMOKE_PICKER_LOADING_RECOVERED")
+    }
+
+    function startFinalModelPicker() {
+        modelStep = "picker"
+        if (!shell.openModelPicker()) fail("final model picker request refused")
+    }
+
     function checkModelPicker() {
-        const picker = shell.pickerDialog
-        if (!picker.opened || picker.items.length !== 3) return fail("model picker items " + picker.items.length)
+        const picker = shell.modelDropUp
+        if (!picker.opened || picker.items.length !== 3) return fail("model drop-up items " + picker.items.length)
         if (picker.items[0].current !== true) return fail("current model not marked")
-        picker.setFilter("fast")
-        if (picker.visibleCount !== 1) return fail("model filter " + picker.visibleCount)
+        if (!picker.focusedOnOpen) return fail("model drop-up focus")
+        if (picker.x < picker.edgeMargin || picker.x + picker.width > picker.boundsItem.width - picker.edgeMargin + 0.5
+                || picker.y < picker.edgeMargin || picker.y + picker.height > picker.anchorPosition.y - picker.anchorGap + 0.5) return fail("model drop-up bounds x=" + picker.x + " y=" + picker.y + " w=" + picker.width + " h=" + picker.height + " bounds=" + picker.boundsItem.width + "x" + picker.boundsItem.height + " anchor=" + picker.anchorPosition.x + "," + picker.anchorPosition.y)
+        log("QT_WEBUI_SMOKE_MODEL_DROPUP_BOUNDED")
+        if (picker.currentIndex !== 0) return fail("initial model selection index " + picker.currentIndex)
+        picker.focusOptions()
+        if (!picker.optionsFocused || !picker.handleOptionListKey(Qt.Key_Down) || picker.currentIndex !== 1) return fail("model list arrow selection " + picker.currentIndex)
+        log("QT_WEBUI_SMOKE_REAL_LIST_ARROW_SELECTION")
         log("QT_WEBUI_SMOKE_MODEL_PICKER")
         modelStep = "select"
-        if (!picker.pickCurrent()) return fail("model pick refused")
+        if (!picker.handleOptionListKey(Qt.Key_Return)) return fail("model list Enter was not handled")
     }
 
     // Runtime events arrive before the request response, so every step waits until the bridge
@@ -472,9 +527,13 @@ Item {
     function advanceModels() {
         if (phase !== "models" || bridge.modelActionPending) return
         if (modelStep === "select" && bridge.currentModelId === "fixture-fast" && bridge.currentThinkingLevel === "off") {
-            log("QT_WEBUI_SMOKE_MODEL_SELECTED")
-            modelStep = "thinking-picker"
-            if (!shell.openThinkingPicker()) fail("thinking picker request refused")
+            modelStep = "model-focus"
+            waitFor("model drop-up focus return", () => shell.modelDropUp.returnFocusItem.activeFocus, () => {
+                log("QT_WEBUI_SMOKE_MODEL_DROPUP_FOCUS_RETURNED")
+                log("QT_WEBUI_SMOKE_MODEL_SELECTED")
+                modelStep = "thinking-picker"
+                if (!shell.openThinkingPicker()) fail("thinking picker request refused")
+            })
         } else if (modelStep === "cycle-model" && bridge.currentModelId === "other-model") {
             log("QT_WEBUI_SMOKE_MODEL_CYCLED")
             modelStep = "cycle-thinking"
@@ -487,13 +546,21 @@ Item {
     }
 
     function checkThinkingPicker() {
-        const picker = shell.pickerDialog
+        const picker = shell.thinkingDropUp
         if (!picker.opened || picker.items.length !== 1 || picker.items[0].value !== "off" || picker.items[0].current !== true) return fail("thinking picker for a model without thinking")
+        if (!picker.focusedOnOpen) return fail("thinking drop-up focus")
+        if (picker.x < picker.edgeMargin || picker.x + picker.width > picker.boundsItem.width - picker.edgeMargin + 0.5
+                || picker.y < picker.edgeMargin || picker.y + picker.height > picker.anchorPosition.y - picker.anchorGap + 0.5) return fail("thinking drop-up bounds x=" + picker.x + " y=" + picker.y + " w=" + picker.width + " h=" + picker.height + " bounds=" + picker.boundsItem.width + "x" + picker.boundsItem.height + " anchor=" + picker.anchorPosition.x + "," + picker.anchorPosition.y)
+        log("QT_WEBUI_SMOKE_THINKING_DROPUP_BOUNDED")
         log("QT_WEBUI_SMOKE_THINKING_PICKER")
-        modelStep = "cycle-model"
+        modelStep = "thinking-focus"
         // Picking the current level closes the picker; the bridge treats it as a no-op.
         if (!picker.pickValue("off") || picker.opened) return fail("thinking pick did not close the picker")
-        if (!bridge.cycleModel()) fail("model cycle refused")
+        waitFor("thinking drop-up focus return", () => picker.returnFocusItem.activeFocus, () => {
+            log("QT_WEBUI_SMOKE_THINKING_DROPUP_FOCUS_RETURNED")
+            modelStep = "cycle-model"
+            if (!bridge.cycleModel()) fail("model cycle refused")
+        })
     }
 
     // Resource phase: drive the real dialog through all three scopes. Tools intentionally select
@@ -610,6 +677,12 @@ Item {
                 break
             case "tabs":
                 driver.startTabs()
+                break
+            case "check-active-model-picker":
+                driver.checkActiveModelPicker()
+                break
+            case "start-final-model-picker":
+                driver.startFinalModelPicker()
                 break
             case "check-model-picker":
                 driver.checkModelPicker()
@@ -785,7 +858,10 @@ Item {
         }
 
         function onModelsLoaded(data) {
-            if (driver.phase === "models" && driver.modelStep === "picker") driver.schedule("check-model-picker")
+            if (driver.phase !== "models") return
+            if (driver.modelStep === "active-popup") driver.schedule("check-active-model-picker")
+            else if (driver.modelStep === "pending-active") driver.schedule("start-final-model-picker")
+            else if (driver.modelStep === "picker") driver.schedule("check-model-picker")
         }
 
         function onThinkingLevelsLoaded(data) {

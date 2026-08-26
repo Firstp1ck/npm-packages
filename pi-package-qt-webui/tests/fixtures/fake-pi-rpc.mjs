@@ -69,6 +69,27 @@ function thinkingLevelsFor(model) {
   return model.reasoning ? ["off", "minimal", "low", "medium", "high"] : ["off"];
 }
 
+function scopedModelsForFixture() {
+  if (process.env.QT_WEBUI_FIXTURE_MODEL_SCOPE === "explicit") {
+    return {
+      explicit: true,
+      items: [
+        { provider: "other-provider", id: "other-model", thinkingLevel: "medium" },
+        { provider: "fixture-provider", id: "fixture-model", thinkingLevel: "" },
+      ],
+      omitted: 0,
+    };
+  }
+  if (process.env.QT_WEBUI_FIXTURE_MODEL_SCOPE === "many") {
+    return {
+      explicit: true,
+      items: Array.from({ length: 300 }, (_, index) => ({ provider: "bulk", id: `bulk-${299 - index}`, thinkingLevel: "" })),
+      omitted: 0,
+    };
+  }
+  return { explicit: false, items: [], omitted: 0 };
+}
+
 const MARKDOWN_SAMPLE = [
   "# Heading one",
   "",
@@ -509,6 +530,7 @@ function handle(command) {
         },
         tools: { all: HELPER_TOOLS.map((entry) => ({ ...entry, enabled: activeTools.includes(entry.name) })), active: activeTools, baseline: HELPER_TOOLS.map((entry) => entry.name) },
         skills: { all: HELPER_SKILLS, enabled: enabledSkills },
+        scopedModels: scopedModelsForFixture(),
         sampling: { applied: structuredClone(helperEffective.sampling || {}), api, capabilities, thinkingActive: currentModel.reasoning === true && currentThinkingLevel !== "off" },
       };
       answer({ requestId: request.requestId, ok: true, data });
