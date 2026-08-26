@@ -11,13 +11,14 @@ test("package identity, command, dependency, and runtime requirements are declar
   assert.equal(manifest.name, "@firstpick/pi-package-qt-webui");
   assert.equal(manifest.type, "module");
   assert.equal(manifest.bin?.["qt-webui"], "./bin/qt-webui.mjs");
+  assert.deepEqual(manifest.pi?.extensions, ["./extensions/qt-webui-start.mjs"]);
   assert.match(manifest.dependencies?.["@earendil-works/pi-coding-agent"] ?? "", /^\^0\.84\./);
   assert.equal(manifest.engines?.node, ">=22.19.0");
   assert.deepEqual(manifest.os, ["linux"]);
 });
 
-test("package allowlist predeclares W2 QML and includes W1 runtime and documentation", () => {
-  for (const entry of ["bin", "lib", "qml", "tests", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]) {
+test("package allowlist includes the Pi extension, runtime, QML, tests, and documentation", () => {
+  for (const entry of ["bin", "extensions", "lib", "qml", "tests", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]) {
     assert(manifest.files.includes(entry), `package files should include ${entry}`);
   }
 });

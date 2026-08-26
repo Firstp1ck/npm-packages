@@ -20,7 +20,13 @@ The launcher defaults `QT_NO_XDG_DESKTOP_PORTAL=1` for Quickshell because this a
 
 ## Install and commands
 
-Install the standalone command with npm:
+Install the Pi package to make the start command available inside Pi:
+
+```bash
+pi install npm:@firstpick/pi-package-qt-webui
+```
+
+Alternatively, install the standalone terminal command:
 
 ```bash
 npm install -g @firstpick/pi-package-qt-webui
@@ -28,11 +34,14 @@ npm install -g @firstpick/pi-package-qt-webui
 
 | Command | Result |
 |---|---|
-| `qt-webui` | Opens Qt WebUI for the current directory. |
+| `/qt-webui-start` | Inside Pi, starts Qt WebUI for Pi's current working directory and returns immediately. |
+| `qt-webui` | Opens Qt WebUI for the current directory after a global npm installation. |
 | `qt-webui dev` | Opens the packaged QML source and lets Quickshell reload it when files change. |
 | `npm run dev` | Opens development mode from a source checkout. |
 
-The launcher accepts no other options. Start it after changing to the project directory you want Pi to use. Spaces in directory names are supported.
+The Pi package registers `/qt-webui-start` directly, so its npm-managed `.bin` directory does not need to be on `PATH`. Start a new Pi process after installation, change to the intended project before starting Pi, and enter `/qt-webui-start`. Each invocation starts another window. A launch failure, such as a missing `quickshell` executable, appears as a Pi notification.
+
+The terminal launcher and the Pi command accept no options. Spaces in directory names are supported.
 
 Development mode does not add a separate file watcher or restart loop. Quickshell watches the selected source configuration and performs its native reload when QML changes.
 

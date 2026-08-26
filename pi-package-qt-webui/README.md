@@ -20,18 +20,34 @@ Use Pi in a Linux desktop window built with Quickshell and Qt Quick.
 
 ## Install
 
+Install it as a Pi package to add the `/qt-webui-start` command:
+
+```bash
+pi install npm:@firstpick/pi-package-qt-webui
+```
+
+For a standalone terminal command instead, install it globally with npm:
+
 ```bash
 npm install -g @firstpick/pi-package-qt-webui
 ```
 
 ## How to use it
 
-Open a Wayland session, change to the project you want Pi to work on, and start the window:
+After installing the Pi package, start Pi in the project you want to open:
 
 ```bash
 cd ~/projects/example
-qt-webui
+pi
 ```
+
+Then enter this command inside Pi:
+
+```text
+/qt-webui-start
+```
+
+The command starts Qt WebUI for Pi's current working directory and returns immediately, leaving Pi open. With the global npm installation, run `qt-webui` from the project directory instead.
 
 Choose a workspace tab from the left rail, then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). While Pi is working, `Enter` sends a steering message and `Alt+Enter` queues a follow-up; the **Abort** button stops the run, and an animated indicator under the last entry shows that Pi is still working. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
 

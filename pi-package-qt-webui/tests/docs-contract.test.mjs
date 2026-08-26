@@ -14,7 +14,8 @@ test("README has the package guide sections, exact install name, requirements, a
     assert(readme.includes(heading), `README should include ${heading}`);
   }
   assert.match(readme, /npm install -g @firstpick\/pi-package-qt-webui/);
-  assert.doesNotMatch(readme, /pi install npm:@firstpick\/pi-package-qt-webui/);
+  assert.match(readme, /pi install npm:@firstpick\/pi-package-qt-webui/);
+  assert.match(readme, /\/qt-webui-start/);
   assert.match(readme, /npm run dev/);
   assert.match(readme, /Quickshell 0\.3 or newer/);
   assert.match(readme, /Linux.*Wayland|Wayland.*Linux/s);
@@ -28,7 +29,8 @@ test("technical reference remains user-facing", () => {
   assert.match(technical, /Linux on a Wayland desktop session/);
   assert.match(technical, /`qt-webui`/);
   assert.match(technical, /npm install -g @firstpick\/pi-package-qt-webui/);
-  assert.doesNotMatch(technical, /pi install npm:@firstpick\/pi-package-qt-webui/);
+  assert.match(technical, /pi install npm:@firstpick\/pi-package-qt-webui/);
+  assert.match(technical, /`\/qt-webui-start`/);
   assert.match(technical, /`qt-webui dev`/);
   assert.match(technical, /`npm run dev`/);
   assert.match(technical, /provider and model ID followed by the thinking effort/i);

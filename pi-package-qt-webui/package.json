@@ -19,6 +19,11 @@
     "wayland",
     "desktop"
   ],
+  "pi": {
+    "extensions": [
+      "./extensions/qt-webui-start.mjs"
+    ]
+  },
   "bin": {
     "qt-webui": "./bin/qt-webui.mjs"
   },
@@ -32,6 +37,7 @@
   },
   "files": [
     "bin",
+    "extensions",
     "lib",
     "qml",
     "tests",
