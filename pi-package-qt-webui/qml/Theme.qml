@@ -47,6 +47,44 @@ QtObject {
     readonly property color thinkingBorder: dark ? "#3730a3" : "#c7d2fe"
     readonly property color dialogOverlay: dark ? "#aa020617" : "#88334155"
 
+    // Syntax tokens sit on the code background, which is dark in both schemes, so the two
+    // palettes differ only in contrast against the slightly different code surfaces.
+    readonly property color syntaxKeyword: dark ? "#c4b5fd" : "#d8b4fe"
+    readonly property color syntaxString: dark ? "#86efac" : "#bbf7d0"
+    readonly property color syntaxComment: dark ? "#94a3b8" : "#a1a1aa"
+    readonly property color syntaxNumber: dark ? "#fdba74" : "#fed7aa"
+    readonly property color syntaxConstant: dark ? "#fda4af" : "#fecdd3"
+    readonly property color syntaxType: dark ? "#67e8f9" : "#a5f3fc"
+    readonly property color syntaxFunction: dark ? "#93c5fd" : "#bfdbfe"
+    readonly property color syntaxAttribute: dark ? "#fde68a" : "#fef08a"
+    readonly property color syntaxTag: dark ? "#f9a8d4" : "#fbcfe8"
+    readonly property color syntaxVariable: dark ? "#fca5a5" : "#fecaca"
+    readonly property color syntaxOperator: dark ? "#cbd5e1" : "#e2e8f0"
+    readonly property color syntaxPunctuation: dark ? "#94a3b8" : "#cbd5e1"
+    readonly property color diffAdded: dark ? "#052e16" : "#dcfce7"
+    readonly property color diffRemoved: dark ? "#450a0a" : "#fee2e2"
+    readonly property color diffAddedForeground: dark ? "#86efac" : "#166534"
+    readonly property color diffRemovedForeground: dark ? "#fca5a5" : "#991b1b"
+    readonly property color diffHunk: dark ? "#1e3a8a" : "#dbeafe"
+
+    function syntaxColor(kind) {
+        switch (kind) {
+        case "keyword": return syntaxKeyword
+        case "string": return syntaxString
+        case "comment": return syntaxComment
+        case "number": return syntaxNumber
+        case "constant": return syntaxConstant
+        case "type": return syntaxType
+        case "function": return syntaxFunction
+        case "attribute": return syntaxAttribute
+        case "tag": return syntaxTag
+        case "variable": return syntaxVariable
+        case "operator": return syntaxOperator
+        case "punctuation": return syntaxPunctuation
+        default: return codeForeground
+        }
+    }
+
     readonly property color readyBackground: dark ? "#052e16" : "#dcfce7"
     readonly property color readyBorder: dark ? "#166534" : "#86efac"
     readonly property color readyForeground: dark ? "#86efac" : "#166534"

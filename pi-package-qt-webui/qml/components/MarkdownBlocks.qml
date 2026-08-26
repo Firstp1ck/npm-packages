@@ -11,6 +11,7 @@ Column {
     required property QtObject theme
     property string blocksJson: "[]"
     property bool compact: false
+    property bool highlight: true
     readonly property var blocks: parseBlocks(blocksJson)
 
     signal linkActivated(string link)
@@ -25,6 +26,19 @@ Column {
         } catch (error) {
             return []
         }
+    }
+
+    // Tokens are [kind, escapedText] pairs from the backend; only the color comes from the theme.
+    // <pre> keeps newlines and indentation, which StyledText would otherwise collapse.
+    function styledCode(tokens) {
+        let markup = "<pre>"
+        for (const token of tokens) {
+            const kind = String(token[0])
+            const text = String(token[1])
+            if (kind === "text") markup += text
+            else markup += "<font color=\"" + String(theme.syntaxColor(kind)) + "\">" + text + "</font>"
+        }
+        return markup + "</pre>"
     }
 
     function headingSize(level) {
@@ -109,7 +123,13 @@ Column {
     Component {
         id: codeComponent
         Rectangle {
+            id: codeBlock
             readonly property var block: parent.block
+            readonly property bool hasTokens: Array.isArray(block.tokens) && block.tokens.length > 0
+            // Highlighted code is styled text without selection; "Select text" swaps in the plain
+            // editor so the user can select, then swaps back. Copy always uses the original text.
+            property bool selectable: false
+            readonly property bool highlighted: root.highlight && hasTokens && !selectable
             width: parent.width
             implicitHeight: codeColumn.implicitHeight + 16
             radius: 8
@@ -135,6 +155,15 @@ Column {
                         elide: Text.ElideRight
                     }
                     AppButton {
+                        visible: root.highlight && codeBlock.hasTokens
+                        theme: root.theme
+                        variant: "ghost"
+                        active: codeBlock.selectable
+                        text: codeBlock.selectable ? "Highlight" : "Select text"
+                        accessibleName: codeBlock.selectable ? "Show highlighted code" : "Show selectable plain code"
+                        onClicked: codeBlock.selectable = !codeBlock.selectable
+                    }
+                    AppButton {
                         theme: root.theme
                         variant: "ghost"
                         text: "Copy"
@@ -143,8 +172,22 @@ Column {
                     }
                 }
 
+                Label {
+                    Layout.fillWidth: true
+                    visible: codeBlock.highlighted
+                    text: codeBlock.highlighted ? root.styledCode(block.tokens) : ""
+                    textFormat: Text.StyledText
+                    wrapMode: Text.WrapAnywhere
+                    color: root.theme.codeForeground
+                    font.family: root.theme.monospaceFamily
+                    font.pixelSize: root.compact ? 12 : 13
+                    Accessible.role: Accessible.StaticText
+                    Accessible.name: "Highlighted code block"
+                }
+
                 TextEdit {
                     Layout.fillWidth: true
+                    visible: !codeBlock.highlighted
                     text: block.text || ""
                     textFormat: TextEdit.PlainText
                     readOnly: true
@@ -202,6 +245,7 @@ Column {
     Component {
         id: tableComponent
         Flickable {
+            id: tableFlick
             readonly property var block: parent.block
             readonly property int columnCount: Math.max(1, (block.header || []).length)
             width: parent.width
@@ -213,7 +257,8 @@ Column {
 
             GridLayout {
                 id: grid
-                columns: parent.columnCount
+                // The GridLayout's parent is the Flickable's contentItem, so refer to the Flickable by id.
+                columns: tableFlick.columnCount
                 rowSpacing: 0
                 columnSpacing: 0
 

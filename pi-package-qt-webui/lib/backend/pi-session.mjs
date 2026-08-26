@@ -1,7 +1,18 @@
+import { composeMessageWithTexts } from "./attachments.mjs";
 import { attachJsonlReader } from "./jsonl.mjs";
 import { renderMarkdown } from "./markdown.mjs";
 import { LIMITS, ProtocolError, THINKING_LEVELS, boundedError, boundedString, stripAnsi } from "./protocol.mjs";
 import { hasExited, spawnOwnedProcess, terminateProcessTree } from "./process-tree.mjs";
+import { rowsFromHistory } from "./transcript.mjs";
+import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
+import path from "node:path";
+
+// The Pi-side helper extension answers tool, skill, and sampling requests through a command
+// prompt and a prefixed notify; see lib/pi-extension/qt-webui-helper.mjs.
+export const HELPER_COMMAND = "qt-webui-helper";
+export const HELPER_RESPONSE_PREFIX = "__QT_WEBUI_HELPER__";
+export const HELPER_EXTENSION_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "pi-extension", "qt-webui-helper.mjs");
 
 // Owns exactly one Pi RPC child and translates its raw records into bounded, typed events.
 // The QML client never sees a raw Pi record. All state transitions that used to live in
@@ -147,6 +158,32 @@ export function normalizeThinkingLevels(list) {
   return levels.length > 0 ? levels : ["off"];
 }
 
+// Slash commands from get_commands: extension commands, prompt templates, and skills. Only the
+// fields the composer needs survive, each bounded, and duplicates collapse on the name.
+export function normalizeCommands(list) {
+  const commands = [];
+  const seen = new Set();
+  let omitted = 0;
+  for (const entry of Array.isArray(list) ? list : []) {
+    if (!entry || typeof entry !== "object" || typeof entry.name !== "string") continue;
+    const name = boundedString(stripAnsi(entry.name), LIMITS.maxCommandNameCharacters, "").trim();
+    if (name.length === 0 || /\s/.test(name) || seen.has(name)) continue;
+    seen.add(name);
+    if (commands.length >= LIMITS.maxCommands) {
+      omitted += 1;
+      continue;
+    }
+    commands.push({
+      name,
+      description: boundedString(stripAnsi(entry.description), LIMITS.maxCommandDescriptionCharacters, "").trim(),
+      source: ["extension", "prompt", "skill"].includes(entry.source) ? entry.source : "extension",
+      location: ["user", "project", "path"].includes(entry.location) ? entry.location : "",
+      path: typeof entry.path === "string" && entry.path.startsWith("/") && entry.path.length <= LIMITS.maxPathCharacters ? entry.path : "",
+    });
+  }
+  return { commands, omitted };
+}
+
 export function createPiSession({
   nodeExecutable,
   piCliEntry,
@@ -160,6 +197,7 @@ export function createPiSession({
   shutdownGraceMs = LIMITS.shutdownGraceMs,
   requestTimeouts = LIMITS.requestTimeoutMs,
   now = () => Date.now(),
+  helperExtensionPath = HELPER_EXTENSION_PATH,
 }) {
   const session = {
     child: null,
@@ -188,6 +226,13 @@ export function createPiSession({
     dialogOrder: [],
     runtime: { provider: "", modelId: "", thinkingLevel: "", sessionId: "", sessionName: "" },
     compacting: false,
+    lastError: "",
+    queues: { steering: [], followUp: [] },
+    statusRecords: new Map(),
+    helperAvailable: false,
+    helperChecked: false,
+    helperPending: new Map(),
+    helperSerial: 0,
   };
 
   function setStatus(kind, text) {
@@ -198,10 +243,12 @@ export function createPiSession({
 
   function showError(message) {
     setStatus("error", "Error");
-    emit("pi.error", { message: boundedError(message) });
+    session.lastError = boundedError(message);
+    emit("pi.error", { message: session.lastError });
   }
 
   function clearError() {
+    session.lastError = "";
     emit("pi.error", { message: "" });
   }
 
@@ -344,14 +391,26 @@ export function createPiSession({
 
   // ---- prompt lifecycle -----------------------------------------------------------------
 
-  async function prompt({ message, mode }) {
+  // Throws the same errors prompt() would, so callers can consume attachments only after the
+  // prompt is known to be acceptable.
+  function assertPromptAllowed(mode) {
     if (!session.child || hasExited(session.child) || !session.ready) throw new ProtocolError("not_ready", "Pi is not ready");
-    const text = message.trim();
     if (mode === "send" && session.active) throw new ProtocolError("busy", "Pi is already running; use steer or follow-up");
+  }
+
+  // `attachments` is { images: ImageContent[], texts: [{name, text}], names: string[] } prepared by
+  // the attachment store; text attachments become labelled fenced blocks in the message and
+  // images travel in Pi's `images` field.
+  async function prompt({ message, mode, attachments = null }) {
+    assertPromptAllowed(mode);
+    const texts = attachments && Array.isArray(attachments.texts) ? attachments.texts : [];
+    const images = attachments && Array.isArray(attachments.images) ? attachments.images : [];
+    const names = attachments && Array.isArray(attachments.names) ? attachments.names : [];
+    const text = composeMessageWithTexts(message.trim(), texts);
     if (mode !== "send" && !session.active) mode = "send";
     session.messageSerial += 1;
     const messageId = `u${session.messageSerial}`;
-    emit("message.user", { messageId, text: boundedString(text, LIMITS.maxMessageCharacters), mode });
+    emit("message.user", { messageId, text: boundedString(message.trim(), LIMITS.maxMessageCharacters), mode, attachments: names.map((name) => boundedString(name, LIMITS.maxAttachmentNameCharacters)) });
 
     if (mode === "send") {
       resetRunState();
@@ -364,6 +423,7 @@ export function createPiSession({
     const command = mode === "send" ? { type: "prompt", message: text }
       : mode === "steer" ? { type: "steer", message: text }
         : { type: "follow_up", message: text };
+    if (images.length > 0) command.images = images;
     let response;
     try {
       response = await sendCommand(command, { timeoutMs: requestTimeouts.prompt });
@@ -396,6 +456,169 @@ export function createPiSession({
     showError(response.error || "prompt failed");
     requestState().catch(() => {});
     throw new ProtocolError("pi_error", response.error || "prompt failed");
+  }
+
+  // A saved sequence: the first entry is sent as a prompt and every later entry is queued as a
+  // follow-up, so Pi runs them one after another with its own follow-up semantics.
+  async function runSequence({ sequenceId, entries }) {
+    assertPromptAllowed("send");
+    const first = await prompt({ message: entries[0], mode: "send" });
+    let queued = 0;
+    for (const entry of entries.slice(1)) {
+      await prompt({ message: entry, mode: "followUp" });
+      queued += 1;
+    }
+    return { sequenceId, messageId: first.messageId, sent: 1, queued };
+  }
+
+  // ---- sessions: resume, new, rename, history ------------------------------------------
+
+  // Replaces the client transcript with Pi's persisted history for the current session and
+  // says when the last exchange looks interrupted instead of presenting it as complete.
+  async function loadHistory() {
+    const data = await piCommand({ type: "get_messages" }, requestTimeouts.session_switch, "could not read the session history");
+    const history = rowsFromHistory(data ? data.messages : []);
+    emit("transcript.reset", {});
+    for (const row of history.rows) emit("transcript.row", { row });
+    if (history.interrupted) emit("notice", { level: "warning", message: "The previous run in this session did not complete; the last request may need to be sent again" });
+    return { rows: history.rows.length, messageCount: history.messageCount, interrupted: history.interrupted };
+  }
+
+  async function switchSession(sessionPath) {
+    requireIdle("switching sessions");
+    const data = await piCommand({ type: "switch_session", sessionPath }, requestTimeouts.session_switch, "could not switch sessions");
+    if (data && data.cancelled === true) throw new ProtocolError("pi_error", "An extension cancelled the session switch");
+    cancelDialogs("Session switched");
+    session.queues = { steering: [], followUp: [] };
+    emit("queue.update", { steering: [], followUp: [] });
+    clearError();
+    const history = await loadHistory();
+    await requestState();
+    return { sessionFile: session.runtime.sessionFile, sessionName: session.runtime.sessionName, ...history };
+  }
+
+  async function newSession() {
+    requireIdle("starting a new session");
+    const data = await piCommand({ type: "new_session" }, requestTimeouts.session_new, "could not start a new session");
+    if (data && data.cancelled === true) throw new ProtocolError("pi_error", "An extension cancelled the new session");
+    cancelDialogs("New session");
+    session.queues = { steering: [], followUp: [] };
+    emit("queue.update", { steering: [], followUp: [] });
+    clearError();
+    emit("transcript.reset", {});
+    await requestState();
+    return { sessionFile: session.runtime.sessionFile, sessionName: session.runtime.sessionName };
+  }
+
+  async function setSessionName(name) {
+    requireReady();
+    const clean = boundedString(stripAnsi(name), LIMITS.maxRuntimeInfoCharacters, "").trim();
+    await piCommand({ type: "set_session_name", name: clean }, requestTimeouts.tab_rename, "could not rename the session");
+    session.runtime = { ...session.runtime, sessionName: clean };
+    emit("pi.runtime", session.runtime);
+    return { sessionName: clean };
+  }
+
+  // Token, cost, and context-window usage from get_session_stats, each bounded to finite numbers.
+  async function sessionStats() {
+    requireReady();
+    const data = await piCommand({ type: "get_session_stats" }, requestTimeouts.session_stats, "could not read session statistics");
+    const number = (value) => (Number.isFinite(value) && value >= 0 ? value : 0);
+    const tokens = data && data.tokens && typeof data.tokens === "object" ? data.tokens : {};
+    const context = data && data.contextUsage && typeof data.contextUsage === "object" ? data.contextUsage : null;
+    return {
+      userMessages: number(data?.userMessages),
+      assistantMessages: number(data?.assistantMessages),
+      toolCalls: number(data?.toolCalls),
+      totalMessages: number(data?.totalMessages),
+      tokens: { input: number(tokens.input), output: number(tokens.output), cacheRead: number(tokens.cacheRead), cacheWrite: number(tokens.cacheWrite), total: number(tokens.total) },
+      cost: number(data?.cost),
+      context: context ? { tokens: Number.isFinite(context.tokens) ? context.tokens : null, contextWindow: number(context.contextWindow), percent: Number.isFinite(context.percent) ? Math.max(0, Math.min(100, context.percent)) : null } : null,
+    };
+  }
+
+  async function listCommands() {
+    requireReady();
+    const data = await piCommand({ type: "get_commands" }, requestTimeouts.commands_list, "could not list commands");
+    const { commands, omitted } = normalizeCommands(data ? data.commands : []);
+    session.helperAvailable = commands.some((command) => command.name === HELPER_COMMAND);
+    session.helperChecked = true;
+    if (omitted > 0) emit("notice", { level: "warning", message: `${omitted} commands are not listed (limit ${LIMITS.maxCommands})` });
+    // The helper is internal: it never appears in completion or the palette.
+    return { commands: commands.filter((command) => command.name !== HELPER_COMMAND), omitted };
+  }
+
+  // ---- helper extension transport -------------------------------------------------------
+
+  async function ensureHelper() {
+    requireReady();
+    if (!session.helperChecked) await listCommands();
+    if (!session.helperAvailable) throw new ProtocolError("unavailable", "The Qt WebUI helper extension is not loaded in this Pi session");
+  }
+
+  // Sends one helper request as a command prompt and waits for the matching prefixed notify.
+  // Only while idle: a prompt during a run would be treated as input to the model.
+  async function helperCall(action, payload = {}) {
+    await ensureHelper();
+    if (session.active) throw new ProtocolError("busy", "Wait for the current run to finish before changing tools, skills, or sampling");
+    session.helperSerial += 1;
+    const requestId = `qt-webui-helper-${session.helperSerial}`;
+    const message = `/${HELPER_COMMAND} ${JSON.stringify({ requestId, action, payload })}`;
+    const answer = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        session.helperPending.delete(requestId);
+        reject(new ProtocolError("timeout", `The Qt WebUI helper did not answer ${action} within ${LIMITS.helperTimeoutMs} ms`));
+      }, LIMITS.helperTimeoutMs);
+      session.helperPending.set(requestId, { resolve, reject, timer });
+    });
+    const response = await sendCommand({ type: "prompt", message }, { timeoutMs: LIMITS.helperTimeoutMs });
+    if (response.success !== true) {
+      const pending = session.helperPending.get(requestId);
+      if (pending) {
+        clearTimeout(pending.timer);
+        session.helperPending.delete(requestId);
+      }
+      throw new ProtocolError("pi_error", response.error || `Pi rejected the ${action} request`);
+    }
+    return answer;
+  }
+
+  function handleHelperNotify(raw) {
+    if (typeof raw !== "string" || !raw.startsWith(HELPER_RESPONSE_PREFIX)) return false;
+    if (raw.length > LIMITS.maxHelperResponseBytes) {
+      emit("notice", { level: "warning", message: "Ignored an oversized helper response" });
+      return true;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw.slice(HELPER_RESPONSE_PREFIX.length));
+    } catch {
+      emit("notice", { level: "warning", message: "Ignored a malformed helper response" });
+      return true;
+    }
+    const pending = parsed && typeof parsed.requestId === "string" ? session.helperPending.get(parsed.requestId) : null;
+    if (!pending) return true;
+    clearTimeout(pending.timer);
+    session.helperPending.delete(parsed.requestId);
+    if (parsed.ok === true) pending.resolve(parsed.data ?? null);
+    else pending.reject(new ProtocolError("pi_error", boundedError(parsed.error || "helper request failed")));
+    return true;
+  }
+
+  function rejectHelperPending(reason) {
+    for (const [requestId, pending] of session.helperPending) {
+      clearTimeout(pending.timer);
+      session.helperPending.delete(requestId);
+      pending.reject(new ProtocolError("not_running", reason));
+    }
+  }
+
+  async function helperState() {
+    return helperCall("state");
+  }
+
+  async function helperApply(payload) {
+    return helperCall("apply", payload);
   }
 
   async function abort() {
@@ -729,6 +952,7 @@ export function createPiSession({
     }
     switch (method) {
       case "notify":
+        if (handleHelperNotify(record.message)) break;
         emit("extension.notify", {
           level: ["info", "warning", "error"].includes(record.notifyType) ? record.notifyType : "info",
           message: boundedString(stripAnsi(record.message), LIMITS.maxNoticeCharacters, ""),
@@ -739,12 +963,20 @@ export function createPiSession({
         const raw = typeof record.statusText === "string" ? record.statusText : "";
         const chips = footerStatusChips(raw);
         const payload = chips ? null : genericStatusPayload(raw);
-        emit("extension.status", {
+        const status = {
           key,
           text: chips ? "" : payload ? payload.text : boundedString(stripAnsi(raw), LIMITS.maxNoticeCharacters),
           hint: payload ? payload.hint : "",
           chips: chips ?? [],
-        });
+        };
+        // Kept per key so a tab snapshot can restore the footer exactly as Pi last published it.
+        if (status.text.length === 0 && status.chips.length === 0) session.statusRecords.delete(key);
+        else {
+          session.statusRecords.delete(key);
+          if (session.statusRecords.size >= 32) session.statusRecords.delete(session.statusRecords.keys().next().value);
+          session.statusRecords.set(key, status);
+        }
+        emit("extension.status", status);
         break;
       }
       case "set_editor_text":
@@ -836,10 +1068,11 @@ export function createPiSession({
         handleToolEnd(record);
         break;
       case "queue_update":
-        emit("queue.update", {
+        session.queues = {
           steering: (Array.isArray(record.steering) ? record.steering : []).slice(0, LIMITS.maxQueueEntries).map((entry) => boundedString(entry, LIMITS.maxQueueEntryCharacters)),
           followUp: (Array.isArray(record.followUp) ? record.followUp : []).slice(0, LIMITS.maxQueueEntries).map((entry) => boundedString(entry, LIMITS.maxQueueEntryCharacters)),
-        });
+        };
+        emit("queue.update", { ...session.queues });
         break;
       case "compaction_start":
         setStatus("running", "Compacting…");
@@ -891,7 +1124,7 @@ export function createPiSession({
     setStatus("stopped", "Starting…");
     let child;
     try {
-      child = spawnImpl(nodeExecutable, [piCliEntry, "--mode", "rpc"], { cwd, env });
+      child = spawnImpl(nodeExecutable, [piCliEntry, "--mode", "rpc", ...(helperExtensionPath && existsSync(helperExtensionPath) ? ["--extension", helperExtensionPath] : [])], { cwd, env });
     } catch (error) {
       showError(`Could not start Pi: ${error.message}`);
       return false;
@@ -947,8 +1180,13 @@ export function createPiSession({
     session.currentMessage = null;
     session.tools.clear();
     rejectPending("Pi exited");
+    rejectHelperPending("Pi exited");
     cancelDialogs("Pi exited");
+    session.helperAvailable = false;
+    session.helperChecked = false;
     clearRuntime();
+    session.queues = { steering: [], followUp: [] };
+    session.statusRecords.clear();
     emit("pi.exit", { code: code ?? null, signal: signal ?? null });
     if (session.restartPending) {
       session.restartPending = false;
@@ -1020,6 +1258,14 @@ export function createPiSession({
       runtime: session.runtime,
       pid: session.child && !hasExited(session.child) ? session.child.pid : null,
       pendingDialogs: session.dialogOrder.length,
+      error: session.lastError,
+      compacting: session.compacting,
+      queues: { ...session.queues },
+      dialogs: session.dialogOrder.map((requestId) => {
+        const { rawId, ...visible } = session.dialogs.get(requestId);
+        return visible;
+      }),
+      statusRecords: [...session.statusRecords.values()],
     };
   }
 
@@ -1028,6 +1274,22 @@ export function createPiSession({
     stop,
     restart,
     prompt,
+    assertPromptAllowed,
+    runSequence,
+    listCommands,
+    helperState,
+    helperApply,
+    get helperAvailable() {
+      return session.helperAvailable;
+    },
+    sessionStats,
+    switchSession,
+    newSession,
+    setSessionName,
+    loadHistory,
+    get cwd() {
+      return cwd;
+    },
     abort,
     requestState: () => requestState(),
     answerDialog,

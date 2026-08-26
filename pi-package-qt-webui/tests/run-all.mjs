@@ -10,7 +10,9 @@ const tests = readdirSync(path.join(packageRoot, "tests"))
   .sort()
   .map((name) => path.join("tests", name));
 
-const result = spawnSync(process.execPath, ["--test", ...tests], {
+// Files run one at a time: the live Quickshell smoke is CPU-heavy and made the timing-sensitive
+// backend tests flaky when they ran alongside it.
+const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", ...tests], {
   cwd: packageRoot,
   stdio: "inherit",
 });

@@ -32,7 +32,7 @@ test("startup translates Pi noise into bounded events and reports runtime metada
   const hello = await backend.send("hello");
   assert.equal(hello.ok, true);
   assert.equal(hello.data.session.ready, true);
-  assert.deepEqual(hello.data.settings, { compactTranscript: false, showThinking: true, desktopNotifications: true });
+  assert.deepEqual(hello.data.settings, { compactTranscript: false, showThinking: true, desktopNotifications: true, syntaxHighlighting: true });
   const commands = await backend.readCapture();
   assert.equal(commands.filter((command) => command.type === "get_state").length, 1, "the stale fixture response must not trigger a second state read");
 });
@@ -283,7 +283,7 @@ test("settings, notifications, and links go through the backend with smoke-mode 
   const initial = await backend.send("settings_get");
   assert.equal(initial.data.settings.compactTranscript, false);
   const changed = await backend.send("settings_set", { values: { compactTranscript: true, showThinking: false } });
-  assert.deepEqual(changed.data.settings, { compactTranscript: true, showThinking: false, desktopNotifications: true });
+  assert.deepEqual(changed.data.settings, { compactTranscript: true, showThinking: false, desktopNotifications: true, syntaxHighlighting: true });
   await backend.waitForEvent("settings.changed", (event) => event.settings.compactTranscript === true);
   const rejected = await backend.send("settings_set", { values: { compactTranscript: "yes" } });
   assert.equal(rejected.error.code, "invalid_request");
@@ -385,7 +385,7 @@ test("Pi exit, failed startup state, missing startup state, and recovery follow 
   await backend.send("prompt", { message: "__QT_WEBUI_EXIT__" });
   const exit = await backend.waitForEvent("pi.exit");
   assert.equal(exit.code, 23);
-  assert(backend.events.some((event) => event.type === "pi.error" && event.message === "Pi process exited with code 23"));
+  await backend.waitForEvent("pi.error", (event) => event.message === "Pi process exited with code 23");
   const runtimeAfterExit = backend.events.filter((event) => event.type === "pi.runtime").at(-1);
   assert.equal(runtimeAfterExit.provider, "");
 

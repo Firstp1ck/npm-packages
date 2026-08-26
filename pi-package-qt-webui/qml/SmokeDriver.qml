@@ -1,4 +1,5 @@
 import QtQuick
+import Quickshell
 
 // Deterministic smoke scenario used only when QT_WEBUI_SMOKE_MODE=1. It drives the real UI
 // objects (bridge, dialogs, search, settings) against the fake Pi fixture behind the real
@@ -20,6 +21,42 @@ Item {
     property bool notificationChecked: false
     property bool crashObserved: false
     property string modelStep: ""
+    property string composerStep: ""
+    property var waitCondition: null
+    property var waitAction: null
+    property int waitTicks: 0
+
+    // Polls a condition every 40 ms (up to 3 s) before running the next composer step, because
+    // completion and attachment results arrive asynchronously from the backend.
+    function waitFor(description, condition, action) {
+        waitCondition = condition
+        waitAction = action
+        waitTicks = 0
+        waitTimer.description = description
+        waitTimer.start()
+    }
+
+    Timer {
+        id: waitTimer
+        property string description: ""
+        interval: 40
+        repeat: true
+        onTriggered: {
+            if (driver.waitCondition && driver.waitCondition()) {
+                stop()
+                const action = driver.waitAction
+                driver.waitCondition = null
+                driver.waitAction = null
+                action()
+                return
+            }
+            driver.waitTicks++
+            if (driver.waitTicks > 75) {
+                stop()
+                driver.fail("timed out waiting for " + description)
+            }
+        }
+    }
 
     function log(marker) {
         console.log(marker)
@@ -33,6 +70,13 @@ Item {
             rows.push(row.kind + ":" + row.rowId + ":" + (row.streaming ? "streaming:" : "") + JSON.stringify(String(row.text).slice(0, 40)) + ":" + row.toolStatus)
         }
         log("QT_WEBUI_SMOKE_ROWS " + rows.join(" | "))
+        const notices = []
+        for (let index = Math.max(0, bridge.noticeModel.count - 5); index < bridge.noticeModel.count; index++) {
+            const notice = bridge.noticeModel.get(index)
+            notices.push(notice.level + ":" + JSON.stringify(String(notice.message).slice(0, 160)))
+        }
+        log("QT_WEBUI_SMOKE_NOTICES " + notices.join(" | "))
+        log("QT_WEBUI_SMOKE_TABS active=" + bridge.activeTabId + " count=" + bridge.tabCount + " ready=" + bridge.ready + " status=" + bridge.statusKind + " " + JSON.stringify(bridge.tabs.map(tab => tab.id + ":" + tab.statusKind + ":" + tab.cwd.slice(-20))))
         bridge.showError("Smoke failure: " + reason)
     }
 
@@ -110,6 +154,10 @@ Item {
         if (styled.indexOf("&lt;script&gt;") === -1 || styled.indexOf("<img") !== -1 || styled.indexOf("javascript:alert(1))\"") !== -1) return fail("markdown escaping")
         if (styled.indexOf("<a href=\\\"https://example.com/docs\\\">") === -1) return fail("markdown safe link")
         log("QT_WEBUI_SMOKE_MARKDOWN_RENDERED")
+        const code = blocks.find(block => block.type === "code")
+        if (!code || !Array.isArray(code.tokens) || code.tokens.length === 0 || code.language !== "js") return fail("code highlighting tokens")
+        if (code.tokens.some(token => /[<>]/.test(String(token[1])))) return fail("code tokens must be escaped")
+        log("QT_WEBUI_SMOKE_CODE_HIGHLIGHTED")
         shell.confirmLink("https://example.com/docs")
         schedule("accept-link")
     }
@@ -126,6 +174,260 @@ Item {
         searchChecked = true
         forceUnfocused = true
         schedule("immediate")
+    }
+
+    // Composer phase: command and path completion through the composer's own entry points (never
+    // sending), an attachment carried by a prompt, a persisted draft, and a saved sequence that
+    // runs from the sequences dialog and is then deleted with the two-step confirmation.
+    function startComposer() {
+        phase = "composer"
+        composerStep = "commands"
+        if (!bridge.loadCommands(response => {
+            if (!response.ok || bridge.commands.length !== 3 || bridge.commands[0].name !== "review") return fail("commands list " + bridge.commands.length)
+            log("QT_WEBUI_SMOKE_COMMANDS_LOADED")
+            composerCommandCompletion()
+        })) fail("commands request refused")
+    }
+
+    function composerCommandCompletion() {
+        const composer = shell.composerItem
+        composerStep = "command-completion"
+        composer.setText("/rev")
+        waitFor("command completion", () => composer.completionKind === "command" && composer.completions.length === 1, () => {
+            if (!composer.acceptCurrentCompletion() || composer.text !== "/review " || composer.completionOpen) return fail("command completion text " + JSON.stringify(composer.text))
+            log("QT_WEBUI_SMOKE_COMMAND_COMPLETED")
+            composerPathCompletion()
+        })
+    }
+
+    function composerPathCompletion() {
+        const composer = shell.composerItem
+        composerStep = "path-completion"
+        composer.setText("look at @main")
+        waitFor("path completion", () => composer.completionKind === "path" && composer.completions.length >= 1, () => {
+            if (composer.completions[0].value !== "src/main.mjs") return fail("path suggestion " + composer.completions[0].value)
+            if (!composer.acceptCurrentCompletion() || composer.text !== "look at @src/main.mjs " || composer.completionOpen) return fail("path completion text " + JSON.stringify(composer.text) + " kind=" + composer.completionKind + " query=" + composer.completionQuery + " index=" + composer.completionIndex + " cursor=" + composer.cursorPosition + " open=" + composer.completionOpen)
+            log("QT_WEBUI_SMOKE_PATH_COMPLETED")
+            composer.clearAndFocus()
+            composerAttachment()
+        })
+    }
+
+    function composerAttachment() {
+        const composer = shell.composerItem
+        composerStep = "attachment"
+        bridge.addAttachment(bridge.callerCwd + "/src/main.mjs", false)
+        waitFor("attachment added", () => bridge.attachments.length === 1 && bridge.attachments[0].name === "main.mjs", () => {
+            log("QT_WEBUI_SMOKE_ATTACHMENT_ADDED")
+            composer.setText("__QT_WEBUI_IMMEDIATE__")
+            composer.trySend("send")
+            waitFor("attachment sent", () => bridge.attachments.length === 0 && !bridge.active && bridge.statusKind === "ready" && composer.text.length === 0, () => {
+                const row = lastRowOfKind("user")
+                if (!row || row.attachments !== "main.mjs") return fail("user row attachments " + (row ? row.attachments : "none"))
+                log("QT_WEBUI_SMOKE_ATTACHMENT_SENT")
+                composerDraft()
+            })
+        })
+    }
+
+    function composerDraft() {
+        const composer = shell.composerItem
+        composerStep = "draft"
+        composer.setText("draft to keep")
+        // The shell saves the draft 600 ms after the last edit; wait for that, then read it back.
+        waitFor("draft delay", () => waitTicks >= 20, () => {
+            bridge.loadDraft(response => {
+                if (!response.ok || response.data.text !== "draft to keep") return fail("draft text " + JSON.stringify(response.data ? response.data.text : null))
+                log("QT_WEBUI_SMOKE_DRAFT_PERSISTED")
+                composer.clearAndFocus()
+                bridge.saveDraft("")
+                composerSequences()
+            })
+        })
+    }
+
+    function composerSequences() {
+        composerStep = "sequences"
+        bridge.saveSequence("", "Smoke sequence", ["__QT_WEBUI_IMMEDIATE__", "queued follow-up"], response => {
+            if (!response.ok) return fail("sequence save")
+            if (!shell.openSequences()) return fail("sequences dialog refused")
+            const dialog = shell.sequencesDialog
+            waitFor("sequences listed", () => dialog.opened && dialog.count === 1, () => {
+                if (!dialog.runCurrent()) return fail("sequence run refused")
+                waitFor("sequence finished", () => !dialog.opened && !bridge.active && bridge.statusKind === "ready", () => {
+                    log("QT_WEBUI_SMOKE_SEQUENCE_RUN")
+                    shell.openSequences()
+                    waitFor("sequences reopened", () => dialog.opened && dialog.count === 1, () => {
+                        if (!dialog.deleteCurrent() || !dialog.confirmingDelete || dialog.count !== 1) return fail("delete must ask for confirmation")
+                        if (!dialog.deleteCurrent()) return fail("delete confirmation refused")
+                        waitFor("sequence deleted", () => dialog.count === 0, () => {
+                            log("QT_WEBUI_SMOKE_SEQUENCE_DELETED")
+                            dialog.close()
+                            composerStep = ""
+                            schedule("models")
+                        })
+                    })
+                })
+            })
+        })
+    }
+
+    // Tabs phase: a second tab in another folder, work there, switch back and see the first tab's
+    // transcript replayed, resume a persisted session from the picker, start a new session, open
+    // a third tab through the directory dialog, create a worktree behind its confirmation, then
+    // close every extra tab so the exit and restart phases see one tab again.
+    // The smoke workspace name contains "</b>", so the sibling folder is derived from the
+    // fixture state file, which lives directly in the temporary directory.
+    function smokeSiblingDirectory(name) {
+        const statePath = String(Quickshell.env("QT_WEBUI_SMOKE_STATE_PATH") || "")
+        return statePath.slice(0, statePath.lastIndexOf("/")) + "/" + name
+    }
+
+    function startTabs() {
+        phase = "tabs"
+        const firstTab = bridge.activeTabId
+        const firstRows = bridge.transcriptModel.count
+        if (!bridge.openTab(smokeSiblingDirectory("other"), "")) return fail("tab open refused")
+        waitFor("second tab", () => bridge.tabCount === 2 && bridge.activeTabId !== firstTab && bridge.ready && bridge.transcriptModel.count === 0, () => {
+            if (bridge.workspaceCwd.indexOf("/other") === -1 || bridge.displayCwd.indexOf("other") === -1) return fail("second tab workspace " + bridge.workspaceCwd)
+            log("QT_WEBUI_SMOKE_TAB_OPENED")
+            bridge.sendPrompt("__QT_WEBUI_IMMEDIATE__", "send")
+            waitFor("second tab prompt", () => !bridge.active && bridge.statusKind === "ready" && lastRowOfKind("user") !== null, () => {
+                if (!bridge.selectTab(firstTab)) return fail("tab select refused")
+                waitFor("first tab replayed", () => bridge.activeTabId === firstTab && bridge.ready && bridge.transcriptModel.count === firstRows, () => {
+                    if (bridge.workspaceCwd !== bridge.callerCwd) return fail("first tab workspace " + bridge.workspaceCwd)
+                    if (lastRowOfKind("user") === null || lastRowOfKind("user").text !== "queued follow-up") return fail("first tab rows " + (lastRowOfKind("user") ? lastRowOfKind("user").text : "none"))
+                    log("QT_WEBUI_SMOKE_TAB_SWITCHED")
+                    tabsSessions(firstTab)
+                })
+            })
+        })
+    }
+
+    function tabsSessions(firstTab) {
+        if (!shell.openSessionsPicker()) return fail("sessions picker refused")
+        const picker = shell.pickerDialog
+        waitFor("sessions picker", () => picker.opened && picker.items.length >= 1, () => {
+            let target = ""
+            for (const item of picker.items) if (String(item.value).indexOf("resume-me") !== -1) target = String(item.value)
+            if (target.length === 0 || !picker.pickValue(target)) return fail("resume-me session missing")
+            waitFor("session resumed", () => bridge.sessionName === "Resumed session" && bridge.transcriptModel.count === 5 && !bridge.active && bridge.ready, () => {
+                const tool = lastRowOfKind("tool")
+                if (!tool || tool.toolOutput !== "file contents" || tool.toolStatus !== "ok") return fail("resumed tool row")
+                log("QT_WEBUI_SMOKE_SESSION_RESUMED")
+                if (!bridge.newSession()) return fail("new session refused")
+                waitFor("new session", () => bridge.transcriptModel.count === 0 && bridge.sessionFile.indexOf("fixture-session-1") !== -1 && bridge.ready, () => {
+                    log("QT_WEBUI_SMOKE_SESSION_NEW")
+                    tabsDirectory(firstTab)
+                })
+            })
+        })
+    }
+
+    function tabsDirectory(firstTab) {
+        if (!shell.openDirectoryPicker()) return fail("directory picker refused")
+        const dialog = shell.directoryDialog
+        const workspace = bridge.workspaceCwd
+        // "<b>project</b>" is really two nested folders, so Up lands in "<b>project<"; the
+        // temporary directory that holds "other" is then entered by direct path entry.
+        const temporary = smokeSiblingDirectory("").slice(0, -1)
+        waitFor("directory listing", () => dialog.opened && dialog.currentPath === workspace && !dialog.loading, () => {
+            if (!dialog.up()) return fail("directory up refused")
+            waitFor("parent listing", () => dialog.currentPath !== workspace && !dialog.loading && dialog.history.length === 1, () => {
+                if (!dialog.navigateTo(temporary, true)) return fail("direct path entry refused")
+                waitFor("temporary listing", () => dialog.currentPath === temporary && !dialog.loading && dialog.entries.length >= 2, () => {
+                if (!dialog.enterNamed("other")) return fail("directory entry missing")
+                waitFor("entered other", () => dialog.currentPath.indexOf("/other") !== -1 && !dialog.loading, () => {
+                    if (!dialog.choose() || dialog.opened) return fail("directory choose")
+                    waitFor("third tab", () => bridge.tabCount === 3 && bridge.ready && bridge.workspaceCwd.indexOf("/other") !== -1, () => {
+                        log("QT_WEBUI_SMOKE_DIRECTORY_PICKED")
+                        tabsWorktree(firstTab)
+                    })
+                })
+                })
+            })
+        })
+    }
+
+    function tabsWorktree(firstTab) {
+        if (!bridge.selectTab(firstTab)) return fail("tab select refused")
+        waitFor("first tab again", () => bridge.activeTabId === firstTab && bridge.ready, () => {
+            if (!shell.planWorktree("smoke-branch")) return fail("worktree plan refused")
+            waitFor("worktree confirmation", () => shell.confirmDialog.opened, () => {
+                if (shell.confirmDialog.detail.indexOf("-smoke-branch") === -1) return fail("worktree path " + shell.confirmDialog.detail)
+                if (!shell.confirmDialog.confirm()) return fail("worktree confirm refused")
+                waitFor("worktree tab", () => bridge.tabCount === 4 && bridge.workspaceCwd.indexOf("-smoke-branch") !== -1 && bridge.ready, () => {
+                    log("QT_WEBUI_SMOKE_WORKTREE_CREATED")
+                    tabsClose(firstTab)
+                })
+            })
+        })
+    }
+
+    function tabsClose(firstTab) {
+        const extras = bridge.tabs.filter(tab => tab.id !== firstTab).map(tab => tab.id)
+        const closeNext = () => {
+            if (extras.length === 0) {
+                waitFor("single tab", () => bridge.tabCount === 1 && bridge.activeTabId === firstTab && bridge.ready, () => {
+                    log("QT_WEBUI_SMOKE_TAB_CLOSED")
+                    phase = "tabs-done"
+                    startPalette()
+                })
+                return
+            }
+            const id = extras.shift()
+            const before = bridge.tabCount
+            if (!shell.closeTab(id)) return fail("close tab refused")
+            waitFor("tab closed", () => bridge.tabCount === before - 1, closeNext)
+        }
+        closeNext()
+    }
+
+    // Palette phase: usage statistics, a palette action picked through the picker's own entry
+    // points (never sending), the events view with a filter, and the diagnostics report.
+    function startPalette() {
+        phase = "palette"
+        waitFor("usage loaded", () => bridge.usage !== null && bridge.usage.context && bridge.usage.context.percent === 30 && bridge.usage.tokens.total === 105000, () => {
+            if (!shell.statusGroups.some(group => group.name === "Usage" && group.entries.some(entry => entry.label === "context" && entry.value === "30%"))) return fail("usage segment")
+            log("QT_WEBUI_SMOKE_USAGE_LOADED")
+            const wasCompact = bridge.compactTranscript
+            if (!shell.openPalette()) return fail("palette refused")
+            const picker = shell.pickerDialog
+            waitFor("palette groups", () => picker.opened && picker.items.some(item => item.group === "Model") && picker.items.some(item => item.group === "Pi command") && picker.items.some(item => item.group === "Skill"), () => {
+                picker.setFilter(wasCompact ? "comfortable rows" : "compact rows")
+                if (picker.visibleCount !== 1 || picker.visibleItems[0].value !== "action:toggle-compact") return fail("palette filter " + picker.visibleCount)
+                if (!picker.pickCurrent()) return fail("palette pick refused")
+                waitFor("palette action", () => bridge.compactTranscript !== wasCompact && bridge.recentActions.indexOf("action:toggle-compact") === 0, () => {
+                    log("QT_WEBUI_SMOKE_PALETTE_ACTION")
+                    if (!shell.openPalette()) return fail("palette reopen refused")
+                    waitFor("palette recents", () => picker.opened && picker.items.length > 0 && picker.items[0].group === "Recent" && picker.items[0].value === "action:toggle-compact", () => {
+                        picker.close()
+                        paletteEvents()
+                    })
+                })
+            })
+        })
+    }
+
+    function paletteEvents() {
+        if (!shell.openEvents()) return fail("events refused")
+        const events = shell.eventsDialog
+        waitFor("events listed", () => events.opened && events.count > 0, () => {
+            const total = events.count
+            events.setLevel("error")
+            if (events.count >= total || !events.entries.every(entry => entry.level === "error")) return fail("events filter " + events.count + "/" + total)
+            events.setLevel("all")
+            if (!events.copyAll()) return fail("events copy")
+            log("QT_WEBUI_SMOKE_EVENTS_LISTED")
+            events.close()
+            if (!shell.openDiagnostics()) return fail("diagnostics refused")
+            const diagnostics = shell.diagnosticsDialog
+            waitFor("diagnostics report", () => diagnostics.opened && diagnostics.data !== null && diagnostics.report.indexOf("Backend: running, pid") !== -1 && diagnostics.report.indexOf("Tabs (1)") !== -1, () => {
+                log("QT_WEBUI_SMOKE_DIAGNOSTICS_SHOWN")
+                diagnostics.close()
+                schedule("exit")
+            })
+        })
     }
 
     // Models phase: open the real picker from the model inventory, pick through its own entry
@@ -147,8 +449,10 @@ Item {
         if (!picker.pickCurrent()) return fail("model pick refused")
     }
 
-    function onModelRuntimeChanged() {
-        if (phase !== "models") return
+    // Runtime events arrive before the request response, so every step waits until the bridge
+    // has settled its pending model action before asking for the next change.
+    function advanceModels() {
+        if (phase !== "models" || bridge.modelActionPending) return
         if (modelStep === "select" && bridge.currentModelId === "fixture-fast" && bridge.currentThinkingLevel === "off") {
             log("QT_WEBUI_SMOKE_MODEL_SELECTED")
             modelStep = "thinking-picker"
@@ -225,8 +529,14 @@ Item {
                 driver.phase = "settings"
                 driver.bridge.updateSetting("compactTranscript", true)
                 break
+            case "composer":
+                driver.startComposer()
+                break
             case "models":
                 driver.startModels()
+                break
+            case "tabs":
+                driver.startTabs()
                 break
             case "check-model-picker":
                 driver.checkModelPicker()
@@ -377,16 +687,20 @@ Item {
         function onCompactTranscriptChanged() {
             if (driver.phase === "settings" && driver.bridge.compactTranscript) {
                 driver.log("QT_WEBUI_SMOKE_SETTINGS_PERSISTED")
-                driver.schedule("models")
+                driver.schedule("composer")
             }
         }
 
         function onCurrentModelIdChanged() {
-            driver.onModelRuntimeChanged()
+            driver.advanceModels()
         }
 
         function onCurrentThinkingLevelChanged() {
-            driver.onModelRuntimeChanged()
+            driver.advanceModels()
+        }
+
+        function onModelActionPendingChanged() {
+            driver.advanceModels()
         }
 
         function onCompactionFinished(ok) {
@@ -394,7 +708,7 @@ Item {
             if (!ok || driver.bridge.active || driver.bridge.compacting) return driver.fail("compaction result")
             driver.log("QT_WEBUI_SMOKE_CONTEXT_COMPACTED")
             driver.modelStep = ""
-            driver.schedule("exit")
+            driver.schedule("tabs")
         }
 
         function onModelsLoaded(data) {

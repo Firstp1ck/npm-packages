@@ -32,8 +32,13 @@ const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, 
   readFile(path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs"), "utf8"),
 ]);
 
-const [workingIndicator, statusSegment, pickerDialog] = await Promise.all([readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("dialogs", "PickerDialog.qml"))]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, pickerDialog };
+const [workingIndicator, statusSegment, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog] = await Promise.all([
+  readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
+  readQml(path.join("components", "CompletionPopup.qml")), readQml(path.join("dialogs", "SequencesDialog.qml")), readQml(path.join("dialogs", "TextEditDialog.qml")),
+  readQml(path.join("components", "TabStrip.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
+]);
+const [eventsDialog, diagnosticsDialog] = await Promise.all([readQml(path.join("dialogs", "EventsDialog.qml")), readQml(path.join("dialogs", "DiagnosticsDialog.qml"))]);
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog, eventsDialog, diagnosticsDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -73,7 +78,7 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   for (const component of ["BackendBridge", "Theme", "Composer", "SearchBar", "EmptyState", "NoticeBar", "TranscriptRow", "ExtensionDialog", "LinkDialog", "PickerDialog"]) {
     assert.match(shell, new RegExp(`\\b${component}\\s*\\{`), `shell should use ${component}`);
   }
-  for (const sequence of ["Ctrl+F", "Ctrl+T", "Ctrl+Shift+M", "Ctrl+Shift+X", "Ctrl+L", "Ctrl+M", "Ctrl+Shift+P", "Ctrl+E", "Ctrl+Shift+E"]) {
+  for (const sequence of ["Ctrl+F", "Ctrl+T", "Ctrl+Shift+M", "Ctrl+Shift+X", "Ctrl+L", "Ctrl+M", "Ctrl+Shift+P", "Ctrl+E", "Ctrl+Shift+E", "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+N", "Ctrl+O", "Ctrl+W", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+O", "Ctrl+Shift+N", "Ctrl+Shift+B", "F2", "Ctrl+K", "Ctrl+Shift+L", "Ctrl+Shift+D"]) {
     assert.match(shell, new RegExp(`sequence:\\s*"${sequence.replace(/\+/g, "\\+")}"`), `shortcut ${sequence}`);
   }
   assert.match(shell, /onLinkActivated:\s*link\s*=>\s*root\.confirmLink\(link\)/);
@@ -144,7 +149,7 @@ test("bridge handles every backend event type and keeps failure paths explicit",
     "backend.ready", "backend.fatal", "pi.status", "pi.error", "pi.runtime", "pi.exit", "message.user", "part.begin",
     "part.render", "part.remove", "message.end", "tool.start", "tool.update", "tool.end", "run.start", "run.end",
     "extension.request", "extension.cancelled", "extension.notify", "extension.status", "composer.setText",
-    "window.title", "queue.update", "notice", "events.dropped", "settings.changed",
+    "window.title", "queue.update", "notice", "events.dropped", "settings.changed", "tabs.update", "transcript.reset", "transcript.row",
   ]) assert.match(handler, new RegExp(`case "${eventType.replace(".", "\\.")}"`), `event ${eventType}`);
   assert.match(handler, /default:\s*\n\s*break/);
   assert.match(bridge, /event\.partKind/);
@@ -205,7 +210,8 @@ test("model and thinking pickers choose only through explicit activation and ref
   assert.match(pickerDialog, /keyNavigationEnabled:\s*true/);
   assert.match(pickerDialog, /Keys\.onReturnPressed:\s*dialog\.pickCurrent\(\)/);
   assert.match(pickerDialog, /event\.key === Qt\.Key_Down[\s\S]*dialog\.moveSelection\(1\)/);
-  assert.match(functionBody(pickerDialog, "pickIndex"), /close\(\)[\s\S]*picked\(value\)/);
+  assert.match(functionBody(pickerDialog, "pickIndex"), /if \(answered\) return false[\s\S]*answered = true[\s\S]*picked\(value\)[\s\S]*close\(\)/, "a pick is emitted once, before the close that would otherwise cancel");
+  assert.match(pickerDialog, /onClosed:\s*if \(!answered\) cancelled\(\)/);
   assert.doesNotMatch(functionBody(pickerDialog, "filterItems"), /picked\(/, "filtering must never pick");
   assert.doesNotMatch(functionBody(pickerDialog, "moveSelection"), /picked\(/, "navigation must never pick");
   assert.match(pickerDialog, /Accessible\.role:\s*Accessible\.ListItem/);
@@ -233,7 +239,7 @@ test("untrusted content renders as plain or whitelisted styled text and links op
   assert.match(linkDialog, /initialFocusItem:\s*cancelButton/);
   const userLabel = objectBodyContaining(row, "Label", "visible: row.kind === \"user\" || row.kind === \"thinking\"");
   assert.match(userLabel, /textFormat:\s*Text\.PlainText/);
-  for (const roleName of ["rowId", "messageId", "role", "kind", "text", "blocksJson", "truncated", "streaming", "modeLabel", "toolName", "toolSummary", "toolStatus", "toolDurationMs", "toolOutput", "toolError"]) {
+  for (const roleName of ["rowId", "messageId", "role", "kind", "text", "blocksJson", "truncated", "streaming", "modeLabel", "attachments", "toolName", "toolSummary", "toolStatus", "toolDurationMs", "toolOutput", "toolError"]) {
     assert.match(row, new RegExp(`required property \\w+ ${roleName}\\b`), `TranscriptRow should require ${roleName}`);
   }
   const contextLabel = objectBodyContaining(shell, "Label", "text: bridge.displayCwd");
@@ -261,6 +267,146 @@ test("composer exposes send, steer, follow-up, abort, and restart with keyboard 
   assert.match(functionBody(bridge, "sendPrompt"), /message\.length > maxMessageCharacters/);
 });
 
+test("composer completion, attachments, drafts, and sequences never send by accident and stay bounded", () => {
+  // Highlighted code: theme-owned colors, <pre> for whitespace, plain editor for selection, copy of the original text.
+  assert.match(blocks, /property bool highlight:\s*true/);
+  assert.match(functionBody(blocks, "styledCode"), /"<pre>"/);
+  assert.match(functionBody(blocks, "styledCode"), /theme\.syntaxColor\(kind\)/);
+  assert.doesNotMatch(functionBody(blocks, "styledCode"), /#[0-9a-fA-F]{3,8}\b/);
+  assert.match(blocks, /readonly property bool highlighted:\s*root\.highlight && hasTokens && !selectable/);
+  assert.match(blocks, /text:\s*codeBlock\.selectable \? "Highlight" : "Select text"/);
+  assert.match(blocks, /onClicked:\s*root\.copyRequested\(block\.text \|\| ""\)/);
+  assert.match(theme, /function syntaxColor\(kind\)/);
+  for (const token of ["syntaxKeyword", "syntaxString", "syntaxComment", "syntaxNumber", "syntaxType", "syntaxFunction", "diffAdded", "diffRemoved"]) {
+    assert.match(theme, new RegExp(`readonly property color ${token}\\b`), `theme token ${token}`);
+  }
+  assert.match(bridge, /property bool syntaxHighlighting:\s*true/);
+  assert.match(shell, /highlightCode:\s*bridge\.syntaxHighlighting/);
+
+  // Completion: accepting edits the text and never calls trySend or sendRequested.
+  const accept = functionBody(composer, "acceptCompletion");
+  assert.doesNotMatch(accept, /trySend|sendRequested/);
+  assert.match(accept, /"\/" \+ String\(item\.value\) \+ " "/);
+  assert.match(accept, /"@" \+ String\(item\.value\) \+ \(item\.directory === true \? "\/" : " "\)/);
+  assert.match(composer, /if \(composer\.completionOpen\) \{[\s\S]*Qt\.Key_Down[\s\S]*Qt\.Key_Up[\s\S]*Qt\.Key_Escape[\s\S]*Qt\.Key_Tab \|\| event\.key === Qt\.Key_Return[\s\S]*acceptCurrentCompletion\(\)[\s\S]*event\.accepted = true[\s\S]*return/);
+  assert.match(functionBody(composer, "completionContext"), /kind: "command"/);
+  assert.match(functionBody(composer, "completionContext"), /token\.startsWith\("@"\)/);
+  assert.match(completionPopup, /Accessible\.role:\s*Accessible\.List/);
+  assert.match(completionPopup, /Accessible\.selected:\s*index === popup\.currentIndex/);
+  assert.doesNotMatch(completionPopup, /sendRequested|trySend/);
+  assert.match(functionBody(shell, "commandSuggestions"), /if \(items\.length >= 50\) break/);
+  assert.match(shell, /Timer\s*\{[\s\S]*id:\s*pathCompletionTimer[\s\S]*interval:\s*120/);
+
+  // Attachments: ids travel with the prompt, chips expose names and removal, the picker grants outside paths.
+  assert.match(functionBody(bridge, "sendPrompt"), /"attachments": attachmentIds/);
+  assert.match(functionBody(bridge, "sendPrompt"), /\["busy", "not_ready", "not_running"\]\.indexOf\(response\.error\.code\)/);
+  assert.match(shell, /FileDialog\s*\{[\s\S]*fileMode:\s*FileDialog\.OpenFiles[\s\S]*bridge\.addAttachment\(root\.urlToPath\(url\), true\)/);
+  assert.match(composer, /accessibleName:\s*"Remove attachment " \+ String\(chip\.modelData\.name\)/);
+  assert.match(composer, /enabled:\s*composer\.attachments\.length < composer\.maxAttachments/);
+  assert.equal(LIMITS.maxAttachments, 8);
+  assert.match(row, /text:\s*"Attached: " \+ row\.attachments/);
+  assert.match(textEditDialog, /function save\(\)[\s\S]*if \(answered \|\| overLimit\) return false/);
+
+  // Drafts: saved after typing stops, restored only into an empty editor for the same key.
+  assert.match(bridge, /readonly property string draftKey:\s*sessionFile\.length > 0 \? sessionFile : workspaceCwd/);
+  assert.match(shell, /Timer\s*\{[\s\S]*id:\s*draftTimer[\s\S]*interval:\s*600[\s\S]*bridge\.saveDraft\(composer\.text\)/);
+  assert.match(functionBody(shell, "restoreDraft"), /key !== bridge\.draftKey \|\| text\.length === 0 \|\| composer\.text\.trim\(\)\.length > 0\) return/);
+  assert.match(functionBody(bridge, "saveDraftFor"), /boundedText\(String\(text \|\| ""\), 8192\)/);
+  assert.equal(LIMITS.maxDraftCharacters, 8192);
+
+  // Sequences: run only from the explicit action, delete needs confirmation, list actions never run.
+  assert.match(functionBody(sequencesDialog, "deleteCurrent"), /if \(!confirmingDelete\) \{[\s\S]*confirmingDelete = true[\s\S]*return true/);
+  assert.doesNotMatch(functionBody(sequencesDialog, "deleteCurrent"), /runSequence|runCurrent/);
+  assert.doesNotMatch(functionBody(sequencesDialog, "moveCurrent"), /runSequence|runCurrent/);
+  assert.doesNotMatch(functionBody(sequencesDialog, "saveEdit"), /runSequence|runCurrent/);
+  assert.match(functionBody(sequencesDialog, "runCurrent"), /if \(!sequence \|\| busy \|\| !bridge\.ready \|\| bridge\.active\) return false/);
+  assert.match(sequencesDialog, /text:\s*dialog\.confirmingDelete \? "Confirm delete" : "Delete"/);
+  assert.match(sequencesDialog, /readonly property int maxEntries:\s*16/);
+  assert.equal(LIMITS.maxSequenceEntries, 16);
+  assert.match(functionBody(bridge, "runSequence"), /if \(!ready \|\| active\)/);
+  assert.match(shell, /SequencesDialog\s*\{[\s\S]*returnFocusItem:\s*composer/);
+});
+
+test("tabs isolate session state, replay from the backend, confirm busy closes, and worktrees confirm their path", () => {
+  const handler = functionBody(bridge, "handleEvent");
+  assert.match(handler, /if \(typeof event\.tab === "string" && event\.tab !== activeTabId\) \{[\s\S]*handleInactiveTabEvent\(event\)[\s\S]*return/, "events from other tabs never touch the view");
+  assert.match(functionBody(bridge, "request"), /if \(activeTabId\.length > 0 && frame\.tab === undefined\) frame\.tab = activeTabId/);
+  const reset = functionBody(bridge, "resetTabState");
+  for (const cleared of ["transcript.clear()", "visibleError = \"\"", "attachments = []", "steeringQueue = []", "dialogQueue = []", "activeDialog = null", "statusChips = []", "commandsLoaded = false"]) {
+    assert(reset.includes(cleared), `resetTabState must include ${cleared}`);
+  }
+  assert.doesNotMatch(reset, /answerDialog|extension_response/, "switching tabs never answers another tab's dialogs");
+  assert.match(functionBody(bridge, "applySnapshot"), /enqueueDialog\(dialog, false\)/);
+  assert.match(functionBody(bridge, "enqueueDialog"), /dialogQueue\.some\(entry => entry\.requestId === requestId\)\) return false/, "snapshots never duplicate queued dialogs");
+  assert.match(functionBody(bridge, "closeTab"), /"force": force === true/);
+  assert.match(functionBody(bridge, "createWorktree"), /"confirmed": true/);
+  assert.match(bridge, /readonly property string draftKey:\s*sessionFile\.length > 0 \? sessionFile : workspaceCwd/);
+  assert.match(bridge, /case "tabs\.update":[\s\S]*beginTabSwitch\(event\.activeTab\)/);
+  assert.match(bridge, /onExited:[\s\S]*bridge\.tabs = \[\][\s\S]*bridge\.activeTabId = ""/);
+  assert.equal(LIMITS.maxTabs, 8);
+  assert.match(bridge, /readonly property int maxTabs:\s*8/);
+
+  // Shell: busy tabs confirm before closing, worktrees are planned then confirmed, sessions resume through the picker.
+  assert.match(functionBody(shell, "closeTab"), /if \(tab\.active\) \{[\s\S]*destructive: true[\s\S]*action: "close-tab"/);
+  assert.match(functionBody(shell, "closeTab"), /return bridge\.closeTab\(tabId, false\)/);
+  assert.match(functionBody(shell, "confirmAccepted"), /bridge\.closeTab\(String\(context\.tabId\), true\)/);
+  assert.match(functionBody(shell, "planWorktree"), /bridge\.planWorktree\(branch, response => \{[\s\S]*plan\.problems\.length > 0[\s\S]*confirmDialogItem\.present\(\{[\s\S]*detail: plan\.path/);
+  assert.doesNotMatch(functionBody(shell, "planWorktree"), /createWorktree/, "planning never creates");
+  assert.match(functionBody(shell, "confirmAccepted"), /bridge\.createWorktree\(context\.plan\.branch, context\.plan\.base, context\.plan\.path\)/);
+  assert.match(functionBody(shell, "pickerPicked"), /kind === "session"[\s\S]*bridge\.switchSession\(value\)/);
+  assert.match(functionBody(shell, "openSessionsPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| pickerDialogItem\.opened\) return false/);
+  assert.match(functionBody(shell, "handleDraftKeyChanged"), /bridge\.saveDraftFor\(draftKeyInUse, composer\.text\)/, "the previous tab's draft is saved before switching");
+  assert.match(shell, /TabStrip\s*\{[\s\S]*onSelectRequested:\s*tabId => bridge\.selectTab\(tabId\)[\s\S]*onCloseRequested:\s*tabId => root\.closeTab\(tabId\)/);
+  assert.match(shell, /DirectoryDialog\s*\{[\s\S]*onChosen:\s*path => bridge\.openTab\(path, ""\)/);
+  assert.match(shell, /Instantiator\s*\{[\s\S]*model:\s*8[\s\S]*sequence:\s*"Ctrl\+" \+ \(index \+ 1\)/);
+  assert.match(emptyState, /signal resumeRequested\(\)/);
+
+  // Dialogs: destructive confirmations focus Cancel first; input never submits invalid text;
+  // the directory picker only leaves through Choose.
+  assert.match(confirmDialog, /initialFocusItem:\s*destructive \? cancelButton : confirmButton/);
+  assert.match(functionBody(confirmDialog, "confirm"), /if \(answered\) return false[\s\S]*answered = true[\s\S]*confirmed\(context\)/);
+  assert.match(functionBody(inputDialog, "submit"), /if \(answered \|\| !valid\) return false/);
+  assert.equal((directoryDialog.match(/chosen\(/g) ?? []).length, 3, "signal declaration plus the two explicit choose paths");
+  assert.doesNotMatch(functionBody(directoryDialog, "navigateTo"), /chosen\(/);
+  assert.doesNotMatch(functionBody(directoryDialog, "enterCurrent"), /chosen\(/);
+  assert.match(directoryDialog, /Keys\.onPressed[\s\S]*Qt\.Key_Backspace && text\.length === 0[\s\S]*dialog\.up\(\)/);
+  assert.match(tabStrip, /Accessible\.role:\s*Accessible\.PageTabList/);
+  assert.match(tabStrip, /Accessible\.role:\s*Accessible\.PageTab\b/);
+  assert.match(tabStrip, /Accessible\.selected:\s*current/);
+  assert.match(tabStrip, /accessibleName:\s*"Close tab " \+ tabItem\.label/);
+  assert.match(fixture, /"switch_session"/);
+  assert.match(fixture, /"get_messages"/);
+});
+
+test("the palette, usage, events, and diagnostics stay keyboard-first, bounded, and never send", () => {
+  assert.match(functionBody(shell, "paletteItems"), /push\("Recent"|recents\.indexOf\("action:" \+ action\[0\]\) !== -1 \? "Recent" : "Action"/);
+  for (const group of ["Tab", "Model", "Session", "Pi command", "Skill"]) assert(functionBody(shell, "paletteItems").includes(`"${group}"`), `palette group ${group}`);
+  assert.match(functionBody(shell, "openPalette"), /bridge\.loadModels[\s\S]*bridge\.listSessions[\s\S]*loadCommands/, "capability groups reload when the palette opens");
+  const picked = functionBody(shell, "palettePicked");
+  assert.match(picked, /kind === "command"[\s\S]*composer\.setText\("\/" \+ payload \+ " "\)/);
+  assert.doesNotMatch(picked, /sendPrompt|trySend/, "the palette never sends a prompt");
+  assert.match(picked, /kind === "skill"[\s\S]*confirmDialogItem\.present\(\{[\s\S]*action: "open-path"/, "skill files open only after confirmation");
+  assert.match(functionBody(shell, "confirmAccepted"), /context\.action === "open-path"\) bridge\.openPath\(String\(context\.path\)\)/);
+  assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-compact": bridge\.updateSetting\("compactTranscript"/);
+  assert.match(functionBody(shell, "palettePicked"), /bridge\.recordAction\(value\)/);
+  assert.match(pickerDialog, /String\(item\.group \|\| ""\)/, "filtering also matches the group label");
+  assert.match(functionBody(shell, "groupStatusChips"), /add\("Usage", \{ key: "context"/);
+  assert.match(functionBody(shell, "groupStatusChips"), /tone: usage\.context\.percent >= 90 \? "error" : usage\.context\.percent >= 75 \? "warning" : ""/);
+  assert.match(bridge, /readonly property int maxNotices:\s*200/);
+  assert.equal(LIMITS.maxEventHistory, 200);
+  assert.match(functionBody(bridge, "postNotice"), /noticeRevision\+\+/);
+  assert.match(functionBody(bridge, "clearNotices"), /notices\.clear\(\)/);
+  assert.match(bridge, /case "run\.end":[\s\S]*usageTimer\.restart\(\)/);
+  assert.match(functionBody(eventsDialog, "collectEntries"), /previous\.count \+= 1/, "repeated events collapse");
+  assert.match(eventsDialog, /model:\s*\["all", "info", "warning", "error"\]/);
+  assert.match(functionBody(eventsDialog, "copyAll"), /bridge\.copyToClipboard/);
+  assert.match(diagnosticsDialog, /TextEdit\s*\{[\s\S]*textFormat:\s*TextEdit\.PlainText[\s\S]*readOnly:\s*true/);
+  assert.match(functionBody(diagnosticsDialog, "buildReport"), /Recent errors/);
+  assert.match(shell, /EventsDialog\s*\{[\s\S]*returnFocusItem:\s*composer/);
+  assert.match(shell, /DiagnosticsDialog\s*\{[\s\S]*returnFocusItem:\s*composer/);
+  assert.match(fixture, /"get_session_stats"/);
+});
+
 test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(appButton, /Accessible\.role:\s*Accessible\.Button/);
   assert.match(appButton, /Accessible\.name:\s*accessibleName/);
@@ -284,7 +430,12 @@ test("smoke driver and fixture cover every recorded protocol edge", () => {
     "QT_WEBUI_SMOKE_BACKEND_READY", "QT_WEBUI_SMOKE_READY", "QT_WEBUI_SMOKE_STREAM_RECONCILED", "QT_WEBUI_SMOKE_THINKING_RENDERED",
     "QT_WEBUI_SMOKE_TOOL_CARD", "QT_WEBUI_SMOKE_MARKDOWN_RENDERED", "QT_WEBUI_SMOKE_LINK_CONFIRMED", "QT_WEBUI_SMOKE_SEARCH_MATCHED",
     "QT_WEBUI_SMOKE_PROVIDER_ERROR_PRESERVED", "QT_WEBUI_SMOKE_FAILED_RESPONSE_RECOVERED", "QT_WEBUI_SMOKE_DELAYED_ABORT_RECEIPT",
-    "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED", "QT_WEBUI_SMOKE_SETTINGS_PERSISTED", "QT_WEBUI_SMOKE_MODEL_PICKER", "QT_WEBUI_SMOKE_MODEL_SELECTED",
+    "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED", "QT_WEBUI_SMOKE_SETTINGS_PERSISTED", "QT_WEBUI_SMOKE_CODE_HIGHLIGHTED", "QT_WEBUI_SMOKE_COMMANDS_LOADED",
+    "QT_WEBUI_SMOKE_COMMAND_COMPLETED", "QT_WEBUI_SMOKE_PATH_COMPLETED", "QT_WEBUI_SMOKE_ATTACHMENT_ADDED", "QT_WEBUI_SMOKE_ATTACHMENT_SENT",
+    "QT_WEBUI_SMOKE_DRAFT_PERSISTED", "QT_WEBUI_SMOKE_SEQUENCE_RUN", "QT_WEBUI_SMOKE_SEQUENCE_DELETED", "QT_WEBUI_SMOKE_MODEL_PICKER", "QT_WEBUI_SMOKE_MODEL_SELECTED",
+    "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
+    "QT_WEBUI_SMOKE_WORKTREE_CREATED", "QT_WEBUI_SMOKE_TAB_CLOSED", "QT_WEBUI_SMOKE_USAGE_LOADED", "QT_WEBUI_SMOKE_PALETTE_ACTION",
+    "QT_WEBUI_SMOKE_EVENTS_LISTED", "QT_WEBUI_SMOKE_DIAGNOSTICS_SHOWN",
     "QT_WEBUI_SMOKE_THINKING_PICKER", "QT_WEBUI_SMOKE_MODEL_CYCLED", "QT_WEBUI_SMOKE_THINKING_CYCLED", "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",
     "QT_WEBUI_SMOKE_FAILED_STATE_RECOVERABLE",
     "QT_WEBUI_SMOKE_MISSING_STATE_RECOVERABLE", "QT_WEBUI_SMOKE_RESTART_RECEIPT", "QT_WEBUI_SMOKE_BACKEND_CRASH_OBSERVED",

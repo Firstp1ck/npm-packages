@@ -1,3 +1,4 @@
+import { highlightCode } from "./highlight.mjs";
 import { LIMITS, safeExternalLink } from "./protocol.mjs";
 
 // Bounded Markdown renderer for untrusted assistant text.
@@ -189,7 +190,10 @@ function renderBlocks(text, budget, depth) {
       }
       const closed = index < lines.length;
       if (closed) index += 1;
-      budget.push({ type: "code", depth, language: fence[2].toLowerCase(), text: codeLines.join("\n"), closed });
+      const language = fence[2].toLowerCase();
+      const codeText = codeLines.join("\n");
+      const highlighted = highlightCode(language, codeText);
+      budget.push({ type: "code", depth, language, text: codeText, closed, tokens: highlighted.tokens });
       continue;
     }
 

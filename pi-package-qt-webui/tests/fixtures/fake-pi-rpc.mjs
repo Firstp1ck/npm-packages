@@ -29,6 +29,28 @@ const MODELS = [
 let currentModel = MODELS[0];
 let currentThinkingLevel = "high";
 let compacting = false;
+let sessionSerial = 0;
+let currentSessionFile = "/tmp/fixture-session.jsonl";
+let currentSessionName = "Fixture session";
+
+// Persisted history replayed by get_messages: a session named resume-me has a complete exchange
+// with a tool call, one named interrupted ends with an unanswered user message.
+function historyFor(sessionFile) {
+  if (sessionFile.includes("resume-me")) {
+    return [
+      { role: "user", content: "earlier question", timestamp: 1 },
+      { role: "assistant", content: [{ type: "thinking", thinking: "earlier thinking" }, { type: "text", text: "earlier **answer**" }, { type: "toolCall", id: "hist-tool", name: "read", arguments: { path: "/tmp/a.txt" } }], stopReason: "toolUse", timestamp: 2 },
+      { role: "toolResult", toolCallId: "hist-tool", toolName: "read", content: [{ type: "text", text: "file contents" }], isError: false, timestamp: 3 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop", timestamp: 4 },
+    ];
+  }
+  if (sessionFile.includes("interrupted")) {
+    return [
+      { role: "user", content: [{ type: "text", text: "please continue" }, { type: "image", data: "AAAA", mimeType: "image/png" }], timestamp: 1 },
+    ];
+  }
+  return [];
+}
 
 function thinkingLevelsFor(model) {
   return model.reasoning ? ["off", "minimal", "low", "medium", "high"] : ["off"];
@@ -257,9 +279,9 @@ function handle(command) {
         isStreaming: false,
         isCompacting: compacting,
         sessionId: "fixture-session",
-        sessionName: "Fixture session",
-        sessionFile: "/tmp/fixture-session.jsonl",
-        messageCount: 0,
+        sessionName: currentSessionName,
+        sessionFile: currentSessionFile,
+        messageCount: historyFor(currentSessionFile).length,
       },
     }, lineEnding);
     return;
@@ -282,6 +304,54 @@ function handle(command) {
       notify("QT_WEBUI_SMOKE_DELAYED_AGENT_ABORTED");
       emit({ type: "agent_settled", aborted: true });
     }
+    return;
+  }
+
+  if (command.type === "switch_session") {
+    if (typeof command.sessionPath !== "string" || command.sessionPath.includes("cancel-me")) {
+      response(command, true, { data: { cancelled: true } });
+      return;
+    }
+    currentSessionFile = command.sessionPath;
+    currentSessionName = command.sessionPath.includes("resume-me") ? "Resumed session" : "";
+    response(command, true, { data: { cancelled: false } });
+    return;
+  }
+
+  if (command.type === "new_session") {
+    sessionSerial += 1;
+    currentSessionFile = `/tmp/fixture-session-${sessionSerial}.jsonl`;
+    currentSessionName = "";
+    response(command, true, { data: { cancelled: false } });
+    return;
+  }
+
+  if (command.type === "set_session_name") {
+    currentSessionName = typeof command.name === "string" ? command.name : "";
+    response(command);
+    return;
+  }
+
+  if (command.type === "get_messages") {
+    response(command, true, { data: { messages: historyFor(currentSessionFile) } });
+    return;
+  }
+
+  if (command.type === "get_session_stats") {
+    response(command, true, { data: { sessionFile: currentSessionFile, sessionId: "fixture-session", userMessages: 3, assistantMessages: 2, toolCalls: 1, toolResults: 1, totalMessages: 7,
+      tokens: { input: 50_000, output: 10_000, cacheRead: 40_000, cacheWrite: 5_000, total: 105_000 }, cost: 0.45, contextUsage: { tokens: 60_000, contextWindow: 200_000, percent: 30 } } });
+    return;
+  }
+
+  if (command.type === "get_commands") {
+    response(command, true, { data: { commands: [
+      { name: "review", description: "Review the current diff", source: "extension", path: "/tmp/ext/review.ts" },
+      { name: "fix-tests", description: "Fix failing tests [31m![0m", source: "prompt", location: "project", path: "/tmp/project/.pi/agent/prompts/fix-tests.md" },
+      { name: "skill:brave-search", description: "Web search", source: "skill", location: "user", path: "/tmp/skills/brave-search/SKILL.md" },
+      { name: "bad name", description: "has whitespace", source: "extension" },
+      { name: "review", description: "duplicate", source: "extension" },
+      { description: "nameless" },
+    ] } });
     return;
   }
 
@@ -367,7 +437,8 @@ function handle(command) {
     return;
   }
 
-  switch (command.message) {
+  // Attachments append fenced blocks below the typed prompt, so scenarios key on the first line.
+  switch (String(command.message).split("\n")[0]) {
     case "__QT_WEBUI_STREAM__":
       runStream(command);
       break;

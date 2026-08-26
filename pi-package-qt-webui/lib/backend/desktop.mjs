@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { statSync } from "node:fs";
 import { LIMITS, boundedString, safeExternalLink } from "./protocol.mjs";
 
 // Desktop helpers run external commands with argument arrays only. Untrusted text is passed as
@@ -26,6 +27,26 @@ export function sendDesktopNotification({ title, body = "", spawnImpl } = {}) {
   const safeBody = boundedString(body, LIMITS.maxNotificationCharacters, "");
   // "--" keeps a leading dash in the title from being read as an option.
   return runDetached("notify-send", ["--app-name=Qt WebUI", "--expire-time=8000", "--", safeTitle, safeBody], { spawnImpl });
+}
+
+// Opens a local file with the desktop's default application. The path must be an existing
+// regular file; it is passed as one argument, so names starting with "-" or containing spaces
+// cannot become options or extra arguments.
+export function openLocalPath({ path: requested, spawnImpl, statImpl = defaultStat } = {}) {
+  const target = typeof requested === "string" ? requested : "";
+  if (!target.startsWith("/") || target.includes("\0") || target.length > LIMITS.maxPathCharacters) return Promise.resolve({ delivered: false, reason: "path must be an absolute file path" });
+  let stats;
+  try {
+    stats = statImpl(target);
+  } catch (error) {
+    return Promise.resolve({ delivered: false, reason: error.code === "ENOENT" ? "the file does not exist" : error.message });
+  }
+  if (!stats.isFile()) return Promise.resolve({ delivered: false, reason: "only regular files can be opened" });
+  return runDetached("xdg-open", [target], { spawnImpl }).then((result) => ({ ...result, path: target }));
+}
+
+function defaultStat(target) {
+  return statSync(target);
 }
 
 export function openExternalLink({ url, spawnImpl } = {}) {

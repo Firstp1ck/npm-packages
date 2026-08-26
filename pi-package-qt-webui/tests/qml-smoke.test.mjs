@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { sessionDirectoryFor } from "../lib/backend/sessions-index.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs");
@@ -33,12 +34,32 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_DELAYED_ABORT_RECEIPT",
   "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED",
   "QT_WEBUI_SMOKE_SETTINGS_PERSISTED",
+  "QT_WEBUI_SMOKE_CODE_HIGHLIGHTED",
+  "QT_WEBUI_SMOKE_COMMANDS_LOADED",
+  "QT_WEBUI_SMOKE_COMMAND_COMPLETED",
+  "QT_WEBUI_SMOKE_PATH_COMPLETED",
+  "QT_WEBUI_SMOKE_ATTACHMENT_ADDED",
+  "QT_WEBUI_SMOKE_ATTACHMENT_SENT",
+  "QT_WEBUI_SMOKE_DRAFT_PERSISTED",
+  "QT_WEBUI_SMOKE_SEQUENCE_RUN",
+  "QT_WEBUI_SMOKE_SEQUENCE_DELETED",
   "QT_WEBUI_SMOKE_MODEL_PICKER",
   "QT_WEBUI_SMOKE_MODEL_SELECTED",
   "QT_WEBUI_SMOKE_THINKING_PICKER",
   "QT_WEBUI_SMOKE_MODEL_CYCLED",
   "QT_WEBUI_SMOKE_THINKING_CYCLED",
   "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",
+  "QT_WEBUI_SMOKE_TAB_OPENED",
+  "QT_WEBUI_SMOKE_TAB_SWITCHED",
+  "QT_WEBUI_SMOKE_SESSION_RESUMED",
+  "QT_WEBUI_SMOKE_SESSION_NEW",
+  "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
+  "QT_WEBUI_SMOKE_WORKTREE_CREATED",
+  "QT_WEBUI_SMOKE_TAB_CLOSED",
+  "QT_WEBUI_SMOKE_USAGE_LOADED",
+  "QT_WEBUI_SMOKE_PALETTE_ACTION",
+  "QT_WEBUI_SMOKE_EVENTS_LISTED",
+  "QT_WEBUI_SMOKE_DIAGNOSTICS_SHOWN",
   "QT_WEBUI_SMOKE_FAILED_STATE_RECOVERABLE",
   "QT_WEBUI_SMOKE_FAILED_STATE_RESTART",
   "QT_WEBUI_SMOKE_MISSING_STATE_RECOVERABLE",
@@ -92,6 +113,10 @@ export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, ex
         ...process.env,
         NO_COLOR: "1",
         XDG_CONFIG_HOME: configHome,
+        XDG_STATE_HOME: path.join(path.dirname(configHome), "state"),
+        PI_CODING_AGENT_DIR: path.join(path.dirname(configHome), "agent"),
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
         ...extraEnv,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -135,8 +160,24 @@ async function smokeWorkspace(t) {
   const statePath = path.join(temporary, "state.txt");
   const configHome = path.join(temporary, "config");
   const callerCwd = path.join(temporary, "<b>project</b>");
-  await mkdir(callerCwd, { recursive: true });
+  await mkdir(path.join(callerCwd, "src"), { recursive: true });
+  await writeFile(path.join(callerCwd, "src", "main.mjs"), "export const answer = 42;\n");
+  await mkdir(path.join(temporary, "other"));
   await writeFile(capturePath, "");
+  // The workspace is a Git repository so the worktree flow can run; the fixture session file
+  // makes "Resume a session" list something to pick.
+  const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Smoke", GIT_AUTHOR_EMAIL: "smoke@example.invalid", GIT_COMMITTER_NAME: "Smoke", GIT_COMMITTER_EMAIL: "smoke@example.invalid", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  for (const args of [["init", "-q", "-b", "main"], ["add", "src/main.mjs"], ["commit", "-q", "-m", "smoke"]]) {
+    const result = spawnSync("git", args, { cwd: callerCwd, env: gitEnv, encoding: "utf8" });
+    assert.equal(result.status, 0, `git ${args.join(" ")}: ${result.stderr}`);
+  }
+  const sessionsDirectory = sessionDirectoryFor(callerCwd, { PI_CODING_AGENT_DIR: path.join(temporary, "agent") });
+  await mkdir(sessionsDirectory, { recursive: true });
+  await writeFile(path.join(sessionsDirectory, "2026-08-26_resume-me.jsonl"), [
+    JSON.stringify({ type: "session", version: 3, id: "resume-me", timestamp: "2026-08-26T00:00:00.000Z", cwd: callerCwd }),
+    JSON.stringify({ type: "session_info", id: "info", parentId: null, timestamp: "2026-08-26T00:00:00.000Z", name: "Resumable smoke session" }),
+    JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-08-26T00:00:00.000Z", message: { role: "user", content: "earlier question", timestamp: 1 } }),
+  ].join("\n") + "\n");
   t.after(() => rm(temporary, { recursive: true, force: true }));
   return { temporary, capturePath, statePath, configHome, callerCwd };
 }
@@ -155,7 +196,7 @@ async function assertCapture(capturePath) {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
   const prompts = commands.filter((command) => command.type === "prompt");
-  assert.deepEqual(prompts.map((command) => command.message), [
+  assert.deepEqual(prompts.map((command) => command.message.split("\n")[0]), [
     "__QT_WEBUI_STREAM__",
     "__QT_WEBUI_MARKDOWN__",
     "__QT_WEBUI_IMMEDIATE__",
@@ -163,8 +204,22 @@ async function assertCapture(capturePath) {
     "__QT_WEBUI_FAIL__",
     "__QT_WEBUI_DELAYED_ABORT__",
     "__QT_WEBUI_LIMITS__",
+    "__QT_WEBUI_IMMEDIATE__",
+    "__QT_WEBUI_IMMEDIATE__",
+    "__QT_WEBUI_IMMEDIATE__",
     "__QT_WEBUI_EXIT__",
-  ]);
+  ], "the last immediate prompt runs in the second tab");
+  assert(!prompts.some((command) => /^\/review/.test(command.message)), "accepting a command completion must not send");
+  const attachmentPrompt = prompts[7];
+  assert.equal(attachmentPrompt.message, "__QT_WEBUI_IMMEDIATE__\n\nAttached file: main.mjs\n````\nexport const answer = 42;\n\n````", "text attachments travel as labelled fenced blocks");
+  assert.equal(attachmentPrompt.images, undefined);
+  assert.deepEqual(commands.filter((command) => command.type === "follow_up").map((command) => command.message), ["queued follow-up"], "the sequence queues its second entry");
+  assert.equal(commands.filter((command) => command.type === "get_commands").length, 2, "the composer loads commands once and the palette reloads them after the tab switch cleared the per-tab cache");
+  assert.deepEqual(commands.filter((command) => command.type === "switch_session").map((command) => path.basename(command.sessionPath)), ["2026-08-26_resume-me.jsonl"]);
+  assert.equal(commands.filter((command) => command.type === "new_session").length, 1);
+  assert.equal(commands.filter((command) => command.type === "get_messages").length, 1, "history is read once, after the resume");
+  assert(commands.filter((command) => command.type === "get_session_stats").length >= 1, "usage statistics are read");
+  assert(!prompts.some((command) => /^\/(review|fix-tests|skill:)/.test(command.message)), "palette commands are inserted, never sent");
   assert.equal(commands.filter((command) => command.type === "abort").length, 2,
     "one abort should be sent before delayed agent_start and exactly one after it");
   assert.deepEqual(commands.filter((command) => command.type === "set_model").map((command) => [command.provider, command.modelId]), [["fixture-provider", "fixture-fast"]],
@@ -204,7 +259,10 @@ test("real Quickshell completes the deterministic backend and Pi behavior scenar
   t.diagnostic(`observed smoke markers: ${smokeMarkers.length}`);
   await assertCapture(workspace.capturePath);
   const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
-  assert.equal(settings.compactTranscript, true, "the compact setting must persist under XDG_CONFIG_HOME");
+  assert.equal(settings.compactTranscript, false, "the compact setting was turned on in the settings phase and back off through the palette");
+  const state = JSON.parse(await readFile(path.join(workspace.temporary, "state", "qt-webui", "state.json"), "utf8"));
+  assert.deepEqual(state.recentActions, ["action:toggle-compact"]);
+  assert.equal(state.tabs.length, 1);
 });
 
 test("real Quickshell completes the same scenarios at 200% scaling", { timeout: 60_000 }, async (t) => {

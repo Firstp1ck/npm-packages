@@ -13,6 +13,7 @@ AppDialog {
     property bool searchable: true
     property string emptyText: "Nothing to choose from"
     property string filter: ""
+    property bool answered: false
     readonly property var visibleItems: filterItems(items, filter)
     readonly property int visibleCount: visibleItems.length
 
@@ -26,7 +27,7 @@ AppDialog {
         const result = []
         for (const item of list) {
             if (!item || typeof item !== "object") continue
-            const haystack = (String(item.label || "") + " " + String(item.detail || "") + " " + String(item.value || "")).toLowerCase()
+            const haystack = (String(item.group || "") + " " + String(item.label || "") + " " + String(item.detail || "") + " " + String(item.value || "")).toLowerCase()
             if (needle.length === 0 || haystack.indexOf(needle) !== -1) result.push(item)
         }
         return result
@@ -39,6 +40,7 @@ AppDialog {
         emptyText = String(config.emptyText || "Nothing to choose from")
         items = Array.isArray(config.items) ? config.items : []
         filter = ""
+        answered = false
         filterField.text = ""
         open()
         selectCurrentItem()
@@ -60,9 +62,11 @@ AppDialog {
 
     function pickIndex(index) {
         if (index < 0 || index >= visibleItems.length) return false
+        if (answered) return false
+        answered = true
         const value = String(visibleItems[index].value)
-        close()
         picked(value)
+        close()
         return true
     }
 
@@ -85,7 +89,8 @@ AppDialog {
         if (optionList.currentIndex < 0 || optionList.currentIndex >= visibleCount) optionList.currentIndex = visibleCount > 0 ? 0 : -1
     }
 
-    onClosed: cancelled()
+    // Closing without a pick (Escape, Cancel, click outside) is a cancellation; a pick is not.
+    onClosed: if (!answered) cancelled()
 
     TextField {
         id: filterField
@@ -161,7 +166,7 @@ AppDialog {
             border.width: ListView.isCurrentItem && (optionList.activeFocus || filterField.activeFocus) ? 2 : 0
             border.color: dialog.theme.focusRing
             Accessible.role: Accessible.ListItem
-            Accessible.name: String(modelData.label || "") + (String(modelData.detail || "").length > 0 ? ", " + String(modelData.detail) : "") + (current ? ", current" : "")
+            Accessible.name: (String(modelData.group || "").length > 0 ? String(modelData.group) + ": " : "") + String(modelData.label || "") + (String(modelData.detail || "").length > 0 ? ", " + String(modelData.detail) : "") + (current ? ", current" : "")
             Accessible.focusable: true
             Accessible.selected: ListView.isCurrentItem
 
@@ -175,14 +180,28 @@ AppDialog {
                     Layout.fillWidth: true
                     spacing: 1
 
-                    Label {
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: String(optionRow.modelData.label || "")
-                        textFormat: Text.PlainText
-                        elide: Text.ElideMiddle
-                        color: dialog.theme.foreground
-                        font.pixelSize: 13
-                        font.bold: optionRow.current
+                        spacing: 6
+
+                        Label {
+                            visible: String(optionRow.modelData.group || "").length > 0
+                            text: String(optionRow.modelData.group || "")
+                            textFormat: Text.PlainText
+                            color: dialog.theme.accentForeground
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: String(optionRow.modelData.label || "")
+                            textFormat: Text.PlainText
+                            elide: Text.ElideMiddle
+                            color: dialog.theme.foreground
+                            font.pixelSize: 13
+                            font.bold: optionRow.current
+                        }
                     }
 
                     Label {

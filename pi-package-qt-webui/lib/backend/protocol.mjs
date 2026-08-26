@@ -37,6 +37,41 @@ export const LIMITS = Object.freeze({
     thinking_set: 5_000,
     thinking_cycle: 5_000,
     compact: 120_000,
+    draft_get: 5_000,
+    draft_set: 5_000,
+    sequences_list: 5_000,
+    sequence_save: 5_000,
+    sequence_delete: 5_000,
+    sequence_move: 5_000,
+    sequence_run: 30_000,
+    commands_list: 10_000,
+    attachment_add: 10_000,
+    attachment_update: 5_000,
+    attachment_remove: 5_000,
+    path_complete: 10_000,
+    tabs_list: 5_000,
+    tab_open: 20_000,
+    tab_close: 20_000,
+    tab_select: 10_000,
+    tab_rename: 10_000,
+    tab_move: 5_000,
+    sessions_list: 20_000,
+    session_switch: 30_000,
+    session_new: 30_000,
+    directory_list: 10_000,
+    directory_create: 10_000,
+    directory_pin: 5_000,
+    worktrees_list: 15_000,
+    worktree_plan: 15_000,
+    worktree_create: 90_000,
+    open_path: 5_000,
+    session_stats: 10_000,
+    recent_action: 5_000,
+    diagnostics: 5_000,
+    resources_state: 15_000,
+    tools_set: 15_000,
+    skills_set: 15_000,
+    sampling_set: 15_000,
   }),
   // Pi lifecycle
   piStartupReadinessMs: 15_000,
@@ -87,7 +122,65 @@ export const LIMITS = Object.freeze({
   maxThinkingLevels: 8,
   maxCompactionInstructionCharacters: 1024,
   maxCompactionSummaryCharacters: 512,
+  // Syntax highlighting of fenced code blocks
+  maxHighlightCharacters: 8192,
+  maxHighlightTokens: 4000,
+  // Drafts and other window state (XDG state directory)
+  maxDraftCharacters: 8192,
+  maxDrafts: 64,
+  maxStateKeyCharacters: 4096,
+  maxStateFileBytes: 256 * 1024,
+  maxRecentEntries: 20,
+  // Saved prompt sequences (XDG config directory)
+  maxSequences: 32,
+  maxSequenceEntries: 16,
+  maxSequenceNameCharacters: 64,
+  maxSequenceIdCharacters: 64,
+  maxSequencesFileBytes: 1024 * 1024,
+  // Slash commands reported by Pi
+  maxCommands: 512,
+  maxCommandNameCharacters: 64,
+  maxCommandDescriptionCharacters: 256,
+  // Composer attachments
+  maxAttachments: 8,
+  maxImageAttachmentBytes: 5 * 1024 * 1024,
+  maxTextAttachmentBytes: 256 * 1024,
+  maxAttachmentNameCharacters: 128,
+  maxAttachmentIdCharacters: 64,
+  // Workspace paths and completion
+  maxPathCharacters: 4096,
+  maxWorkspaceEntries: 20_000,
+  maxWorkspaceDepth: 16,
+  maxPathSuggestions: 50,
+  maxCompletionQueryCharacters: 256,
+  workspaceIndexTtlMs: 5_000,
+  workspaceCommandTimeoutMs: 5_000,
+  maxWorkspaceCommandOutputBytes: 8 * 1024 * 1024,
+  // Tabs, sessions, directories, and worktrees
+  maxTabs: 8,
+  maxTabIdCharacters: 32,
+  maxTabNameCharacters: 64,
+  maxSessionListEntries: 200,
+  maxSessionScanBytes: 1024 * 1024,
+  maxSessionPreviewCharacters: 160,
+  maxDirectoryEntries: 500,
+  maxBranchNameCharacters: 128,
+  maxWorktrees: 64,
+  gitCommandTimeoutMs: 10_000,
+  gitMutationTimeoutMs: 60_000,
+  maxGitOutputBytes: 4 * 1024 * 1024,
+  // Palette recents and the events view
+  maxActionKeyCharacters: 128,
+  maxEventHistory: 200,
+  // Tool, skill, and sampling profiles and the Pi-side helper
+  maxResourceNames: 512,
+  maxModelProfiles: 64,
+  maxResourcesFileBytes: 256 * 1024,
+  helperTimeoutMs: 10_000,
+  maxHelperResponseBytes: 512 * 1024,
 });
+
+export const IMAGE_ATTACHMENT_TYPES = Object.freeze({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" });
 
 // Every thinking level Pi can report; a model exposes a subset through get_available_thinking_levels.
 export const THINKING_LEVELS = Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -100,6 +193,7 @@ export const SETTINGS_SCHEMA = Object.freeze({
   compactTranscript: { type: "boolean", default: false },
   showThinking: { type: "boolean", default: true },
   desktopNotifications: { type: "boolean", default: true },
+  syntaxHighlighting: { type: "boolean", default: true },
 });
 
 export class ProtocolError extends Error {
@@ -139,6 +233,22 @@ function requireString(request, field, limit) {
   return value;
 }
 
+function requireScope(frame) {
+  if (!["session", "global", "model"].includes(frame.scope)) throw new ProtocolError("invalid_request", "scope must be session, global, or model");
+  return frame.scope;
+}
+
+function requireIdList(request, field, maxItems, maxCharacters) {
+  const value = request[field];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new ProtocolError("invalid_request", `${field} must be an array`);
+  if (value.length > maxItems) throw new ProtocolError("limit_exceeded", `${field} cannot have more than ${maxItems} entries`);
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.length === 0 || entry.length > maxCharacters) throw new ProtocolError("invalid_request", `${field} entries must be non-empty strings of at most ${maxCharacters} characters`);
+    return entry;
+  });
+}
+
 // Validates one decoded inbound frame and returns a normalized request. Throws ProtocolError.
 export function validateRequest(frame) {
   if (!frame || typeof frame !== "object" || Array.isArray(frame)) {
@@ -153,6 +263,11 @@ export function validateRequest(frame) {
     throw new ProtocolError("unknown_request", `unknown request type ${String(type)}`);
   }
   const request = { id, type };
+  // Session-scoped requests may name a tab; without it the active tab is used.
+  if (frame.tab !== undefined) {
+    if (typeof frame.tab !== "string" || frame.tab.length === 0 || frame.tab.length > LIMITS.maxTabIdCharacters) throw new ProtocolError("invalid_request", "tab must be a non-empty string");
+    request.tab = frame.tab;
+  }
   switch (type) {
     case "prompt": {
       request.message = requireString(frame, "message", LIMITS.maxMessageCharacters);
@@ -160,6 +275,151 @@ export function validateRequest(frame) {
       const mode = frame.mode ?? "send";
       if (!["send", "steer", "followUp"].includes(mode)) throw new ProtocolError("invalid_request", "prompt mode must be send, steer, or followUp");
       request.mode = mode;
+      request.attachments = requireIdList(frame, "attachments", LIMITS.maxAttachments, LIMITS.maxAttachmentIdCharacters);
+      break;
+    }
+    case "draft_get": {
+      request.key = requireString(frame, "key", LIMITS.maxStateKeyCharacters);
+      if (request.key.length === 0) throw new ProtocolError("invalid_request", "draft_get requires a key");
+      break;
+    }
+    case "draft_set": {
+      request.key = requireString(frame, "key", LIMITS.maxStateKeyCharacters);
+      if (request.key.length === 0) throw new ProtocolError("invalid_request", "draft_set requires a key");
+      request.text = requireString(frame, "text", LIMITS.maxDraftCharacters);
+      break;
+    }
+    case "sequence_save": {
+      request.sequenceId = frame.sequenceId === undefined ? "" : requireString(frame, "sequenceId", LIMITS.maxSequenceIdCharacters);
+      request.name = requireString(frame, "name", LIMITS.maxSequenceNameCharacters);
+      if (request.name.trim().length === 0) throw new ProtocolError("invalid_request", "sequence_save requires a name");
+      if (!Array.isArray(frame.entries)) throw new ProtocolError("invalid_request", "sequence_save requires an entries array");
+      if (frame.entries.length === 0) throw new ProtocolError("invalid_request", "a sequence needs at least one entry");
+      if (frame.entries.length > LIMITS.maxSequenceEntries) throw new ProtocolError("limit_exceeded", `a sequence cannot have more than ${LIMITS.maxSequenceEntries} entries`);
+      request.entries = frame.entries.map((entry, index) => {
+        if (typeof entry !== "string" || entry.trim().length === 0) throw new ProtocolError("invalid_request", `sequence entry ${index + 1} must be a non-empty string`);
+        if (entry.length > LIMITS.maxMessageCharacters) throw new ProtocolError("limit_exceeded", `sequence entry ${index + 1} exceeds ${LIMITS.maxMessageCharacters} characters`);
+        return entry;
+      });
+      break;
+    }
+    case "sequence_delete":
+    case "sequence_move":
+    case "sequence_run": {
+      request.sequenceId = requireString(frame, "sequenceId", LIMITS.maxSequenceIdCharacters);
+      if (request.sequenceId.length === 0) throw new ProtocolError("invalid_request", `${type} requires a sequenceId`);
+      if (type === "sequence_move") {
+        if (frame.delta !== 1 && frame.delta !== -1) throw new ProtocolError("invalid_request", "sequence_move delta must be 1 or -1");
+        request.delta = frame.delta;
+      }
+      break;
+    }
+    case "attachment_add": {
+      request.path = requireString(frame, "path", LIMITS.maxPathCharacters);
+      if (!request.path.startsWith("/")) throw new ProtocolError("invalid_request", "attachment path must be absolute");
+      if (frame.granted !== undefined && typeof frame.granted !== "boolean") throw new ProtocolError("invalid_request", "granted must be boolean");
+      request.granted = frame.granted === true;
+      break;
+    }
+    case "attachment_update": {
+      request.attachmentId = requireString(frame, "attachmentId", LIMITS.maxAttachmentIdCharacters);
+      request.text = requireString(frame, "text", LIMITS.maxTextAttachmentBytes);
+      break;
+    }
+    case "attachment_remove": {
+      request.attachmentId = requireString(frame, "attachmentId", LIMITS.maxAttachmentIdCharacters);
+      break;
+    }
+    case "path_complete": {
+      request.query = frame.query === undefined ? "" : requireString(frame, "query", LIMITS.maxCompletionQueryCharacters);
+      break;
+    }
+    case "tab_open": {
+      request.cwd = frame.cwd === undefined ? "" : requireString(frame, "cwd", LIMITS.maxPathCharacters);
+      request.sessionPath = frame.sessionPath === undefined ? "" : requireString(frame, "sessionPath", LIMITS.maxPathCharacters);
+      request.name = frame.name === undefined ? "" : requireString(frame, "name", LIMITS.maxTabNameCharacters);
+      if (request.cwd.length > 0 && !request.cwd.startsWith("/") && !request.cwd.startsWith("~")) throw new ProtocolError("invalid_request", "cwd must be an absolute path");
+      if (request.sessionPath.length > 0 && !request.sessionPath.startsWith("/")) throw new ProtocolError("invalid_request", "sessionPath must be an absolute path");
+      break;
+    }
+    case "tab_close": {
+      if (frame.force !== undefined && typeof frame.force !== "boolean") throw new ProtocolError("invalid_request", "force must be boolean");
+      request.force = frame.force === true;
+      break;
+    }
+    case "tab_rename": {
+      request.name = requireString(frame, "name", LIMITS.maxTabNameCharacters);
+      break;
+    }
+    case "tab_move": {
+      if (frame.delta !== 1 && frame.delta !== -1) throw new ProtocolError("invalid_request", "tab_move delta must be 1 or -1");
+      request.delta = frame.delta;
+      break;
+    }
+    case "session_switch": {
+      request.sessionPath = requireString(frame, "sessionPath", LIMITS.maxPathCharacters);
+      if (!request.sessionPath.startsWith("/") || !request.sessionPath.endsWith(".jsonl")) throw new ProtocolError("invalid_request", "sessionPath must be an absolute .jsonl path");
+      break;
+    }
+    case "directory_list": {
+      request.path = frame.path === undefined ? "" : requireString(frame, "path", LIMITS.maxPathCharacters);
+      if (frame.showHidden !== undefined && typeof frame.showHidden !== "boolean") throw new ProtocolError("invalid_request", "showHidden must be boolean");
+      request.showHidden = frame.showHidden === true;
+      break;
+    }
+    case "directory_create": {
+      request.path = requireString(frame, "path", LIMITS.maxPathCharacters);
+      request.name = requireString(frame, "name", 255);
+      break;
+    }
+    case "directory_pin": {
+      request.path = requireString(frame, "path", LIMITS.maxPathCharacters);
+      if (!request.path.startsWith("/")) throw new ProtocolError("invalid_request", "path must be absolute");
+      break;
+    }
+    case "open_path": {
+      request.path = requireString(frame, "path", LIMITS.maxPathCharacters);
+      if (!request.path.startsWith("/")) throw new ProtocolError("invalid_request", "path must be absolute");
+      break;
+    }
+    case "recent_action": {
+      request.action = requireString(frame, "action", LIMITS.maxActionKeyCharacters);
+      if (!/^[a-z0-9][a-z0-9:_\/.-]*$/i.test(request.action)) throw new ProtocolError("invalid_request", "action keys are plain identifiers");
+      break;
+    }
+    case "tools_set":
+    case "skills_set": {
+      request.scope = requireScope(frame);
+      const field = type === "tools_set" ? "enabledTools" : "disabledSkills";
+      if (frame[field] === null) request.names = null;
+      else if (Array.isArray(frame[field])) {
+        if (frame[field].length > LIMITS.maxResourceNames) throw new ProtocolError("limit_exceeded", `${field} cannot have more than ${LIMITS.maxResourceNames} entries`);
+        request.names = frame[field].map((entry) => {
+          if (typeof entry !== "string" || entry.length === 0 || entry.length > 128) throw new ProtocolError("invalid_request", `${field} entries must be non-empty strings`);
+          return entry;
+        });
+      } else throw new ProtocolError("invalid_request", `${type} requires ${field} as a list or null (inherit)`);
+      break;
+    }
+    case "sampling_set": {
+      request.scope = requireScope(frame);
+      if (frame.params === null) request.params = null;
+      else if (frame.params && typeof frame.params === "object" && !Array.isArray(frame.params)) {
+        if (Object.keys(frame.params).length > 16) throw new ProtocolError("limit_exceeded", "too many sampling parameters");
+        request.params = frame.params;
+      } else throw new ProtocolError("invalid_request", "sampling_set requires params as an object or null (clear)");
+      break;
+    }
+    case "worktree_plan":
+    case "worktree_create": {
+      request.branch = requireString(frame, "branch", LIMITS.maxBranchNameCharacters);
+      request.base = frame.base === undefined ? "" : requireString(frame, "base", LIMITS.maxBranchNameCharacters);
+      request.path = frame.path === undefined ? "" : requireString(frame, "path", LIMITS.maxPathCharacters);
+      if (type === "worktree_plan") break;
+      if (frame.confirmed !== true) throw new ProtocolError("invalid_request", "worktree_create requires confirmed: true after the user reviewed the branch and path");
+      request.confirmed = true;
+      if (frame.openTab !== undefined && typeof frame.openTab !== "boolean") throw new ProtocolError("invalid_request", "openTab must be boolean");
+      request.openTab = frame.openTab !== false;
       break;
     }
     case "extension_response": {

@@ -16,6 +16,7 @@ Item {
     required property bool truncated
     required property bool streaming
     required property string modeLabel
+    required property string attachments
     required property string toolName
     required property string toolSummary
     required property string toolStatus
@@ -24,12 +25,14 @@ Item {
     required property string toolError
     property bool compact: false
     property bool showThinking: true
+    property bool highlightCode: true
     property bool searchMatch: false
     property bool searchCurrent: false
 
     readonly property bool fromUser: kind === "user"
     readonly property bool hidden: kind === "thinking" && !showThinking
     readonly property string roleLabel: fromUser ? "You" : kind === "thinking" ? "Thinking" : kind === "tool" ? "Tool" : "Pi"
+    readonly property bool hasAttachments: fromUser && attachments.length > 0
 
     signal copyRequested(string text)
     signal linkActivated(string link)
@@ -37,7 +40,7 @@ Item {
     implicitHeight: hidden ? 0 : bubble.implicitHeight
     visible: !hidden
     Accessible.role: Accessible.Grouping
-    Accessible.name: roleLabel + (streaming ? ", streaming" : "") + (truncated ? ", shortened" : "")
+    Accessible.name: roleLabel + (streaming ? ", streaming" : "") + (truncated ? ", shortened" : "") + (hasAttachments ? ", attached " + attachments : "")
 
     Rectangle {
         id: bubble
@@ -130,11 +133,24 @@ Item {
                 lineHeight: 1.2
             }
 
+            Label {
+                Layout.fillWidth: true
+                visible: row.hasAttachments
+                text: "Attached: " + row.attachments
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+                color: row.theme.muted
+                font.pixelSize: 11
+            }
+
             MarkdownBlocks {
                 Layout.fillWidth: true
                 visible: row.kind === "text"
                 theme: row.theme
                 compact: row.compact
+                highlight: row.highlightCode
                 blocksJson: row.kind === "text" ? row.blocksJson : "[]"
                 onLinkActivated: link => row.linkActivated(link)
                 onCopyRequested: text => row.copyRequested(text)

@@ -13,6 +13,8 @@ Item {
 
     signal restartRequested()
     signal focusComposerRequested()
+    signal resumeRequested()
+    signal openDirectoryRequested()
 
     implicitHeight: column.implicitHeight
     Accessible.role: Accessible.Grouping
@@ -46,6 +48,8 @@ Item {
                     "Ctrl+F", "Search the transcript",
                     "Ctrl+T", "Show or hide thinking",
                     "Ctrl+Shift+M", "Compact rows",
+                    "Ctrl+N / Ctrl+O", "New tab here / open a folder",
+                    "Ctrl+Shift+O", "Resume a saved session",
                 ]
                 delegate: Label {
                     required property int index
@@ -58,6 +62,28 @@ Item {
                     horizontalAlignment: index % 2 === 0 ? Text.AlignRight : Text.AlignLeft
                     Layout.alignment: index % 2 === 0 ? Qt.AlignRight : Qt.AlignLeft
                 }
+            }
+        }
+
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            visible: empty.ready
+            spacing: 8
+
+            AppButton {
+                theme: empty.theme
+                text: "Resume a session"
+                accessibleName: "Resume a saved session in this tab"
+                accessibleDescription: "Ctrl+Shift+O"
+                onClicked: empty.resumeRequested()
+            }
+
+            AppButton {
+                theme: empty.theme
+                text: "Open a folder"
+                accessibleName: "Open another folder in a new tab"
+                accessibleDescription: "Ctrl+O"
+                onClicked: empty.openDirectoryRequested()
             }
         }
 

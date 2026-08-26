@@ -19,6 +19,7 @@ export async function startBackend({ env = {}, cwd, smoke = true, startupTimeout
   const childEnv = {
     ...process.env,
     XDG_CONFIG_HOME: path.join(temporary, "config"),
+    XDG_STATE_HOME: path.join(temporary, "state"),
     QT_WEBUI_PI_CLI_ENTRY: fakePiEntry,
     QT_WEBUI_NODE_EXECUTABLE: process.execPath,
     QT_WEBUI_CALLER_CWD: cwd ?? temporary,
