@@ -23,6 +23,7 @@ ShellRoot {
     readonly property var directoryDialog: directoryDialogItem
     readonly property var confirmDialog: confirmDialogItem
     readonly property var inputDialog: inputDialogItem
+    readonly property var worktreeDialog: worktreeDialogItem
     readonly property var eventsDialog: eventsDialogItem
     readonly property var diagnosticsDialog: diagnosticsDialogItem
     readonly property var resourceProfilesDialog: resourceProfilesDialogItem
@@ -465,12 +466,12 @@ ShellRoot {
         return ""
     }
 
-    // Asks for a branch name (unless given), shows the exact path and base from the backend's
-    // plan, and creates the worktree only after confirmation.
+    // Collects a branch type and name (unless already given), shows the exact path and base from
+    // the backend's plan, and creates the worktree only after confirmation.
     function planWorktree(branch) {
         if (typeof branch !== "string") {
-            inputDialogItem.present({ title: "New worktree", message: "Create a branch and check it out in a new folder next to the repository, then open it in a new tab.", placeholder: "feature/name", maxCharacters: 128,
-                                      validate: root.branchProblem, submitLabel: "Continue", context: { action: "worktree" } })
+            worktreeDialogItem.validate = root.branchProblem
+            worktreeDialogItem.present()
             return true
         }
         return bridge.planWorktree(branch, response => {
@@ -498,7 +499,6 @@ ShellRoot {
     function inputSubmitted(text, context) {
         if (!context) return
         if (context.action === "rename-tab") bridge.renameTab(String(context.tabId), text)
-        else if (context.action === "worktree") root.planWorktree(text)
     }
 
     // The composer belongs to the tab: save the unsent text under the previous key before the
@@ -1386,6 +1386,13 @@ ShellRoot {
                 theme: appTheme
                 returnFocusItem: composer
                 onSubmitted: (text, context) => root.inputSubmitted(text, context)
+            }
+
+            WorktreeDialog {
+                id: worktreeDialogItem
+                theme: appTheme
+                returnFocusItem: composer
+                onSubmitted: branch => root.planWorktree(branch)
             }
 
             TextEditDialog {

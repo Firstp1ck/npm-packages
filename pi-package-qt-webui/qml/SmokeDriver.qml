@@ -392,13 +392,19 @@ Item {
     function tabsWorktree(firstTab) {
         if (!bridge.selectTab(firstTab)) return fail("tab select refused")
         waitFor("first tab again", () => bridge.activeTabId === firstTab && bridge.ready, () => {
-            if (!shell.planWorktree("smoke-branch")) return fail("worktree plan refused")
-            waitFor("worktree confirmation", () => shell.confirmDialog.opened, () => {
-                if (shell.confirmDialog.detail.indexOf("-smoke-branch") === -1) return fail("worktree path " + shell.confirmDialog.detail)
-                if (!shell.confirmDialog.confirm()) return fail("worktree confirm refused")
-                waitFor("worktree tab", () => bridge.tabCount === 4 && bridge.workspaceCwd.indexOf("-smoke-branch") !== -1 && bridge.ready, () => {
-                    log("QT_WEBUI_SMOKE_WORKTREE_CREATED")
-                    tabsClose(firstTab)
+            if (!shell.planWorktree()) return fail("worktree dialog refused")
+            waitFor("worktree dialog", () => shell.worktreeDialog.opened, () => {
+                shell.worktreeDialog.setFields("smoke", "branch")
+                if (shell.worktreeDialog.branch !== "smoke/branch") return fail("worktree split fields " + shell.worktreeDialog.branch)
+                if (!shell.worktreeDialog.valid) return fail("worktree split validation " + shell.worktreeDialog.problem)
+                if (!shell.worktreeDialog.submit()) return fail("worktree dialog submit refused")
+                waitFor("worktree confirmation", () => shell.confirmDialog.opened, () => {
+                    if (shell.confirmDialog.detail.indexOf("-smoke-branch") === -1) return fail("worktree path " + shell.confirmDialog.detail)
+                    if (!shell.confirmDialog.confirm()) return fail("worktree confirm refused")
+                    waitFor("worktree tab", () => bridge.tabCount === 4 && bridge.workspaceCwd.indexOf("-smoke-branch") !== -1 && bridge.ready, () => {
+                        log("QT_WEBUI_SMOKE_WORKTREE_CREATED")
+                        tabsClose(firstTab)
+                    })
                 })
             })
         })

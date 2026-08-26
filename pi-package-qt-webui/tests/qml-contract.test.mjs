@@ -32,17 +32,17 @@ const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, 
   readFile(path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs"), "utf8"),
 ]);
 
-const [workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog] = await Promise.all([
+const [workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, worktreeDialog, directoryDialog] = await Promise.all([
   readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("components", "DropUpPicker.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
   readQml(path.join("components", "CompletionPopup.qml")), readQml(path.join("dialogs", "SequencesDialog.qml")), readQml(path.join("dialogs", "TextEditDialog.qml")),
-  readQml(path.join("components", "TabStrip.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
+  readQml(path.join("components", "TabStrip.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "WorktreeDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
 ]);
 const [eventsDialog, diagnosticsDialog, resourceProfilesDialog] = await Promise.all([
   readQml(path.join("dialogs", "EventsDialog.qml")),
   readQml(path.join("dialogs", "DiagnosticsDialog.qml")),
   readQml(path.join("dialogs", "ResourceProfilesDialog.qml")),
 ]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -471,6 +471,14 @@ test("tabs isolate session state, replay from the backend, confirm busy closes, 
   assert.match(functionBody(shell, "planWorktree"), /bridge\.planWorktree\(branch, response => \{[\s\S]*plan\.problems\.length > 0[\s\S]*confirmDialogItem\.present\(\{[\s\S]*detail: plan\.path/);
   assert.doesNotMatch(functionBody(shell, "planWorktree"), /createWorktree/, "planning never creates");
   assert.match(functionBody(shell, "confirmAccepted"), /bridge\.createWorktree\(context\.plan\.branch, context\.plan\.base, context\.plan\.path\)/);
+  assert.match(functionBody(shell, "planWorktree"), /typeof branch !== "string"[\s\S]*worktreeDialogItem\.validate = root\.branchProblem[\s\S]*worktreeDialogItem\.present\(\)/, "the worktree action opens the split branch dialog");
+  assert.match(worktreeDialog, /property var typeSuggestions:\s*\["feat", "fix", "change", "perf", "test", "chore", "refactor", "docs", "style", "build", "ci", "revert"\]/, "the editable type field shares pi-package-webui's conventional suggestions");
+  assert.match(worktreeDialog, /ComboBox\s*\{[\s\S]*editable:\s*true[\s\S]*Accessible\.description:\s*"Choose a suggested type or enter a custom type"/, "branch type suggestions never restrict custom input");
+  assert.match(worktreeDialog, /visible:\s*typeField\.editText\.length === 0[\s\S]*text:\s*"type"/, "the empty editable dropdown shows the type placeholder");
+  assert.match(worktreeDialog, /readonly property string branch:\s*branchType\.length > 0 && branchName\.length > 0 \? branchType \+ "\/" \+ branchName : ""/, "type and name are visibly collected as one slash-separated branch");
+  assert.match(functionBody(worktreeDialog, "present"), /currentIndex = -1[\s\S]*editText = ""[\s\S]*nameField\.text = ""/, "the type starts empty instead of defaulting to feat");
+  assert.match(functionBody(worktreeDialog, "submit"), /if \(answered \|\| !valid\) return false[\s\S]*submitted\(branch\)/, "the split dialog only submits a valid combined branch");
+  assert.match(shell, /WorktreeDialog\s*\{[\s\S]*onSubmitted:\s*branch => root\.planWorktree\(branch\)/);
   assert.match(functionBody(shell, "pickerPicked"), /kind === "session"[\s\S]*bridge\.switchSession\(value\)/);
   assert.match(functionBody(shell, "openSessionsPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| pickerDialogItem\.opened\) return false/);
   assert.match(functionBody(shell, "handleDraftKeyChanged"), /bridge\.saveDraftFor\(draftKeyInUse, composer\.text\)/, "the previous tab's draft is saved before switching");
