@@ -34,7 +34,7 @@ test("startup translates Pi noise into bounded events and reports runtime metada
   const hello = await backend.send("hello");
   assert.equal(hello.ok, true);
   assert.equal(hello.data.session.ready, true);
-  assert.deepEqual(hello.data.settings, { compactTranscript: false, showThinking: true, desktopNotifications: true, syntaxHighlighting: true });
+  assert.deepEqual(hello.data.settings, { compactTranscript: false, showThinking: true, desktopNotifications: true, syntaxHighlighting: true, appearanceMode: "automatic", reducedMotion: false, modelOrder: [] });
   const commands = await backend.readCapture();
   assert.equal(commands.filter((command) => command.type === "get_state").length, 1, "the stale fixture response must not trigger a second state read");
 });
@@ -284,11 +284,32 @@ test("settings, notifications, and links go through the backend with smoke-mode 
   const backend = await readyBackend(t);
   const initial = await backend.send("settings_get");
   assert.equal(initial.data.settings.compactTranscript, false);
-  const changed = await backend.send("settings_set", { values: { compactTranscript: true, showThinking: false } });
-  assert.deepEqual(changed.data.settings, { compactTranscript: true, showThinking: false, desktopNotifications: true, syntaxHighlighting: true });
+  assert.deepEqual(initial.data.settings.modelOrder, []);
+  const changed = await backend.send("settings_set", {
+    values: {
+      compactTranscript: true,
+      showThinking: false,
+      appearanceMode: "dark",
+      reducedMotion: true,
+      modelOrder: ["fixture-provider/fixture-fast", "fixture-provider/fixture-model", "fixture-provider/fixture-fast"],
+    },
+  });
+  const expectedModelOrder = ["fixture-provider/fixture-fast", "fixture-provider/fixture-model"];
+  assert.deepEqual(changed.data.settings, {
+    compactTranscript: true,
+    showThinking: false,
+    desktopNotifications: true,
+    syntaxHighlighting: true,
+    appearanceMode: "dark",
+    reducedMotion: true,
+    modelOrder: expectedModelOrder,
+  });
   await backend.waitForEvent("settings.changed", (event) => event.settings.compactTranscript === true);
+  assert.deepEqual((await backend.send("settings_get")).data.settings.modelOrder, expectedModelOrder);
   const rejected = await backend.send("settings_set", { values: { compactTranscript: "yes" } });
   assert.equal(rejected.error.code, "invalid_request");
+  const rejectedOrder = await backend.send("settings_set", { values: { modelOrder: ["missing-separator"] } });
+  assert.equal(rejectedOrder.error.code, "invalid_request");
   const notify = await backend.send("notify", { title: "Run finished", body: "done" });
   assert.deepEqual(notify.data, { delivered: false, suppressed: "smoke-mode" });
   const link = await backend.send("open_link", { url: "https://example.com/" });

@@ -362,12 +362,16 @@ AppDialog {
             id: entryRow
             required property int index
             required property var modelData
+            readonly property bool selected: ListView.isCurrentItem
+            readonly property bool focused: selected && (entryList.activeFocus || filterField.activeFocus)
             width: entryList.width
-            implicitHeight: entryLabel.implicitHeight + 12
-            radius: 6
-            color: ListView.isCurrentItem ? dialog.theme.selection : "transparent"
-            border.width: ListView.isCurrentItem && (entryList.activeFocus || filterField.activeFocus) ? 2 : 0
-            border.color: dialog.theme.focusRing
+            implicitHeight: entryLabel.implicitHeight + dialog.theme.spaceXl
+            radius: dialog.theme.radiusSmall
+            color: dialog.theme.interactiveFill(selected, entryHover.hovered, entryTap.pressed)
+            border.width: dialog.theme.focusBorderWidth
+            border.color: dialog.theme.interactiveBorder(selected, focused)
+            Behavior on color { ColorAnimation { duration: dialog.theme.motionNormal } }
+            Behavior on border.color { ColorAnimation { duration: dialog.theme.motionNormal } }
             Accessible.role: Accessible.ListItem
             Accessible.name: String(modelData.name) + (modelData.git ? ", Git repository" : "") + (modelData.hidden ? ", hidden" : "")
             Accessible.focusable: true
@@ -375,8 +379,8 @@ AppDialog {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 6
-                spacing: 8
+                anchors.margins: dialog.theme.spaceSm
+                spacing: dialog.theme.spaceMd
 
                 Label {
                     id: entryLabel
@@ -384,8 +388,8 @@ AppDialog {
                     text: String(entryRow.modelData.name)
                     textFormat: Text.PlainText
                     elide: Text.ElideMiddle
-                    color: dialog.theme.foreground
-                    font.pixelSize: 13
+                    color: entryRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
+                    font.pixelSize: dialog.theme.typeBody + 1
                 }
 
                 StatusBadge {
@@ -398,10 +402,12 @@ AppDialog {
             }
 
             HoverHandler {
+                id: entryHover
                 cursorShape: Qt.PointingHandCursor
             }
 
             TapHandler {
+                id: entryTap
                 onTapped: entryList.currentIndex = entryRow.index
                 onDoubleTapped: {
                     entryList.currentIndex = entryRow.index
@@ -422,7 +428,7 @@ AppDialog {
             elide: Text.ElideMiddle
             color: dialog.theme.muted
             font.family: dialog.theme.monospaceFamily
-            font.pixelSize: 11
+            font.pixelSize: dialog.theme.typeSmall
         }
 
         AppButton {

@@ -5,8 +5,9 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const [skill, portableTheme, quickshellStyling, routing] = await Promise.all([
+const [skill, designTokens, portableTheme, quickshellStyling, routing] = await Promise.all([
   readFile(path.join(root, "skills", "desktop-visual-design", "SKILL.md"), "utf8"),
+  readFile(path.join(root, "skills", "desktop-visual-design", "references", "design-tokens.md"), "utf8"),
   readFile(path.join(root, "skills", "desktop-visual-design", "references", "portable-theme-loading.md"), "utf8"),
   readFile(path.join(root, "skills", "desktop-visual-design", "references", "quickshell-plugin-styling.md"), "utf8"),
   readFile(path.join(root, "tests", "routing", "desktop-visual-design.json"), "utf8").then(JSON.parse),
@@ -25,6 +26,18 @@ test("standalone apps must follow the live system color scheme", () => {
   assert.match(quickshellStyling, /parent: window\.contentItem/);
   assert.match(quickshellStyling, /surfaceFormat\.opaque: true/);
   assert.match(skill, /visual root belongs to `contentItem`/);
+});
+
+test("fallback visual guidance follows the restrained Omarchy profile", () => {
+  assert.match(skill, /restrained terminal-first fallback/);
+  assert.match(skill, /opaque flat surfaces/);
+  assert.match(skill, /Prefer the desktop's monospace UI alias/);
+  assert.match(skill, /use square panels and controls with a `0px` radius/);
+  assert.match(skill, /no positional hover movement/);
+  assert.match(designTokens, /Omarchy-inspired relationship between roles/);
+  assert.match(designTokens, /Use a solid 1px border by default/);
+  assert.match(designTokens, /Do not add positional hover movement/);
+  assert.match(designTokens, /must not force a dark scheme/);
 });
 
 test("routing recognizes forced-light desktop regressions", () => {

@@ -25,21 +25,21 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         contentWidth: width
-        contentHeight: Math.max(height, content.implicitHeight + 32)
+        contentHeight: Math.max(height, content.implicitHeight + empty.theme.space4Xl + empty.theme.spaceMd)
 
         ColumnLayout {
             id: content
-            x: Math.max(12, (parent.width - width) / 2)
-            y: Math.max(16, (parent.height - implicitHeight) / 2)
-            width: Math.max(0, Math.min(parent.width - 24, 420))
-            spacing: 12
+            x: Math.max(empty.theme.spaceXl, (parent.width - width) / 2)
+            y: Math.max(empty.theme.space2Xl, (parent.height - implicitHeight) / 2)
+            width: Math.max(0, Math.min(parent.width - empty.theme.space4Xl, 420))
+            spacing: empty.theme.spaceXl
 
             Label {
                 Layout.fillWidth: true
                 text: empty.ready ? "Start a conversation" : empty.backendReady ? "Starting Pi…" : "Starting Qt WebUI…"
                 textFormat: Text.PlainText
                 color: empty.theme.heading
-                font.pixelSize: 20
+                font.pixelSize: empty.theme.typeDisplay
                 font.bold: true
                 horizontalAlignment: Text.AlignHCenter
             }
@@ -49,7 +49,7 @@ Item {
                 text: empty.ready ? "Ask about this workspace, resume earlier work, or open another folder." : "Your workspace will be ready shortly."
                 textFormat: Text.PlainText
                 color: empty.theme.muted
-                font.pixelSize: 12
+                font.pixelSize: empty.theme.typeBody
                 wrapMode: Text.Wrap
                 horizontalAlignment: Text.AlignHCenter
             }
@@ -58,7 +58,7 @@ Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: childrenRect.height
                 visible: empty.ready
-                spacing: 8
+                spacing: empty.theme.spaceMd
 
                 AppButton {
                     theme: empty.theme
@@ -92,7 +92,7 @@ Item {
                 textFormat: Text.PlainText
                 color: empty.theme.muted
                 font.family: empty.theme.monospaceFamily
-                font.pixelSize: 11
+                font.pixelSize: empty.theme.typeSmall
                 wrapMode: Text.Wrap
                 horizontalAlignment: Text.AlignHCenter
             }

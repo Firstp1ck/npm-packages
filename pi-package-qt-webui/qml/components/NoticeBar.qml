@@ -11,10 +11,10 @@ Rectangle {
     property int visibleMilliseconds: 6000
 
     visible: message.length > 0
-    implicitHeight: visible ? label.implicitHeight + 16 : 0
-    radius: 8
+    implicitHeight: visible ? label.implicitHeight + theme.space2Xl : 0
+    radius: theme.radiusMedium
     color: theme.noticeBackground(level)
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: theme.noticeBorder(level)
     Accessible.role: Accessible.Notification
     Accessible.name: (level === "error" ? "Error: " : level === "warning" ? "Warning: " : "") + message
@@ -30,21 +30,21 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: dismiss.left
         anchors.verticalCenter: parent.verticalCenter
-        anchors.margins: 10
+        anchors.margins: bar.theme.spaceLg
         text: bar.message
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         maximumLineCount: 3
         elide: Text.ElideRight
         color: bar.theme.noticeForeground(bar.level)
-        font.pixelSize: 12
+        font.pixelSize: bar.theme.typeBody
     }
 
     AppButton {
         id: dismiss
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        anchors.rightMargin: 6
+        anchors.rightMargin: bar.theme.spaceSm
         theme: bar.theme
         variant: "ghost"
         text: "Dismiss"

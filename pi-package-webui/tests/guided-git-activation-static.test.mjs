@@ -22,8 +22,10 @@ test("Guided Git activation is intercepted before generic status rendering and b
   assert.match(app, /function handleInactiveTabEvent\(event\) \{\n  if \(handleGuidedGitActivationRequest\(event\)\) return;/u);
   assert.match(app, /guidedGitActivationController\.consume\(request, async \(tabId, activationIsCurrent\)/u);
   assert.match(app, /startGitWorkflow\(tabId, \{ activationIsCurrent \}\)/u, "tab reset or close must invalidate an asynchronous activation start");
+  assert.match(app, /api\("\/api\/git-workflow\/preferences\?includeModels=false", \{ tabId \}\)/u, "configured startup must not wait for the setup-only model catalog RPC");
+  assert.match(server, /includeModels = url\.searchParams\.get\("includeModels"\) !== "false"[\s\S]*gitWorkflowPreferencesData\(tab, \{ includeModels \}\)/u, "the preferences route must expose the explicit lightweight startup read");
   assert.match(app, /openNativeGitWorkflowSetupDialog\(\{\s+tabId,\s+activationIsCurrent,\s+onSaved: \(\) => startGitWorkflow\(tabId, \{ skipSetup: true, activationIsCurrent \}\),\s+\}\)/u, "setup and its local continuation must preserve the envelope tab and the same activation owner");
-  assert.match(app, /async function openNativeGitWorkflowSetupDialog\(\{ onSaved, tabId = activeTabId, activationIsCurrent = \(\) => true \} = \{\}\)[\s\S]*nativeCommandTabId = tabId[\s\S]*nativeCommandApi\("\/api\/git-workflow\/preferences", \{ tabId \}\)[\s\S]*const targetState = tabId === activeTabId \? currentState : tabStateCache\.get\(tabId\)/u, "setup loads models and preferences only for the originating tab");
+  assert.match(app, /async function openNativeGitWorkflowSetupDialog\(\{ onSaved, tabId = activeTabId, activationIsCurrent = \(\) => true \} = \{\}\)[\s\S]*nativeCommandTabId = tabId[\s\S]*nativeCommandApi\("\/api\/git-workflow\/preferences", \{ tabId \}\)[\s\S]*const targetState = tabId === activeTabId \? currentState : tabStateCache\.get\(tabId\)/u, "setup still loads the full model catalog for the originating tab");
   assert.match(app, /const setupOwner = Symbol\(tabId\);[\s\S]*const setupOwnsDialog = \(\) => guidedGitSetupDialogOwner === setupOwner;[\s\S]*const handleSetupClose = \(\) => \{\s+if \(!saveInFlight\) settleSetup\("cancelled"\);[\s\S]*if \(!activationIsCurrent\(\)\) \{\s+closeOwnedSetupDialog\(\);\s+settleSetup\("stale"\);/u, "Cancel must settle ownership, stale reset\/cwd\/session owners must fail closed, and an old response must not close a replacement setup dialog");
   assert.match(app, /nativeCommandApi\("\/api\/git-workflow\/preferences", \{\s+method: "POST",\s+tabId,[\s\S]*if \(typeof onSaved === "function" && activationIsCurrent\(\)\)/u, "Save and its continuation must stay tab-bound and owner-guarded");
   assert.match(app, /function resetGitWorkflowForTab[\s\S]*guidedGitLaunchPermits\.clearTab\(tabId\);[\s\S]*guidedGitActivationController\.clearTab\(tabId\);/u, "reset, cwd change, and new-session seams must invalidate permits and activation ownership together");
@@ -80,8 +82,8 @@ test("fixture, cache revisions, and layered docs expose the migration contract",
   assert.match(fakePi, /FAKE_PI_GUIDED_GIT_ACTIVATION/u);
   assert.match(fakePi, /git-guided-workflow:webui-start/u);
   assert.match(html, /styles\.css\?v=143/u);
-  assert.match(html, /app\.js\?v=175/u);
-  assert.match(serviceWorker, /pi-webui-pwa-v142/u);
+  assert.match(html, /app\.js\?v=176/u);
+  assert.match(serviceWorker, /pi-webui-pwa-v143/u);
   assert.match(serviceWorker, /"\/guided-git-command-state\.mjs"/u);
   assert.match(readme, /pi-extension-git-guided-workflow/u);
   assert.match(technical, /\/git-guided-workflow/u);

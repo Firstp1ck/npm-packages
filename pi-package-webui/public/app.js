@@ -33636,7 +33636,7 @@ async function startGitWorkflow(tabId = activeTabId, { skipSetup = false, activa
 
   let setupData;
   try {
-    const response = await api("/api/git-workflow/preferences", { tabId });
+    const response = await api("/api/git-workflow/preferences?includeModels=false", { tabId });
     setupData = response.data || {};
     if (!activationIsCurrent()) return;
     gitWorkflowPreferences = setupData.preferences || null;
@@ -44221,10 +44221,11 @@ async function openNativeResumeSelector(scope = "current", { query = "" } = {}) 
       setNativeCommandError("");
       try {
         const result = await nativeCommandApi("/api/switch-session", { method: "POST", body: { sessionPath: selectedItem.session.path } });
-        applyResponseTab(result);
-        addTransientMessage({ role: "native", title: "/resume", content: result.data?.message || "Resumed selected session.", level: "info" });
+        const resumedTab = syncResponseTabs(result);
         closeNativeCommandDialog();
-        await refreshAll();
+        if (resumedTab?.id) await switchTab(resumedTab.id);
+        else await refreshAll();
+        addTransientMessage({ role: "native", title: "/resume", content: result.data?.message || "Resumed selected session in a new terminal tab.", level: "info" });
       } catch (error) {
         setNativeCommandError(error.message || String(error));
       }

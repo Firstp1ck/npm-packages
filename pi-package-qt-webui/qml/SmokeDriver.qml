@@ -9,6 +9,7 @@ Item {
 
     required property var bridge
     required property var shell
+    readonly property bool orderOnly: Quickshell.env("QT_WEBUI_THEME_MODE") === "order-only"
     property string phase: "boot"
     property string nextAction: ""
     property bool forceUnfocused: false
@@ -175,6 +176,11 @@ Item {
         searchChecked = true
         forceUnfocused = true
         schedule("immediate")
+    }
+
+    function startAppearanceChecks() {
+        phase = "appearance-light"
+        bridge.updateSetting("appearanceMode", "light")
     }
 
     // Composer phase: command and path completion through the composer's own entry points (never
@@ -480,8 +486,44 @@ Item {
     // points, cycle both values, then compact. Each step waits for the bridge state it changes.
     function startModels() {
         phase = "models"
-        modelStep = "active-popup"
+        modelStep = orderOnly ? "order-picker" : "active-popup"
         if (!shell.openModelPicker()) return fail("model picker request refused")
+    }
+
+    function checkModelOrdering() {
+        const picker = shell.modelDropUp
+        if (!picker.opened || picker.reorderable || picker.items.length !== 3) return fail("unscoped model list unexpectedly enabled ordering")
+        if (picker.items[0].value !== "fixture-provider/fixture-model" || picker.currentIndex !== 0 || picker.items[0].current !== true) return fail("initial model order or selection")
+        // The fixture's default list is intentionally unscoped. Enable the reusable picker seam
+        // only inside this smoke scenario; shell gating for explicit scopes is covered statically.
+        picker.reorderable = true
+        bridge.modelOrder = ["absent-provider/absent-model"]
+        const fullScope = []
+        for (let index = 0; index < bridge.maxModels; index++) fullScope.push("bulk/provider-" + index)
+        const bounded = bridge.mergedModelOrder(fullScope)
+        if (bounded.length !== bridge.maxModels || bounded[0] !== "bulk/provider-0" || bounded[bridge.maxModels - 1] !== "bulk/provider-255" || bounded.indexOf("absent-provider/absent-model") !== -1) return fail("current model identities did not win the saved-order bound")
+        if (!picker.reorderEnabled) return fail("smoke reorder seam was not enabled")
+        picker.setFilter("fixture")
+        if (picker.reorderEnabled || picker.moveCurrentItem(1)) return fail("filtered model reorder was enabled")
+        picker.setFilter("")
+        picker.focusOptions()
+        if (!picker.optionsFocused || !picker.handleOptionListKey(Qt.Key_Down, Qt.ControlModifier | Qt.ShiftModifier)) return fail("keyboard model reorder was not handled")
+        if (!picker.opened || picker.currentIndex !== 1 || picker.items[0].value !== "fixture-provider/fixture-fast" || picker.items[1].value !== "fixture-provider/fixture-model" || picker.items[1].current !== true) return fail("completed model reorder changed selection or popup state")
+        log("QT_WEBUI_SMOKE_MODEL_REORDER_COMPLETED")
+        modelStep = "order-save"
+        waitFor("model order save", () => bridge.modelOrder.length === 4 && bridge.modelOrder[0] === "fixture-provider/fixture-fast" && bridge.modelOrder[1] === "fixture-provider/fixture-model" && bridge.modelOrder[2] === "other-provider/other-model" && bridge.modelOrder[3] === "absent-provider/absent-model", () => {
+            log("QT_WEBUI_SMOKE_MODEL_REORDER_SAVED")
+            const sourceModels = picker.items.map(item => {
+                const slash = String(item.value).indexOf("/")
+                return { provider: String(item.value).slice(0, slash), id: String(item.value).slice(slash + 1) }
+            }).reverse()
+            const reapplied = bridge.orderedModelData({ scope: { explicit: true }, models: sourceModels })
+            if (reapplied.models.length !== 3 || reapplied.models[0].id !== "fixture-fast" || reapplied.models[1].id !== "fixture-model" || reapplied.models[2].id !== "other-model") return fail("saved model order was not reapplied")
+            log("QT_WEBUI_SMOKE_MODEL_REORDER_REAPPLIED")
+            picker.close()
+            log("QT_WEBUI_SMOKE_COMPLETE")
+            bridge.shutdown()
+        })
     }
 
     function checkActiveModelPicker() {
@@ -684,6 +726,9 @@ Item {
             case "tabs":
                 driver.startTabs()
                 break
+            case "check-model-ordering":
+                driver.checkModelOrdering()
+                break
             case "check-active-model-picker":
                 driver.checkActiveModelPicker()
                 break
@@ -757,7 +802,8 @@ Item {
             if (!driver.piReadyOnce) {
                 driver.piReadyOnce = true
                 driver.log("QT_WEBUI_SMOKE_READY")
-                driver.schedule("stream")
+                if (driver.orderOnly) driver.startModels()
+                else driver.schedule("stream")
             } else if (driver.phase === "restart-recovered") {
                 driver.log("QT_WEBUI_SMOKE_RESTART_RECEIPT")
                 driver.schedule("backend-crash")
@@ -839,6 +885,32 @@ Item {
         function onCompactTranscriptChanged() {
             if (driver.phase === "settings" && driver.bridge.compactTranscript) {
                 driver.log("QT_WEBUI_SMOKE_SETTINGS_PERSISTED")
+                driver.startAppearanceChecks()
+            }
+        }
+
+        function onAppearanceModeChanged() {
+            if (driver.phase === "appearance-light" && driver.bridge.appearanceMode === "light" && !driver.shell.themeDark) {
+                driver.log("QT_WEBUI_SMOKE_THEME_LIGHT_OVERRIDE")
+                driver.phase = "appearance-dark"
+                driver.bridge.updateSetting("appearanceMode", "dark")
+            } else if (driver.phase === "appearance-dark" && driver.bridge.appearanceMode === "dark" && driver.shell.themeDark) {
+                driver.log("QT_WEBUI_SMOKE_THEME_DARK_OVERRIDE")
+                driver.phase = "appearance-reduced"
+                driver.bridge.updateSetting("reducedMotion", true)
+            } else if (driver.phase === "appearance-automatic" && driver.bridge.appearanceMode === "automatic" && driver.shell.themeDark) {
+                driver.log("QT_WEBUI_SMOKE_THEME_AUTOMATIC")
+                driver.phase = "appearance-restore-motion"
+                driver.bridge.updateSetting("reducedMotion", false)
+            }
+        }
+
+        function onReducedMotionChanged() {
+            if (driver.phase === "appearance-reduced" && driver.bridge.reducedMotion && driver.shell.themeAnimationDuration === 0) {
+                driver.log("QT_WEBUI_SMOKE_REDUCED_MOTION")
+                driver.phase = "appearance-automatic"
+                driver.bridge.updateSetting("appearanceMode", "automatic")
+            } else if (driver.phase === "appearance-restore-motion" && !driver.bridge.reducedMotion && driver.shell.themeAnimationDuration > 0) {
                 driver.schedule("composer")
             }
         }
@@ -865,7 +937,8 @@ Item {
 
         function onModelsLoaded(data) {
             if (driver.phase !== "models") return
-            if (driver.modelStep === "active-popup") driver.schedule("check-active-model-picker")
+            if (driver.modelStep === "order-picker") driver.schedule("check-model-ordering")
+            else if (driver.modelStep === "active-popup") driver.schedule("check-active-model-picker")
             else if (driver.modelStep === "pending-active") driver.schedule("start-final-model-picker")
             else if (driver.modelStep === "picker") driver.schedule("check-model-picker")
         }

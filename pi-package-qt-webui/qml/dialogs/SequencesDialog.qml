@@ -195,12 +195,16 @@ AppDialog {
             id: sequenceRow
             required property int index
             required property var modelData
+            readonly property bool selected: ListView.isCurrentItem
+            readonly property bool focused: selected && optionList.activeFocus
             width: optionList.width
-            implicitHeight: sequenceColumn.implicitHeight + 14
-            radius: 6
-            color: ListView.isCurrentItem ? dialog.theme.selection : "transparent"
-            border.width: ListView.isCurrentItem && optionList.activeFocus ? 2 : 0
-            border.color: dialog.theme.focusRing
+            implicitHeight: sequenceColumn.implicitHeight + dialog.theme.spaceXl + dialog.theme.spaceXxs
+            radius: dialog.theme.radiusSmall
+            color: dialog.theme.interactiveFill(selected, sequenceHover.hovered, sequenceTap.pressed)
+            border.width: dialog.theme.focusBorderWidth
+            border.color: dialog.theme.interactiveBorder(selected, focused)
+            Behavior on color { ColorAnimation { duration: dialog.theme.motionNormal } }
+            Behavior on border.color { ColorAnimation { duration: dialog.theme.motionNormal } }
             Accessible.role: Accessible.ListItem
             Accessible.name: String(modelData.name) + ", " + modelData.entries.length + " prompts"
             Accessible.focusable: true
@@ -209,16 +213,16 @@ AppDialog {
             ColumnLayout {
                 id: sequenceColumn
                 anchors.fill: parent
-                anchors.margins: 7
-                spacing: 2
+                anchors.margins: dialog.theme.spaceSm + 1
+                spacing: dialog.theme.spaceXxs
 
                 Label {
                     Layout.fillWidth: true
                     text: String(sequenceRow.modelData.name)
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
-                    color: dialog.theme.foreground
-                    font.pixelSize: 13
+                    color: sequenceRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
+                    font.pixelSize: dialog.theme.typeBody + 1
                     font.bold: true
                 }
 
@@ -228,11 +232,17 @@ AppDialog {
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
                     color: dialog.theme.muted
-                    font.pixelSize: 11
+                    font.pixelSize: dialog.theme.typeSmall
                 }
             }
 
+            HoverHandler {
+                id: sequenceHover
+                cursorShape: Qt.PointingHandCursor
+            }
+
             TapHandler {
+                id: sequenceTap
                 onTapped: optionList.currentIndex = sequenceRow.index
             }
         }

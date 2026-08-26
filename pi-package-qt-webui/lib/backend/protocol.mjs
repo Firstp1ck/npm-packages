@@ -194,6 +194,9 @@ export const SETTINGS_SCHEMA = Object.freeze({
   showThinking: { type: "boolean", default: true },
   desktopNotifications: { type: "boolean", default: true },
   syntaxHighlighting: { type: "boolean", default: true },
+  appearanceMode: { type: "string", values: Object.freeze(["automatic", "light", "dark"]), default: "automatic" },
+  reducedMotion: { type: "boolean", default: false },
+  modelOrder: { type: "modelIdentityList", default: Object.freeze([]) },
 });
 
 export class ProtocolError extends Error {
@@ -201,6 +204,40 @@ export class ProtocolError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+export function validateModelOrder(value) {
+  if (!Array.isArray(value)) throw new ProtocolError("invalid_request", "setting modelOrder must be an array");
+  if (value.length > LIMITS.maxModels) {
+    throw new ProtocolError("limit_exceeded", `setting modelOrder cannot have more than ${LIMITS.maxModels} entries`);
+  }
+  const result = [];
+  const seen = new Set();
+  for (const identity of value) {
+    if (typeof identity !== "string" || identity.length === 0) {
+      throw new ProtocolError("invalid_request", "setting modelOrder entries must be non-empty strings");
+    }
+    const separator = identity.indexOf("/");
+    if (separator <= 0 || separator === identity.length - 1) {
+      throw new ProtocolError("invalid_request", "setting modelOrder entries must be provider/model-id identities");
+    }
+    const provider = identity.slice(0, separator);
+    const modelId = identity.slice(separator + 1);
+    if (provider.trim().length === 0 || modelId.trim().length === 0) {
+      throw new ProtocolError("invalid_request", "setting modelOrder entries must contain a non-empty provider and model id");
+    }
+    if (provider.length > LIMITS.maxProviderCharacters) {
+      throw new ProtocolError("limit_exceeded", `modelOrder provider exceeds ${LIMITS.maxProviderCharacters} characters`);
+    }
+    if (modelId.length > LIMITS.maxModelIdCharacters) {
+      throw new ProtocolError("limit_exceeded", `modelOrder model id exceeds ${LIMITS.maxModelIdCharacters} characters`);
+    }
+    if (!seen.has(identity)) {
+      seen.add(identity);
+      result.push(identity);
+    }
+  }
+  return result;
 }
 
 export function boundedString(value, limit, fallback = "") {
@@ -448,7 +485,14 @@ export function validateRequest(frame) {
       for (const [key, value] of Object.entries(frame.values)) {
         const schema = SETTINGS_SCHEMA[key];
         if (!schema) throw new ProtocolError("invalid_request", `unknown setting ${key}`);
+        if (schema.type === "modelIdentityList") {
+          request.values[key] = validateModelOrder(value);
+          continue;
+        }
         if (typeof value !== schema.type) throw new ProtocolError("invalid_request", `setting ${key} must be ${schema.type}`);
+        if (schema.values && !schema.values.includes(value)) {
+          throw new ProtocolError("invalid_request", `setting ${key} must be one of ${schema.values.join(", ")}`);
+        }
         request.values[key] = value;
       }
       break;

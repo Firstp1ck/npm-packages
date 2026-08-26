@@ -21,10 +21,10 @@ Rectangle {
 
     signal copyRequested(string text)
 
-    implicitHeight: layout.implicitHeight + 20
-    radius: 10
+    implicitHeight: layout.implicitHeight + theme.space4Xl - theme.spaceXs
+    radius: theme.radiusLarge
     color: theme.surface
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: toolStatus === "error" ? theme.errorBorder : theme.toolBorder
     Accessible.role: Accessible.Grouping
     Accessible.name: "Tool " + toolName + ", " + statusLabel + (durationLabel.length > 0 ? ", " + durationLabel : "")
@@ -32,18 +32,18 @@ Rectangle {
     ColumnLayout {
         id: layout
         anchors.fill: parent
-        anchors.margins: 10
-        spacing: 6
+        anchors.margins: card.theme.spaceLg
+        spacing: card.theme.spaceSm
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: card.theme.spaceMd
 
             Label {
                 text: "Tool"
                 textFormat: Text.PlainText
                 color: card.theme.muted
-                font.pixelSize: 11
+                font.pixelSize: card.theme.typeSmall
                 font.bold: true
             }
 
@@ -53,7 +53,7 @@ Rectangle {
                 textFormat: Text.PlainText
                 color: card.theme.foreground
                 font.family: card.theme.monospaceFamily
-                font.pixelSize: 13
+                font.pixelSize: card.theme.typeBody + 1
                 font.bold: true
                 elide: Text.ElideRight
             }
@@ -63,7 +63,7 @@ Rectangle {
                 text: card.durationLabel
                 textFormat: Text.PlainText
                 color: card.theme.muted
-                font.pixelSize: 11
+                font.pixelSize: card.theme.typeSmall
             }
 
             StatusBadge {
@@ -84,7 +84,7 @@ Rectangle {
             elide: Text.ElideRight
             color: card.theme.muted
             font.family: card.theme.monospaceFamily
-            font.pixelSize: 12
+            font.pixelSize: card.theme.typeBody
         }
 
         Label {
@@ -94,7 +94,7 @@ Rectangle {
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: card.theme.errorPanelForeground
-            font.pixelSize: 12
+            font.pixelSize: card.theme.typeBody
         }
 
         RowLayout {
@@ -121,16 +121,16 @@ Rectangle {
         Rectangle {
             Layout.fillWidth: true
             visible: card.expanded && card.toolOutput.length > 0
-            implicitHeight: outputEdit.implicitHeight + 16
-            radius: 6
+            implicitHeight: outputEdit.implicitHeight + card.theme.space2Xl
+            radius: card.theme.radiusSmall
             color: card.theme.codeBackground
-            border.width: 1
+            border.width: card.theme.borderWidth
             border.color: card.theme.codeBorder
 
             TextEdit {
                 id: outputEdit
                 anchors.fill: parent
-                anchors.margins: 8
+                anchors.margins: card.theme.spaceMd
                 text: card.toolOutput
                 textFormat: TextEdit.PlainText
                 readOnly: true
@@ -140,7 +140,7 @@ Rectangle {
                 selectionColor: card.theme.selection
                 selectedTextColor: card.theme.codeForeground
                 font.family: card.theme.monospaceFamily
-                font.pixelSize: 12
+                font.pixelSize: card.theme.typeBody
                 Accessible.role: Accessible.StaticText
                 Accessible.name: "Output of tool " + card.toolName
             }

@@ -111,12 +111,16 @@ AppDialog {
             id: optionRow
             required property int index
             required property var modelData
+            readonly property bool selected: ListView.isCurrentItem
+            readonly property bool focused: selected && optionList.activeFocus
             width: optionList.width
-            implicitHeight: optionLabel.implicitHeight + 16
-            radius: 6
-            color: ListView.isCurrentItem ? dialog.theme.selection : "transparent"
-            border.width: ListView.isCurrentItem && optionList.activeFocus ? 2 : 0
-            border.color: dialog.theme.focusRing
+            implicitHeight: optionLabel.implicitHeight + dialog.theme.space2Xl
+            radius: dialog.theme.radiusSmall
+            color: dialog.theme.interactiveFill(selected, optionHover.hovered, optionTap.pressed)
+            border.width: dialog.theme.focusBorderWidth
+            border.color: dialog.theme.interactiveBorder(selected, focused)
+            Behavior on color { ColorAnimation { duration: dialog.theme.motionNormal } }
+            Behavior on border.color { ColorAnimation { duration: dialog.theme.motionNormal } }
             Accessible.role: Accessible.ListItem
             Accessible.name: String(modelData)
             Accessible.focusable: true
@@ -125,15 +129,21 @@ AppDialog {
             Label {
                 id: optionLabel
                 anchors.fill: parent
-                anchors.margins: 8
+                anchors.margins: dialog.theme.spaceMd
                 text: String(optionRow.modelData)
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
-                color: dialog.theme.foreground
-                font.pixelSize: 13
+                color: optionRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
+                font.pixelSize: dialog.theme.typeBody + 1
+            }
+
+            HoverHandler {
+                id: optionHover
+                cursorShape: Qt.PointingHandCursor
             }
 
             TapHandler {
+                id: optionTap
                 onTapped: {
                     optionList.currentIndex = optionRow.index
                     dialog.selectCurrent()
@@ -151,9 +161,9 @@ AppDialog {
         placeholderTextColor: dialog.theme.muted
         selectionColor: dialog.theme.selection
         background: Rectangle {
-            radius: 6
+            radius: dialog.theme.radiusSmall
             color: dialog.theme.surfaceRaised
-            border.width: inputField.activeFocus ? 2 : 1
+            border.width: inputField.activeFocus ? dialog.theme.focusBorderWidth : dialog.theme.borderWidth
             border.color: inputField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
         }
         Accessible.role: Accessible.EditableText

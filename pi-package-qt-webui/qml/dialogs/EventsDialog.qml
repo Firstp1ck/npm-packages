@@ -152,17 +152,23 @@ AppDialog {
             id: eventRow
             required property int index
             required property var modelData
+            readonly property bool selected: ListView.isCurrentItem
+            readonly property bool focused: selected && eventList.activeFocus
             width: eventList.width
-            implicitHeight: eventColumn.implicitHeight + 12
-            radius: 6
-            color: ListView.isCurrentItem ? dialog.theme.selection : "transparent"
+            implicitHeight: eventColumn.implicitHeight + dialog.theme.spaceXl
+            radius: dialog.theme.radiusSmall
+            color: dialog.theme.interactiveFill(selected, eventHover.hovered, eventTap.pressed)
+            border.width: dialog.theme.focusBorderWidth
+            border.color: dialog.theme.interactiveBorder(selected, focused)
+            Behavior on color { ColorAnimation { duration: dialog.theme.motionNormal } }
+            Behavior on border.color { ColorAnimation { duration: dialog.theme.motionNormal } }
             Accessible.role: Accessible.ListItem
             Accessible.name: modelData.level + ": " + modelData.message + (modelData.count > 1 ? ", repeated " + modelData.count + " times" : "")
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 6
-                spacing: 8
+                anchors.margins: dialog.theme.spaceSm
+                spacing: dialog.theme.spaceMd
 
                 StatusBadge {
                     theme: dialog.theme
@@ -174,7 +180,7 @@ AppDialog {
                 ColumnLayout {
                     id: eventColumn
                     Layout.fillWidth: true
-                    spacing: 2
+                    spacing: dialog.theme.spaceXxs
 
                     Label {
                         Layout.fillWidth: true
@@ -183,17 +189,27 @@ AppDialog {
                         wrapMode: Text.Wrap
                         maximumLineCount: 4
                         elide: Text.ElideRight
-                        color: dialog.theme.foreground
-                        font.pixelSize: 12
+                        color: eventRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
+                        font.pixelSize: dialog.theme.typeBody
                     }
 
                     Label {
                         text: dialog.timeLabel(eventRow.modelData.at) + (eventRow.modelData.tab.length > 0 ? " · " + eventRow.modelData.tab : "") + (eventRow.modelData.count > 1 ? " · ×" + eventRow.modelData.count : "")
                         textFormat: Text.PlainText
                         color: dialog.theme.muted
-                        font.pixelSize: 10
+                        font.pixelSize: dialog.theme.typeCaption
                     }
                 }
+            }
+
+            HoverHandler {
+                id: eventHover
+                cursorShape: Qt.PointingHandCursor
+            }
+
+            TapHandler {
+                id: eventTap
+                onTapped: eventList.currentIndex = eventRow.index
             }
         }
     }

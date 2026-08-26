@@ -13,12 +13,12 @@ Rectangle {
 
     readonly property real availableWidth: parent && parent.width > 0 ? parent.width : implicitWidth
 
-    implicitWidth: statusFlow.implicitWidth + 12
+    implicitWidth: statusFlow.implicitWidth + theme.spaceXl
     width: Math.min(implicitWidth, availableWidth)
-    implicitHeight: statusFlow.implicitHeight + 8
-    radius: 6
+    implicitHeight: statusFlow.implicitHeight + theme.spaceMd
+    radius: theme.radiusSmall
     color: theme.surfaceRaised
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: theme.border
     Accessible.role: Accessible.Grouping
     Accessible.name: groupName
@@ -26,7 +26,7 @@ Rectangle {
     Flow {
         id: statusFlow
         anchors.fill: parent
-        anchors.margins: 6
+        anchors.margins: segment.theme.spaceSm
         spacing: 0
 
         Repeater {
@@ -65,7 +65,7 @@ Rectangle {
                         text: String(entry.modelData.icon || "")
                         textFormat: Text.PlainText
                         color: segment.theme.muted
-                        font.pixelSize: 11
+                        font.pixelSize: segment.theme.typeSmall
                     }
 
                     Label {
@@ -74,7 +74,7 @@ Rectangle {
                         text: String(entry.modelData.label || "")
                         textFormat: Text.PlainText
                         color: segment.theme.muted
-                        font.pixelSize: 11
+                        font.pixelSize: segment.theme.typeSmall
                         elide: Text.ElideRight
                     }
 
@@ -87,7 +87,7 @@ Rectangle {
                         color: entry.tone === "error" ? segment.theme.errorForeground
                             : entry.tone === "warning" ? segment.theme.toolForeground
                             : entry.tone === "ok" ? segment.theme.readyForeground : segment.theme.foreground
-                        font.pixelSize: 11
+                        font.pixelSize: segment.theme.typeSmall
                         font.bold: true
                         elide: Text.ElideRight
                     }

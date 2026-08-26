@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LIMITS, SETTINGS_SCHEMA } from "./protocol.mjs";
+import { LIMITS, SETTINGS_SCHEMA, validateModelOrder } from "./protocol.mjs";
 
 // Settings live under the XDG config directory with private permissions. The file is small,
 // validated on every read, and replaced atomically so a crash mid-write cannot corrupt it.
@@ -14,7 +14,7 @@ export function settingsDirectory(env = process.env) {
 }
 
 export function defaultSettings() {
-  return Object.fromEntries(Object.entries(SETTINGS_SCHEMA).map(([key, schema]) => [key, schema.default]));
+  return Object.fromEntries(Object.entries(SETTINGS_SCHEMA).map(([key, schema]) => [key, Array.isArray(schema.default) ? [...schema.default] : schema.default]));
 }
 
 function validated(raw) {
@@ -27,8 +27,20 @@ function validated(raw) {
       problems.push(`ignored unknown setting ${key}`);
       continue;
     }
+    if (schema.type === "modelIdentityList") {
+      try {
+        settings[key] = validateModelOrder(value);
+      } catch (error) {
+        problems.push(`ignored ${key}: ${error.message}`);
+      }
+      continue;
+    }
     if (typeof value !== schema.type) {
       problems.push(`ignored ${key}: expected ${schema.type}`);
+      continue;
+    }
+    if (schema.values && !schema.values.includes(value)) {
+      problems.push(`ignored ${key}: expected one of ${schema.values.join(", ")}`);
       continue;
     }
     settings[key] = value;

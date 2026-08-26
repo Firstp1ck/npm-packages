@@ -1,18 +1,51 @@
 import QtQuick
-import Quickshell
 
 QtObject {
     id: theme
 
-    readonly property string requestedMode: String(Quickshell.env("QT_WEBUI_THEME_MODE")).toLowerCase()
-    readonly property string portalMode: String(Quickshell.env("QT_WEBUI_SYSTEM_COLOR_SCHEME")).toLowerCase()
+    property string requestedMode: "automatic"
+    property string portalMode: "unknown"
+    property bool reducedMotion: false
+    property int desktopCornerRadius: 8
+    property int desktopEdgeGap: 8
+
     readonly property bool dark: requestedMode === "dark"
         || (requestedMode !== "light"
             && (portalMode === "dark"
                 || (portalMode !== "light" && Qt.styleHints.colorScheme === Qt.Dark)))
 
-    readonly property int animationDuration: 120
+    // Shared visual scale. Components should consume these instead of deriving local values.
+    readonly property int spaceXxs: 2
+    readonly property int spaceXs: 4
+    readonly property int spaceSm: 6
+    readonly property int spaceMd: 8
+    readonly property int spaceLg: 10
+    readonly property int spaceXl: 12
+    readonly property int space2Xl: 16
+    readonly property int space3Xl: 18
+    readonly property int space4Xl: 24
+    readonly property int edgeGap: desktopEdgeGap
+
+    readonly property int typeCaption: 10
+    readonly property int typeSmall: 11
+    readonly property int typeBody: 12
+    readonly property int typeSubtitle: 15
+    readonly property int typeTitle: 16
+    readonly property int typeDisplay: 20
     readonly property string monospaceFamily: "monospace"
+
+    readonly property int radiusSmall: Math.min(6, desktopCornerRadius)
+    readonly property int radiusMedium: desktopCornerRadius
+    readonly property int radiusLarge: Math.max(desktopCornerRadius, 10)
+    readonly property int radiusPill: 999
+    readonly property int borderWidth: 1
+    readonly property int focusBorderWidth: 2
+    readonly property int controlHeight: 30
+
+    readonly property int motionFast: reducedMotion ? 0 : 80
+    readonly property int motionNormal: reducedMotion ? 0 : 120
+    readonly property int motionSlow: reducedMotion ? 0 : 180
+    readonly property int animationDuration: motionNormal
 
     // Keep the original slate-and-blue palette while exposing semantic workspace roles.
     readonly property color mainSurface: dark ? "#0f172a" : "#f8fafc"
@@ -36,15 +69,59 @@ QtObject {
     readonly property color userBorder: dark ? "#1d4ed8" : "#93c5fd"
     readonly property color assistantBorder: dark ? "#475569" : "#cbd5e1"
 
+    readonly property color transparent: "transparent"
     readonly property color controlSurface: surfaceRaised
     readonly property color controlHover: dark ? "#334155" : "#e8edf3"
     readonly property color controlPressed: dark ? "#475569" : "#e2e8f0"
     readonly property color controlActive: userBubble
+    readonly property color controlSelected: selection
     readonly property color controlBorder: border
     readonly property color controlActiveBorder: accent
+    readonly property color controlSelectedBorder: accent
     readonly property color disabledSurface: dark ? "#334155" : "#e2e8f0"
     readonly property color disabledForeground: dark ? "#94a3b8" : "#64748b"
-    readonly property color buttonForeground: "#ffffff"
+    readonly property color primaryButtonBackground: accent
+    readonly property color primaryButtonHover: dark ? "#60a5fa" : "#1d4ed8"
+    readonly property color primaryButtonPressed: dark ? "#2563eb" : "#1e40af"
+    readonly property color primaryButtonForeground: dark ? "#0f172a" : "#ffffff"
+    readonly property color primaryButtonHoverForeground: dark ? "#0f172a" : "#ffffff"
+    readonly property color primaryButtonPressedForeground: "#ffffff"
+    readonly property color destructiveButtonBackground: destructive
+    readonly property color destructiveButtonHover: dark ? "#f87171" : "#b91c1c"
+    readonly property color destructiveButtonPressed: dark ? "#dc2626" : "#991b1b"
+    readonly property color destructiveButtonForeground: dark ? "#0f172a" : "#ffffff"
+    readonly property color destructiveButtonHoverForeground: dark ? "#0f172a" : "#ffffff"
+    readonly property color destructiveButtonPressedForeground: "#ffffff"
+    readonly property color warningButtonBackground: warning
+    readonly property color warningButtonHover: dark ? "#fbbf24" : "#f59e0b"
+    readonly property color warningButtonPressed: "#d97706"
+    readonly property color warningButtonForeground: "#0f172a"
+    readonly property color buttonForeground: primaryButtonForeground
+
+    function filledButtonBackground(variant, state) {
+        if (variant === "destructive") return state === "pressed" ? destructiveButtonPressed : state === "hovered" ? destructiveButtonHover : destructiveButtonBackground
+        if (variant === "warning") return state === "pressed" ? warningButtonPressed : state === "hovered" ? warningButtonHover : warningButtonBackground
+        return state === "pressed" ? primaryButtonPressed : state === "hovered" ? primaryButtonHover : primaryButtonBackground
+    }
+
+    function filledButtonForeground(variant, state) {
+        if (variant === "destructive") return state === "pressed" ? destructiveButtonPressedForeground : state === "hovered" ? destructiveButtonHoverForeground : destructiveButtonForeground
+        if (variant === "warning") return warningButtonForeground
+        return state === "pressed" ? primaryButtonPressedForeground : state === "hovered" ? primaryButtonHoverForeground : primaryButtonForeground
+    }
+
+    function interactiveFill(selected, hovered, pressed) {
+        if (pressed) return controlPressed
+        if (hovered) return controlHover
+        if (selected) return controlSelected
+        return transparent
+    }
+
+    function interactiveBorder(selected, focused) {
+        if (focused) return focusRing
+        if (selected) return controlSelectedBorder
+        return transparent
+    }
 
     readonly property color composerSurface: surface
     readonly property color composerBorder: border
@@ -52,7 +129,11 @@ QtObject {
 
     readonly property color destructive: dark ? "#ef4444" : "#dc2626"
     readonly property color warning: dark ? "#f59e0b" : "#d97706"
+    readonly property color urgentBackground: dark ? "#7f1d1d" : "#fee2e2"
+    readonly property color urgentBorder: dark ? "#f87171" : "#dc2626"
+    readonly property color urgentForeground: dark ? "#fecaca" : "#7f1d1d"
     readonly property color selection: dark ? "#1d4ed8" : "#bfdbfe"
+    readonly property color selectionForeground: dark ? "#eff6ff" : "#172554"
     readonly property color searchHighlight: dark ? "#713f12" : "#fef08a"
 
     readonly property color codeBackground: dark ? "#020617" : "#0f172a"

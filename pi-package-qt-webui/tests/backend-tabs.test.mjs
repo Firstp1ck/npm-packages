@@ -325,7 +325,7 @@ test("tabs run isolated sessions, badge inactive tabs, replay transcripts on sel
   assert.equal(hello.data.tabs.tabs.length, 1);
   const firstTab = hello.data.tabs.activeTab;
   assert.equal(hello.data.tabs.tabs[0].cwd, await realpath(first));
-  assert(backend.events.every((event) => event.type.startsWith("backend.") || event.type === "tabs.update" || event.type === "transcript.reset" || event.type === "settings.changed" || event.tab === firstTab), "session events carry the tab id");
+  assert(backend.events.every((event) => event.type.startsWith("backend.") || event.type === "tabs.update" || event.type === "transcript.reset" || event.type === "settings.changed" || event.type === "appearance.changed" || event.tab === firstTab), "session events carry the tab id");
 
   const opened = await backend.send("tab_open", { cwd: second });
   assert.equal(opened.ok, true, JSON.stringify(opened));

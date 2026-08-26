@@ -5,7 +5,7 @@ description: Use when building or styling desktop apps, Quickshell QML component
 
 # Desktop Visual Design
 
-Build system-native desktop interfaces from the visual rules already present in the user's environment. Inspect the target first, turn repeated values into semantic tokens, reuse host components, and verify the result across interaction states and theme changes.
+Build system-native desktop interfaces from the visual rules already present in the user's environment. Inspect the target first, turn repeated values into semantic tokens, reuse host components, and verify the result across interaction states and theme changes. When the target has no visual contract, use the restrained terminal-first fallback defined here rather than inventing a glossy web-app style.
 
 Installing this Pi package makes the skill available to Pi. It does not modify desktop settings, themes, or application code by itself.
 
@@ -29,7 +29,8 @@ Do not trigger for server-side work, CLI output formatting, compositor configura
 5. **Keep geometry stable.** Reserve border and focus-ring space so interaction never shifts layout.
 6. **Use one scale.** Derive spacing and typography from named tokens and a documented base size.
 7. **Retheme through one path.** Parse, validate, and publish an atomic theme snapshot. Theme changes must not leave mixed old and new values on screen.
-8. **Match existing motion.** Prefer short, cubic ease-out transitions and honor reduced-motion settings.
+8. **Match existing motion.** Honor the target's motion language and reduced-motion settings. When no motion language exists, animate only short color or opacity changes.
+9. **Restrain decoration.** Without an explicit reference, prefer opaque flat surfaces, one accent family, thin borders, square geometry, and no gradients, glow, blur, hover lift, or decorative shadows.
 
 ## Token model
 
@@ -45,7 +46,7 @@ Start with semantic roles:
 | `urgent` | errors and critical attention |
 | `muted` | placeholders, dividers, and metadata |
 
-Add surface-specific roles only when the target already distinguishes them. Do not name component tokens after a hue.
+Add surface-specific roles only when the target already distinguishes them. Do not name component tokens after a hue. The fallback uses one cool accent family for selection, focus, and progress, with urgent reserved for errors. Do not introduce multi-hue decorative palettes, gradients, glow, or translucent glass unless the target already uses them.
 
 ### Interaction states
 
@@ -53,12 +54,12 @@ If the target project has no state model, use this compact reference profile:
 
 | State | Fill alpha | Border alpha | Border width |
 |---|---:|---:|---:|
-| normal | 0.04 | 0.40 | 1px |
-| hover or keyboard cursor | 0.08 | 0.25 | 1px |
-| focus | 0.08 | 0.25 | 1px |
-| selected | 0.18 | 1.00 | 0px |
-| pressed | 0.22 | inherit | inherit |
-| text selection | 0.35 | none | 0px |
+| normal | 0.00 | 0.35 | 1px |
+| hover or keyboard cursor | 0.06 | 0.60 | 1px |
+| focus | 0.06 | 1.00 | 1px |
+| selected | 0.16 | 0.72 | 1px |
+| pressed | 0.22 | 0.88 | 1px |
+| text selection | 0.30 | none | 0px |
 
 Apply state precedence in this order: pressed, focus, hover or cursor, selected, active, idle. Use visible focus even when hover and focus share a fill.
 
@@ -66,9 +67,9 @@ Apply state precedence in this order: pressed, focus, hover or cursor, selected,
 
 At a 12px base font, the fallback spacing scale is:
 
-`xxs 2, xs 3, sm 4, md 6, lg 8, xl 10, xxl 12, xxxl 14, huge 18`
+`xxs 2, xs 4, sm 6, md 8, lg 10, xl 12, xxl 16, xxxl 20, huge 24`
 
-Fallback type multipliers are caption 0.833, body-small 0.917, body 1.0, subtitle 1.083, title 1.167, heading 1.333, display 2.0, and display-large 2.333.
+Fallback type multipliers are caption 0.833, body-small 0.917, body 1.0, subtitle 1.083, title 1.167, heading 1.333, display 2.0, and display-large 2.333. Prefer the desktop's monospace UI alias across controls, labels, and data. Use uppercase labels with restrained `0.08em` to `0.12em` tracking for short section headings, not for paragraphs or long actions.
 
 The target project's own values always win. See `references/design-tokens.md` for the complete fallback profile.
 
@@ -76,7 +77,9 @@ The target project's own values always win. See `references/design-tokens.md` fo
 
 Read geometry from project tokens or compositor settings when available. On Hyprland, `hyprctl -j getoption decoration:rounding` and `general:gaps_out` can inform radius and edge spacing. Validate command output and keep the last valid value on failure.
 
-Use 120ms for state-color transitions, about 140ms for popup opacity, 160 to 180ms for short slides, and no more than 420ms for large panels unless the existing desktop establishes another rhythm.
+Without a geometry source, use square panels and controls with a `0px` radius, allowing up to `2px` only when needed to avoid harsh raster clipping. Use opaque surfaces, 1px borders, and simple separators. Do not use pill geometry unless shape itself communicates a compact status or toggle.
+
+Without an existing motion language, use 90 to 120ms color or opacity transitions and no positional hover movement. Keep functional progress animation, such as a spinner, constant and subtle. Reduced-motion mode removes nonessential animation.
 
 ## Workflow
 
@@ -108,7 +111,7 @@ Use 120ms for state-color transitions, about 140ms for popup opacity, 160 to 180
 - Test no-preference, malformed, and unavailable source results plus any disagreement precedence between toolkit and portal values.
 - Change the live desktop preference and confirm every semantic color tied to the live source updates together without restarting the app.
 - Test supported scale factors, font changes, and bar or panel edges.
-- Compare screenshots beside existing first-party surfaces. For Quickshell windows, confirm the visual root belongs to `contentItem` and that intended opaque surfaces do not reveal the windows behind them.
+- Compare screenshots beside existing first-party surfaces. When the fallback is active, also check for flat opaque surfaces, monospace UI text, square geometry, thin borders, restrained accent use, and the absence of decorative glow or hover lift. For Quickshell windows, confirm the visual root belongs to `contentItem` and that intended opaque surfaces do not reveal the windows behind them.
 - Run the target project's documented formatting, type, and UI checks.
 
 ## Safety and failure modes

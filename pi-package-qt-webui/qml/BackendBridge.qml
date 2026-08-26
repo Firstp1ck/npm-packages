@@ -12,6 +12,7 @@ Scope {
     readonly property int maxMessageCharacters: 8192
     readonly property int maxErrorCharacters: 512
     readonly property int maxRuntimeInfoCharacters: 160
+    readonly property int maxModels: 256
     readonly property int maxNotices: 200
     property int noticeRevision: 0
     property var usage: null
@@ -85,6 +86,12 @@ Scope {
     property bool compactTranscript: false
     property bool showThinking: true
     property bool desktopNotifications: true
+    property string appearanceMode: "automatic"
+    property bool reducedMotion: false
+    property var modelOrder: []
+    property string portalColorScheme: normalizedPortalColorScheme(Quickshell.env("QT_WEBUI_SYSTEM_COLOR_SCHEME"))
+    readonly property int desktopCornerRadius: validatedDesktopMetric(Quickshell.env("QT_WEBUI_DESKTOP_CORNER_RADIUS"), 8)
+    readonly property int desktopEdgeGap: validatedDesktopMetric(Quickshell.env("QT_WEBUI_DESKTOP_EDGE_GAP"), 8)
     property bool windowActive: true
     property int requestSerial: 0
     property var pendingRequests: ({})
@@ -125,6 +132,24 @@ Scope {
     }
 
     // ---- bounded helpers -------------------------------------------------------------
+
+    function normalizedPortalColorScheme(value) {
+        const mode = String(value || "").toLowerCase()
+        return mode === "dark" || mode === "light" ? mode : "unknown"
+    }
+
+    function validatedDesktopMetric(value, fallback) {
+        const metric = Number(value)
+        return Number.isInteger(metric) && metric >= 0 && metric <= 64 ? metric : fallback
+    }
+
+    function applyAppearance(data) {
+        if (!data || typeof data !== "object") return false
+        const mode = normalizedPortalColorScheme(data.portalColorScheme)
+        if (mode === "unknown") return false
+        portalColorScheme = mode
+        return true
+    }
 
     function boundedText(value, limit) {
         const text = typeof value === "string" ? value : String(value ?? "")
@@ -480,6 +505,9 @@ Scope {
         if (typeof settings.showThinking === "boolean") showThinking = settings.showThinking
         if (typeof settings.desktopNotifications === "boolean") desktopNotifications = settings.desktopNotifications
         if (typeof settings.syntaxHighlighting === "boolean") syntaxHighlighting = settings.syntaxHighlighting
+        if (["automatic", "light", "dark"].indexOf(settings.appearanceMode) !== -1) appearanceMode = settings.appearanceMode
+        if (typeof settings.reducedMotion === "boolean") reducedMotion = settings.reducedMotion
+        if (Array.isArray(settings.modelOrder)) modelOrder = settings.modelOrder.slice(0, maxModels)
     }
 
     function openLink(url, callback) {
@@ -561,11 +589,61 @@ Scope {
         return true
     }
 
+    function orderedModelData(data) {
+        if (!data || !data.scope || data.scope.explicit !== true || !Array.isArray(data.models)) return data
+        const byIdentity = {}
+        for (const model of data.models) byIdentity[String(model.provider) + "/" + String(model.id)] = model
+        const ordered = []
+        const used = {}
+        for (const identity of modelOrder) {
+            if (byIdentity[identity] === undefined || used[identity] === true) continue
+            ordered.push(byIdentity[identity])
+            used[identity] = true
+        }
+        for (const model of data.models) {
+            const identity = String(model.provider) + "/" + String(model.id)
+            if (used[identity] === true) continue
+            ordered.push(model)
+            used[identity] = true
+        }
+        return Object.assign({}, data, { "models": ordered })
+    }
+
+    function mergedModelOrder(currentIdentities) {
+        const merged = []
+        const current = {}
+        for (const value of Array.isArray(currentIdentities) ? currentIdentities : []) {
+            const identity = String(value)
+            if (identity.length === 0 || current[identity] === true || merged.length >= maxModels) continue
+            current[identity] = true
+            merged.push(identity)
+        }
+        for (const value of modelOrder) {
+            const identity = String(value)
+            if (identity.length === 0 || current[identity] === true || merged.indexOf(identity) !== -1 || merged.length >= maxModels) continue
+            merged.push(identity)
+        }
+        return merged
+    }
+
+    function saveModelOrder(currentIdentities, callback) {
+        const merged = mergedModelOrder(currentIdentities)
+        request("settings_set", { "values": { "modelOrder": merged } }, response => {
+            if (!response.ok) postNotice("error", "Could not save model order: " + response.error.message)
+            else applySettings(response.data.settings)
+            if (callback) callback(response)
+        })
+        return merged
+    }
+
     function loadModels(callback) {
         if (!ready) return false
         request("models_list", {}, response => {
             if (!response.ok) postNotice("error", "Could not list models: " + response.error.message)
-            else modelsLoaded(response.data)
+            else {
+                response.data = orderedModelData(response.data)
+                modelsLoaded(response.data)
+            }
             if (callback) callback(response)
         })
         return true
@@ -1094,10 +1172,12 @@ Scope {
         case "backend.ready":
             backendReady = true
             requestTimeouts = event.limits && event.limits.requestTimeoutMs ? event.limits.requestTimeoutMs : {}
+            applyAppearance(event.appearance)
             backendStartupTimer.stop()
             request("hello", {}, response => {
                 if (!response.ok) return
                 applySettings(response.data.settings)
+                applyAppearance(response.data.appearance)
                 if (Array.isArray(response.data.recentActions)) recentActions = response.data.recentActions
                 if (response.data.tabs) {
                     tabs = response.data.tabs.tabs
@@ -1243,6 +1323,9 @@ Scope {
             break
         case "settings.changed":
             applySettings(event.settings)
+            break
+        case "appearance.changed":
+            applyAppearance(event)
             break
         case "resources.changed":
             applyResourceState(event.state)

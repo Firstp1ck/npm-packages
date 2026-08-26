@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { createPortalAppearanceMonitor } from "./appearance.mjs";
 import { openExternalLink, openLocalPath, sendDesktopNotification } from "./desktop.mjs";
 import { createDirectory, listDirectory } from "./directories.mjs";
 import { createWorktree, listWorktrees, planWorktree } from "./git.mjs";
@@ -119,6 +120,10 @@ export function createBackend({
     writeFrame(makeErrorResponse(id, code, message), { essential: true });
   }
 
+  const appearance = createPortalAppearanceMonitor({
+    env,
+    onChange: (portalColorScheme) => emit("appearance.changed", { portalColorScheme }),
+  });
   const settings = createSettingsStore({ env });
   const state = createStateStore({ env });
   const sequences = createSequenceStore({ env });
@@ -429,6 +434,7 @@ export function createBackend({
         session: active ? active.session.snapshot() : null,
         attachments: active ? active.attachments.list() : [],
         settings: settings.read().settings,
+        appearance: appearance.snapshot(),
         recentActions: state.read().value.recentActions,
         stats: { maxWritableLength, droppedTotal, backpressurePauses, queuedRecords },
       };
@@ -747,18 +753,20 @@ export function createBackend({
   }
 
   function killAllNow() {
+    appearance.stopNow();
     for (const child of registry.children()) killProcessTreeNow(child);
   }
 
   function shutdown(code, reason) {
     if (shutdownPromise) return shutdownPromise;
     closing = true;
+    const appearanceStop = appearance.stop();
     emit("backend.closing", { reason });
     const forced = setTimeout(() => {
       killAllNow();
       exit(code);
     }, LIMITS.shutdownGraceMs + 1_000);
-    shutdownPromise = registry.stopAll().then(() => {
+    shutdownPromise = Promise.all([appearanceStop, registry.stopAll()]).then(() => {
       clearTimeout(forced);
       for (const entry of inflight.values()) clearTimeout(entry.timer);
       inflight.clear();
@@ -805,7 +813,8 @@ export function createBackend({
     });
     input.on("end", () => shutdown(0, "stdin closed"));
     input.on("error", () => shutdown(0, "stdin error"));
-    emit("backend.ready", { protocolVersion: PROTOCOL_VERSION, backendPid: process.pid, limits: LIMITS, cwd, smokeMode });
+    appearance.start();
+    emit("backend.ready", { protocolVersion: PROTOCOL_VERSION, backendPid: process.pid, limits: LIMITS, cwd, smokeMode, appearance: appearance.snapshot() });
     // Restored tabs start their Pi children now; their events carry tab ids from the first frame.
     try {
       registry.restore();

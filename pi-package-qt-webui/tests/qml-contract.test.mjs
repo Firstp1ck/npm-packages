@@ -98,11 +98,16 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
 
 test("workspace shell keeps the approved rail, centered conversation, and small-window structure", () => {
   const rail = objectBodyContaining(shell, "Rectangle", "id: workspaceRail");
+  const reloadPiButton = objectBodyContaining(shell, "AppButton", "id: reloadPiButton");
   assert.match(shell, /minimumSize:\s*Qt\.size\(560, 520\)/);
   assert.match(rail, /Layout\.minimumWidth:\s*148/);
   assert.match(rail, /Layout\.maximumWidth:\s*208/);
   assert.match(rail, /Accessible\.name:\s*"Workspace navigation"/);
   assert.match(rail, /TabStrip\s*\{[\s\S]*orientation:\s*"vertical"/);
+  assert.match(reloadPiButton, /visible:\s*bridge\.ready/);
+  assert.match(reloadPiButton, /text:\s*"Reload Pi"/);
+  assert.match(reloadPiButton, /enabled:\s*!bridge\.active/);
+  assert.match(reloadPiButton, /onClicked:\s*bridge\.sendPrompt\("\/reload", "send"\)/);
   assert.match(shell, /width:\s*Math\.min\(parent\.width, 820\)/);
   assert.match(shell, /Accessible\.name:\s*"Conversation transcript"/);
   assert.match(emptyState, /Flickable\s*\{[\s\S]*boundsBehavior:\s*Flickable\.StopAtBounds/);
@@ -114,12 +119,49 @@ test("workspace shell keeps the approved rail, centered conversation, and small-
   assert.match(shell, /id:\s*responseControls[\s\S]*Accessible\.name:\s*"Response and transcript controls for workspace "/);
 });
 
-test("theme owns every palette color and follows the desktop color scheme", () => {
+test("composer burger menu exposes secondary actions without duplicating visible controls", () => {
+  const responseControls = objectBodyContaining(shell, "RowLayout", "id: responseControls");
+  const composerMenuButton = objectBodyContaining(responseControls, "AppButton", "id: composerMenuButton");
+  const menuItems = functionBody(shell, "composerMenuItems");
+  assert.match(responseControls, /Flow\s*\{[\s\S]*id:\s*primaryResponseControls[\s\S]*Layout\.fillWidth:\s*true/);
+  assert.match(composerMenuButton, /text:\s*"☰"[\s\S]*accessibleName:\s*"More options"/);
+  assert.match(composerMenuButton, /Layout\.alignment:\s*Qt\.AlignRight \| Qt\.AlignTop/);
+  assert.doesNotMatch(responseControls, /Layout\.rightMargin/, "the burger button should align with the prompt's full right edge");
+  assert(responseControls.indexOf("id: composerMenuButton") > responseControls.indexOf('text: bridge.compactTranscript ? "Compact" : "Detailed"'), "the burger menu should be the rightmost response control");
+  assert.doesNotMatch(responseControls, /id:\s*resourceProfilesButton|text:\s*bridge\.resourceLoading \? "Resources…" : "Resources"/, "Resources should live in the menu instead of a standalone control");
+  for (const action of ["resource-profiles", "toggle-thinking", "toggle-highlighting", "toggle-notifications", "cycle-appearance", "toggle-reduced-motion", "events", "diagnostics"]) {
+    assert.match(menuItems, new RegExp(`value: "${action}"`), `secondary action ${action}`);
+  }
+  for (const duplicate of ["compact-context", "toggle-compact", "choose-model", "choose-thinking", "search", "resume-session", "worktree", "restart"]) {
+    assert.doesNotMatch(menuItems, new RegExp(`value: "${duplicate}"`), `visible action ${duplicate} should not be duplicated`);
+  }
+  assert.match(shell, /DropUpPicker\s*\{[\s\S]*id:\s*composerMenuDropUpItem[\s\S]*anchorItem:\s*composerMenuButton[\s\S]*returnFocusItem:\s*composerMenuButton/);
+  assert.match(functionBody(shell, "composerPickerOpen"), /composerMenuDropUpItem\.opened/);
+  assert.match(functionBody(shell, "invalidateComposerPickers"), /composerMenuDropUpItem\.opened[\s\S]*composerMenuDropUpItem\.close\(\)/);
+  assert.match(functionBody(shell, "openComposerMenu"), /!bridge\.ready \|\| bridge\.active[\s\S]*composerMenuDropUpItem\.present/);
+  assert.match(functionBody(shell, "composerMenuPicked"), /Qt\.callLater[\s\S]*runPaletteAction\(value\)[\s\S]*recordAction\("action:" \+ value\)/);
+});
+
+test("theme owns every palette color and follows the portal-first desktop color scheme", () => {
   assert.match(theme, /Qt\.styleHints\.colorScheme\s*===\s*Qt\.Dark/);
   assert.match(theme, /requestedMode === "dark"/);
   assert.match(theme, /portalMode === "dark"/);
-  for (const token of ["mainSurface", "sidebarSurface", "sidebarBorder", "panelSurface", "windowBackground", "foreground", "accent", "link", "focusRing", "controlSurface", "controlHover", "controlPressed", "controlActive", "composerSurface", "composerBorder", "composerShadow", "codeBackground", "codeForeground", "quoteBorder", "tableBorder", "thinkingForeground", "dialogOverlay", "searchHighlight", "selection"]) {
+  assert.match(shell, /requestedMode:\s*bridge\.appearanceMode/);
+  assert.match(shell, /portalMode:\s*bridge\.portalColorScheme/);
+  assert.match(shell, /reducedMotion:\s*bridge\.reducedMotion/);
+  assert.match(shell, /desktopCornerRadius:\s*bridge\.desktopCornerRadius/);
+  assert.match(shell, /desktopEdgeGap:\s*bridge\.desktopEdgeGap/);
+  for (const token of ["mainSurface", "sidebarSurface", "sidebarBorder", "panelSurface", "windowBackground", "foreground", "accent", "link", "focusRing", "controlSurface", "controlHover", "controlPressed", "controlActive", "controlSelected", "composerSurface", "composerBorder", "composerShadow", "codeBackground", "codeForeground", "quoteBorder", "tableBorder", "thinkingForeground", "dialogOverlay", "searchHighlight", "selection", "selectionForeground", "urgentBackground", "urgentBorder", "urgentForeground", "primaryButtonForeground", "destructiveButtonForeground", "warningButtonForeground"]) {
     assert.match(theme, new RegExp(`readonly property color ${token}\\b`), `theme token ${token}`);
+  }
+  for (const token of ["spaceXxs", "spaceXs", "spaceSm", "spaceMd", "spaceLg", "spaceXl", "space2Xl", "space3Xl", "space4Xl", "typeCaption", "typeSmall", "typeBody", "typeSubtitle", "typeTitle", "typeDisplay", "radiusSmall", "radiusMedium", "radiusLarge", "radiusPill", "borderWidth", "focusBorderWidth", "controlHeight", "motionFast", "motionNormal", "motionSlow", "animationDuration"]) {
+    assert.match(theme, new RegExp(`readonly property int ${token}\\b`), `theme scale token ${token}`);
+  }
+  assert.match(theme, /motionNormal:\s*reducedMotion \? 0 : 120/);
+  assert.match(theme, /function filledButtonBackground\(variant, state\)/);
+  assert.match(theme, /function filledButtonForeground\(variant, state\)/);
+  for (const stateToken of ["primaryButtonBackground", "primaryButtonHover", "primaryButtonPressed", "primaryButtonHoverForeground", "primaryButtonPressedForeground", "destructiveButtonBackground", "destructiveButtonHover", "destructiveButtonPressed", "destructiveButtonHoverForeground", "destructiveButtonPressedForeground", "warningButtonBackground", "warningButtonHover", "warningButtonPressed"]) {
+    assert.match(theme, new RegExp(`readonly property color ${stateToken}\\b`), `filled button state token ${stateToken}`);
   }
   for (const statusKind of ["ready", "running", "tool", "error"]) assert.match(theme, new RegExp(`kind === "${statusKind}"`));
   for (const [name, source] of Object.entries(components)) {
@@ -134,6 +176,7 @@ test("QML limits match the backend protocol budget", () => {
   assert.match(bridge, new RegExp(`readonly property int maxErrorCharacters:\\s*${LIMITS.maxErrorCharacters}\\b`));
   assert.match(bridge, new RegExp(`readonly property int maxRuntimeInfoCharacters:\\s*${LIMITS.maxRuntimeInfoCharacters}\\b`));
   assert.match(bridge, new RegExp(`readonly property int maxPendingRequests:\\s*${LIMITS.maxPendingRequests}\\b`));
+  assert.match(bridge, new RegExp(`readonly property int maxModels:\\s*${LIMITS.maxModels}\\b`));
   assert.match(functionBody(bridge, "appendRow"), /transcript\.count >= maxTranscriptRows/);
   assert.match(functionBody(bridge, "boundedText"), /slice\(0, max - 1\)/);
   assert.match(bridge, /"toolOutput": boundedText\(event\.output \|\| "", 4096\)/);
@@ -176,7 +219,7 @@ test("bridge handles every backend event type and keeps failure paths explicit",
     "backend.ready", "backend.fatal", "pi.status", "pi.error", "pi.runtime", "pi.exit", "message.user", "part.begin",
     "part.render", "part.remove", "message.end", "tool.start", "tool.update", "tool.end", "run.start", "run.end",
     "extension.request", "extension.cancelled", "extension.notify", "extension.status", "composer.setText",
-    "window.title", "queue.update", "notice", "events.dropped", "settings.changed", "tabs.update", "transcript.reset", "transcript.row",
+    "window.title", "queue.update", "notice", "events.dropped", "settings.changed", "appearance.changed", "tabs.update", "transcript.reset", "transcript.row",
   ]) assert.match(handler, new RegExp(`case "${eventType.replace(".", "\\.")}"`), `event ${eventType}`);
   assert.match(handler, /default:\s*\n\s*break/);
   assert.match(bridge, /event\.partKind/);
@@ -190,6 +233,11 @@ test("bridge handles every backend event type and keeps failure paths explicit",
   assert.match(functionBody(bridge, "shutdown"), /request\("shutdown"/);
   assert.match(functionBody(bridge, "copyToClipboard"), /Quickshell\.clipboardText = text/);
   assert.match(functionBody(bridge, "notifyDesktop"), /!desktopNotifications \|\| windowActive/);
+  assert.match(functionBody(bridge, "applyAppearance"), /mode === "unknown"\) return false/);
+  assert.match(bridge, /property string appearanceMode: "automatic"/);
+  assert.match(bridge, /property bool reducedMotion: false/);
+  assert.match(bridge, /QT_WEBUI_DESKTOP_CORNER_RADIUS/);
+  assert.match(bridge, /QT_WEBUI_DESKTOP_EDGE_GAP/);
 });
 
 test("extension dialogs answer exactly once with typed values and cancel on close or session loss", () => {
@@ -228,7 +276,7 @@ test("model and thinking drop-ups are bounded, keyboard accessible, explicit, an
   assert.equal(LIMITS.maxCompactionInstructionCharacters, 1024);
   assert.match(bridge, /case "pi\.exit":[\s\S]*modelActionPending = false[\s\S]*compacting = false/);
 
-  assert.match(functionBody(shell, "composerPickerOpen"), /pickerDialogItem\.opened \|\| modelDropUpItem\.opened \|\| thinkingDropUpItem\.opened/);
+  assert.match(functionBody(shell, "composerPickerOpen"), /pickerDialogItem\.opened \|\| composerMenuDropUpItem\.opened \|\| modelDropUpItem\.opened \|\| thinkingDropUpItem\.opened/);
   assert.match(functionBody(shell, "openModelPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| bridge\.modelActionPending \|\| bridge\.resourceActionPending \|\| composerPickerOpen\(\)\) return false/);
   assert.match(functionBody(shell, "invalidateComposerPickers"), /composerPickerGeneration\+\+[\s\S]*modelPickerLoading = false[\s\S]*thinkingPickerLoading = false[\s\S]*modelDropUpItem\.close\(\)[\s\S]*thinkingDropUpItem\.close\(\)/);
   assert.match(functionBody(shell, "openModelPicker"), /const originTab = bridge\.activeTabId[\s\S]*const generation = \+\+composerPickerGeneration[\s\S]*bridge\.loadModels\(response => root\.modelPickerResult\(originTab, generation, response\)\)/);
@@ -258,7 +306,7 @@ test("model and thinking drop-ups are bounded, keyboard accessible, explicit, an
   assert.match(listKeys, /Qt\.Key_Down[\s\S]*moveSelection\(1\)/);
   assert.match(listKeys, /Qt\.Key_Up[\s\S]*moveSelection\(-1\)/);
   assert.match(listKeys, /Qt\.Key_Return \|\| key === Qt\.Key_Enter \|\| key === Qt\.Key_Space[\s\S]*pickCurrent\(\)/);
-  assert.match(dropUpPicker, /Keys\.onPressed:\s*event => \{[\s\S]*popup\.handleOptionListKey\(event\.key\)[\s\S]*event\.accepted = true/);
+  assert.match(dropUpPicker, /Keys\.onPressed:\s*event => \{[\s\S]*popup\.handleOptionListKey\(event\.key, event\.modifiers\)[\s\S]*event\.accepted = true/);
   assert.match(dropUpPicker, /currentIndex:\s*popup\.currentIndex/);
   assert.doesNotMatch(functionBody(dropUpPicker, "filterItems"), /picked\(/, "filtering must never pick");
   assert.doesNotMatch(functionBody(dropUpPicker, "moveSelection"), /picked\(/, "navigation must never pick");
@@ -266,6 +314,15 @@ test("model and thinking drop-ups are bounded, keyboard accessible, explicit, an
   assert.match(dropUpPicker, /Accessible\.role:\s*Accessible\.ListItem/);
   assert.match(dropUpPicker, /Accessible\.selected:\s*index === popup\.currentIndex/);
   assert.match(dropUpPicker, /\(current \? ", current" : ""\)/);
+  assert.match(statusBadge, /property real horizontalPadding:\s*theme\.spaceLg/);
+  assert.match(statusBadge, /property real verticalPadding:\s*theme\.spaceLg \/ 2/);
+  assert.match(statusBadge, /implicitWidth:\s*label\.implicitWidth \+ 2 \* horizontalPadding/);
+  assert.match(statusBadge, /implicitHeight:\s*label\.implicitHeight \+ 2 \* verticalPadding/);
+  const currentBadge = objectBodyContaining(dropUpPicker, "StatusBadge", 'text: "current"');
+  assert.match(currentBadge, /horizontalPadding:\s*popup\.theme\.spaceMd/);
+  assert.match(currentBadge, /verticalPadding:\s*popup\.theme\.spaceXxs/);
+  assert.match(currentBadge, /Layout\.alignment:\s*Qt\.AlignVCenter/);
+  assert.doesNotMatch(pickerDialog, /horizontalPadding:\s*dialog\.theme\.|verticalPadding:\s*dialog\.theme\./, "generic picker badges keep the shared defaults");
   assert.match(dropUpPicker, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/);
   assert.match(shell, /DropUpPicker\s*\{[\s\S]*id:\s*modelDropUpItem[\s\S]*anchorItem:\s*modelButton[\s\S]*returnFocusItem:\s*modelButton/);
   assert.match(shell, /DropUpPicker\s*\{[\s\S]*id:\s*thinkingDropUpItem[\s\S]*anchorItem:\s*thinkingButton[\s\S]*returnFocusItem:\s*thinkingButton/);
@@ -273,6 +330,51 @@ test("model and thinking drop-ups are bounded, keyboard accessible, explicit, an
   assert.match(fixture, /"get_available_models"/);
   assert.match(fixture, /"cycle_thinking_level"/);
   assert.match(fixture, /__QT_WEBUI_COMPACT_FAIL__/);
+});
+
+test("explicit scoped-model ordering is exact, bounded, filter-safe, persistent, and wired without selecting", () => {
+  assert.match(bridge, /property var modelOrder:\s*\[\]/);
+  assert.match(functionBody(bridge, "applySettings"), /Array\.isArray\(settings\.modelOrder\)[\s\S]*settings\.modelOrder\.slice\(0, maxModels\)/);
+  const applyOrder = functionBody(bridge, "orderedModelData");
+  assert.match(applyOrder, /data\.scope\.explicit !== true/);
+  assert.match(applyOrder, /String\(model\.provider\) \+ "\/" \+ String\(model\.id\)/);
+  assert.match(applyOrder, /for \(const identity of modelOrder\)[\s\S]*ordered\.push\(byIdentity\[identity\]\)[\s\S]*for \(const model of data\.models\)/);
+  const merge = functionBody(bridge, "mergedModelOrder");
+  assert.match(merge, /for \(const value of Array\.isArray\(currentIdentities\)/);
+  assert.match(merge, /merged\.length >= maxModels/);
+  assert.match(merge, /for \(const value of modelOrder\)/);
+  assert(merge.indexOf("for (const value of modelOrder)") > merge.indexOf("for (const value of Array.isArray(currentIdentities)"), "current scope identities must be merged before absent saved identities");
+  assert.match(functionBody(bridge, "saveModelOrder"), /request\("settings_set", \{ "values": \{ "modelOrder": merged \} \}/);
+  assert.match(functionBody(bridge, "loadModels"), /response\.data = orderedModelData\(response\.data\)[\s\S]*modelsLoaded\(response\.data\)/);
+
+  assert.match(dropUpPicker, /property bool reorderable:\s*false/);
+  assert.match(dropUpPicker, /readonly property bool reorderEnabled:\s*reorderable && items\.length >= 2 && String\(filter \|\| ""\)\.trim\(\)\.length === 0/);
+  assert.match(dropUpPicker, /signal reordered\(var values\)/);
+  const moveItem = functionBody(dropUpPicker, "moveItem");
+  assert.match(moveItem, /const selectedValue =/);
+  assert.match(moveItem, /reorderedItems\.splice\(fromIndex, 1\)/);
+  assert.match(moveItem, /items = reorderedItems[\s\S]*currentIndex = index[\s\S]*reordered\(reorderedItems\.map/);
+  assert.doesNotMatch(moveItem, /picked\(|close\(\)/, "reordering must not select or close");
+  const reorderKey = functionBody(dropUpPicker, "handleReorderKey");
+  assert.match(reorderKey, /Qt\.ControlModifier[\s\S]*Qt\.ShiftModifier/);
+  assert.match(reorderKey, /Qt\.Key_Up[\s\S]*Qt\.Key_Down/);
+  assert.match(dropUpPicker, /DragHandler\s*\{[\s\S]*id:\s*reorderDrag[\s\S]*target:\s*null[\s\S]*popup\.finishDrag\(\)/);
+  assert.match(dropUpPicker, /onTranslationChanged:[^\n]*optionRow\.y \+ optionRow\.height \/ 2 \+ translation\.y/);
+  const dragTarget = functionBody(dropUpPicker, "updateDragTarget");
+  assert.match(dragTarget, /centerY <= optionList\.contentY/);
+  assert.match(dragTarget, /centerY >= optionList\.contentY \+ optionList\.height/);
+  assert.match(dropUpPicker, /text:\s*"≡"/);
+  assert.match(dropUpPicker, /Accessible\.description:[^\n]*Ctrl\+Shift\+Up or Ctrl\+Shift\+Down/);
+
+  const modelResult = functionBody(shell, "modelPickerResult");
+  assert.match(modelResult, /response\.data\.scope && response\.data\.scope\.explicit === true && items\.length >= 2/);
+  assert.match(modelResult, /reorderable: reorderable/);
+  const reorderWiring = functionBody(shell, "modelsReordered");
+  assert.match(reorderWiring, /bridge\.activeTabId !== modelPickerTabId[\s\S]*modelPickerGeneration !== composerPickerGeneration/);
+  assert.match(reorderWiring, /identities\.length !== modelDropUpItem\.items\.length/);
+  assert.match(reorderWiring, /bridge\.saveModelOrder\(identities\)/);
+  assert.match(shell, /onReordered:\s*values => root\.modelsReordered\(values\)/);
+  for (const marker of ["QT_WEBUI_SMOKE_MODEL_REORDER_COMPLETED", "QT_WEBUI_SMOKE_MODEL_REORDER_SAVED", "QT_WEBUI_SMOKE_MODEL_REORDER_REAPPLIED"]) assert.match(smoke, new RegExp(marker));
 });
 
 test("resource profiles expose explicit scopes, inheritance, enabled names, supported sampling, and fail-closed controls", () => {
@@ -363,7 +465,7 @@ test("untrusted content renders as plain or whitelisted styled text and links op
   assert.match(fixture, /<script>alert\(1\)<\/script>/);
 });
 
-test("composer exposes send, steer, follow-up, abort, and restart with keyboard paths", () => {
+test("composer exposes send, a steer/follow-up toggle, abort, and restart with keyboard paths", () => {
   assert.match(composer, /color:\s*theme\.composerSurface/);
   assert.match(composer, /border\.color:\s*prompt\.activeFocus \? theme\.focusRing : theme\.composerBorder/);
   assert.match(composer, /layer\.effect:\s*MultiEffect\s*\{[\s\S]*shadowColor:\s*composer\.theme\.composerShadow/);
@@ -371,8 +473,19 @@ test("composer exposes send, steer, follow-up, abort, and restart with keyboard 
   assert.match(composer, /id:\s*chipRow[\s\S]*anchors\.left:\s*parent\.left[\s\S]*anchors\.right:\s*parent\.right/);
   assert.match(composer, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*Layout\.maximumWidth:\s*240/);
   assert.match(composer, /signal sendRequested\(string text, string mode\)/);
-  assert.match(composer, /composer\.trySend\(composer\.active \? "steer" : "send"\)/);
+  assert.match(composer, /property string busyPromptMode:\s*"steer"/);
+  assert.match(functionBody(composer, "toggleBusyPromptMode"), /busyPromptMode = busyPromptMode === "steer" \? "followUp" : "steer"/);
+  assert.match(composer, /composer\.trySend\(composer\.active \? composer\.busyPromptMode : "send"\)/);
   assert.match(composer, /composer\.trySend\(composer\.active \? "followUp" : "send"\)/);
+  const modeButton = objectBodyContaining(composer, "AppButton", "id: busyPromptModeButton");
+  assert.match(modeButton, /visible:\s*composer\.ready/);
+  assert.match(modeButton, /text:\s*composer\.busyPromptMode === "steer" \? "Steer mode" : "Follow-up mode"/);
+  assert.match(modeButton, /Accessible\.checked:\s*composer\.busyPromptMode === "followUp"/);
+  assert.match(modeButton, /onClicked:\s*composer\.toggleBusyPromptMode\(\)/);
+  const modeAction = objectBodyContaining(composer, "AppButton", "id: busyPromptActionButton");
+  assert.match(modeAction, /visible:\s*composer\.active && composer\.ready/);
+  assert.match(modeAction, /text:\s*composer\.busyPromptMode === "steer" \? "Steer" : "Queue"/);
+  assert.match(modeAction, /onClicked:\s*composer\.trySend\(composer\.busyPromptMode\)/);
   assert.match(composer, /event\.modifiers & Qt\.ShiftModifier\) return/, "Shift+Enter must insert a new line");
   assert.match(composer, /Enter to send · Shift\+Enter for a new line/);
   assert.match(composer, /text:\s*composer\.active \? "Abort" : \(composer\.ready \? "Send" : "Restart"\)/);
@@ -514,6 +627,9 @@ test("the palette, usage, events, and diagnostics stay keyboard-first, bounded, 
   assert.match(picked, /kind === "skill"[\s\S]*confirmDialogItem\.present\(\{[\s\S]*action: "open-path"/, "skill files open only after confirmation");
   assert.match(functionBody(shell, "confirmAccepted"), /context\.action === "open-path"\) bridge\.openPath\(String\(context\.path\)\)/);
   assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-compact": bridge\.updateSetting\("compactTranscript"/);
+  assert.match(functionBody(shell, "runPaletteAction"), /case "cycle-appearance": return root\.cycleAppearanceMode\(\)/);
+  assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-reduced-motion": bridge\.updateSetting\("reducedMotion"/);
+  assert.match(functionBody(shell, "cycleAppearanceMode"), /\["automatic", "light", "dark"\]/);
   assert.match(functionBody(shell, "palettePicked"), /bridge\.recordAction\(value\)/);
   assert.match(pickerDialog, /String\(item\.group \|\| ""\)/, "filtering also matches the group label");
   assert.match(functionBody(shell, "groupStatusChips"), /add\("Usage", \{ key: "context"/);
@@ -537,19 +653,21 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(appButton, /Accessible\.role:\s*Accessible\.Button/);
   assert.match(appButton, /Accessible\.name:\s*accessibleName/);
   assert.match(appButton, /focusPolicy:\s*Qt\.StrongFocus/);
-  assert.match(appButton, /border\.width:\s*control\.activeFocus \? 2 : 1/, "buttons are always framed");
+  assert.match(appButton, /border\.width:\s*control\.activeFocus \? control\.theme\.focusBorderWidth : control\.theme\.borderWidth/, "buttons reserve a stable semantic frame");
   assert.match(appButton, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/);
   assert.match(appButton, /hoverEnabled:\s*true/);
   assert.match(appButton, /Accessible\.checked:\s*active/);
-  assert.match(appButton, /down \? \(filled \? Qt\.darker\(baseColor/);
-  assert.match(appButton, /hovered \? \(filled \? Qt\.lighter\(baseColor/);
+  assert.match(appButton, /interactionState:\s*down \? "pressed" : hovered \? "hovered" : "idle"/);
+  assert.match(appButton, /filled \? theme\.filledButtonBackground\(variant, interactionState\)/);
+  assert.match(appButton, /filled \? theme\.filledButtonForeground\(variant, interactionState\)/);
+  assert.doesNotMatch(appButton, /Qt\.(lighter|darker)/, "component state colors stay theme-owned");
   assert.match(appButton, /active \? theme\.controlActive/);
-  assert.match(appButton, /implicitHeight:\s*30/);
+  assert.match(appButton, /implicitHeight:\s*control\.theme\.controlHeight/);
   assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, availableWidth\)/);
   assert.match(statusSegment, /Flow\s*\{[\s\S]*id:\s*statusFlow/);
   assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, statusFlow\.width\)/);
   assert.match(statusSegment, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*elide:\s*Text\.ElideRight/);
-  const responseControls = objectBodyContaining(shell, "Flow", "id: responseControls");
+  const responseControls = objectBodyContaining(shell, "RowLayout", "id: responseControls");
   assert.doesNotMatch(responseControls, /active:\s*bridge\.showThinking|updateSetting\("showThinking"/, "the visible thinking-section toggle leaves the response controls");
   assert.match(shell, /sequence:\s*"Ctrl\+T"[\s\S]*updateSetting\("showThinking"/, "the thinking visibility shortcut remains");
   assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-thinking": bridge\.updateSetting\("showThinking"/, "the palette thinking visibility action remains");
@@ -562,13 +680,21 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(searchBar, /Keys\.onPressed[\s\S]*Qt\.Key_Escape[\s\S]*bar\.closeRequested\(\)/);
   assert.match(searchBar, /event\.modifiers & Qt\.ShiftModifier\) bar\.previousRequested\(\)/);
   assert.match(row, /Accessible\.name:\s*roleLabel/);
-  assert.match(row, /!row\.fromUser && row\.kind !== "thinking" && !row\.searchCurrent\) \? "transparent"/);
+  assert.match(row, /!row\.fromUser && row\.kind !== "thinking" && !row\.searchCurrent\) \? row\.theme\.transparent/);
   assert.match(row, /row\.fromUser \|\| row\.kind === "thinking" \? 1 : 0/);
+  for (const [name, source] of [["drop-up", dropUpPicker], ["completion", completionPopup], ["tabs", tabStrip], ["picker", pickerDialog], ["extension", extensionDialog], ["directory", directoryDialog], ["sequences", sequencesDialog], ["events", eventsDialog]]) {
+    assert.match(source, /interactiveFill\(/, `${name} rows should expose semantic hover, pressed, and selected fills`);
+    assert.match(source, /interactiveBorder\(/, `${name} rows should expose a semantic keyboard focus border`);
+  }
+  assert.match(tabStrip, /activeFocusOnTab:\s*true/);
+  assert.match(tabStrip, /Keys\.onSpacePressed:/);
+  assert.match(workingIndicator, /running:\s*indicator\.running && !indicator\.theme\.reducedMotion/);
+  assert.match(workingIndicator, /opacity:\s*indicator\.theme\.reducedMotion \? 1\.0 : 0\.3/);
 });
 
 test("smoke driver and fixture cover every recorded protocol edge", () => {
   for (const marker of [
-    "QT_WEBUI_SMOKE_BACKEND_READY", "QT_WEBUI_SMOKE_READY", "QT_WEBUI_SMOKE_STREAM_RECONCILED", "QT_WEBUI_SMOKE_THINKING_RENDERED",
+    "QT_WEBUI_SMOKE_BACKEND_READY", "QT_WEBUI_SMOKE_READY", "QT_WEBUI_SMOKE_THEME_LIGHT_OVERRIDE", "QT_WEBUI_SMOKE_THEME_DARK_OVERRIDE", "QT_WEBUI_SMOKE_THEME_AUTOMATIC", "QT_WEBUI_SMOKE_REDUCED_MOTION", "QT_WEBUI_SMOKE_STREAM_RECONCILED", "QT_WEBUI_SMOKE_THINKING_RENDERED",
     "QT_WEBUI_SMOKE_TOOL_CARD", "QT_WEBUI_SMOKE_MARKDOWN_RENDERED", "QT_WEBUI_SMOKE_LINK_CONFIRMED", "QT_WEBUI_SMOKE_SEARCH_MATCHED",
     "QT_WEBUI_SMOKE_PROVIDER_ERROR_PRESERVED", "QT_WEBUI_SMOKE_FAILED_RESPONSE_RECOVERED", "QT_WEBUI_SMOKE_DELAYED_ABORT_RECEIPT",
     "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED", "QT_WEBUI_SMOKE_SETTINGS_PERSISTED", "QT_WEBUI_SMOKE_CODE_HIGHLIGHTED", "QT_WEBUI_SMOKE_COMMANDS_LOADED",
@@ -583,6 +709,10 @@ test("smoke driver and fixture cover every recorded protocol edge", () => {
     "QT_WEBUI_SMOKE_MISSING_STATE_RECOVERABLE", "QT_WEBUI_SMOKE_RESTART_RECEIPT", "QT_WEBUI_SMOKE_BACKEND_CRASH_OBSERVED",
     "QT_WEBUI_SMOKE_BACKEND_CRASH_RECOVERED", "QT_WEBUI_SMOKE_COMPLETE",
   ]) assert.match(smoke, new RegExp(marker), `driver should log ${marker}`);
+  assert.match(functionBody(smoke, "startAppearanceChecks"), /updateSetting\("appearanceMode", "light"\)/);
+  assert.match(smoke, /appearance-dark[\s\S]*updateSetting\("appearanceMode", "dark"\)/);
+  assert.match(smoke, /appearance-reduced[\s\S]*updateSetting\("reducedMotion", true\)/);
+  assert.match(smoke, /appearance-automatic[\s\S]*updateSetting\("appearanceMode", "automatic"\)/);
   assert.match(smoke, /dialog\.submit\(\{ "cancelled": true \}\)\) fail\(/, "driver proves a second answer is rejected");
   assert.match(fixture, /\{malformed rpc record\}/);
   assert.match(fixture, /future_unknown_event/);

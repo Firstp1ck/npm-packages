@@ -15,6 +15,10 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_READY",
   "QT_WEBUI_SMOKE_STARTUP_ERROR_MAPPED",
   "QT_WEBUI_SMOKE_THEME_DARK",
+  "QT_WEBUI_SMOKE_THEME_LIGHT_OVERRIDE",
+  "QT_WEBUI_SMOKE_THEME_DARK_OVERRIDE",
+  "QT_WEBUI_SMOKE_THEME_AUTOMATIC",
+  "QT_WEBUI_SMOKE_REDUCED_MOTION",
   "QT_WEBUI_SMOKE_RUNTIME_INFO",
   "QT_WEBUI_SMOKE_PARSE_RECOVERED",
   "QT_WEBUI_SMOKE_DIALOG_FOCUS",
@@ -103,7 +107,7 @@ function quickshellUnavailableReason() {
   return null;
 }
 
-export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, extraEnv = {}, timeoutMs = 40_000 }) {
+export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, extraEnv = {}, timeoutMs = 40_000, orderOnly = false }) {
   const program = `
     import { launchQtWebUi } from ${JSON.stringify(launcherUrl)};
     const code = await launchQtWebUi({
@@ -117,6 +121,7 @@ export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, ex
         QT_WEBUI_SMOKE_MODE: "1",
         QT_WEBUI_SMOKE_CAPTURE_PATH: ${JSON.stringify(capturePath)},
         QT_WEBUI_SMOKE_STATE_PATH: ${JSON.stringify(statePath)},
+        QT_WEBUI_THEME_MODE: ${JSON.stringify(orderOnly ? "order-only" : "normal")},
         QT_WEBUI_PI_STARTUP_TIMEOUT_MS: "1500",
         QT_WEBUI_PI_REQUEST_TIMEOUT_MS: "10000",
       },
@@ -290,6 +295,22 @@ test("real Quickshell completes the deterministic backend and Pi behavior scenar
   const state = JSON.parse(await readFile(path.join(workspace.temporary, "state", "qt-webui", "state.json"), "utf8"));
   assert.deepEqual(state.recentActions, ["action:toggle-compact"]);
   assert.equal(state.tabs.length, 1);
+});
+
+test("real Quickshell completes a model reorder and persists merged identities", { timeout: 30_000 }, async (t) => {
+  const skipReason = waylandUnavailableReason() ?? quickshellUnavailableReason();
+  if (skipReason) return t.skip(skipReason);
+  const workspace = await smokeWorkspace(t);
+  const result = await runLiveSmoke({ ...workspace, orderOnly: true, timeoutMs: 20_000 });
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert.equal(result.signal, null, combined);
+  assert.equal(result.code, 0, combined);
+  for (const marker of ["QT_WEBUI_SMOKE_MODEL_REORDER_COMPLETED", "QT_WEBUI_SMOKE_MODEL_REORDER_SAVED", "QT_WEBUI_SMOKE_MODEL_REORDER_REAPPLIED", "QT_WEBUI_SMOKE_COMPLETE"]) {
+    assert.match(combined, new RegExp(marker), `missing ${marker}\n${combined}`);
+  }
+  assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign/i, combined);
+  const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
+  assert.deepEqual(settings.modelOrder, ["fixture-provider/fixture-fast", "fixture-provider/fixture-model", "other-provider/other-model", "absent-provider/absent-model"]);
 });
 
 test("real Quickshell completes the same scenarios at 200% scaling", { timeout: 60_000 }, async (t) => {

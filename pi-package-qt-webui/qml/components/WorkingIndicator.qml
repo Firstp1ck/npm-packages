@@ -9,7 +9,7 @@ Item {
     property bool running: false
     property string statusText: ""
 
-    implicitHeight: running ? row.implicitHeight + 12 : 0
+    implicitHeight: running ? row.implicitHeight + theme.spaceXl : 0
     visible: running
     Accessible.role: Accessible.StaticText
     Accessible.name: statusText.length > 0 ? statusText : "Pi is working"
@@ -18,11 +18,11 @@ Item {
         id: row
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 10
+        spacing: indicator.theme.spaceLg
 
         Row {
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 5
+            spacing: indicator.theme.spaceXs + 1
 
             Repeater {
                 model: 3
@@ -31,17 +31,17 @@ Item {
                     required property int index
                     width: 8
                     height: 8
-                    radius: 4
+                    radius: indicator.theme.radiusSmall
                     color: indicator.theme.accent
-                    opacity: 0.3
+                    opacity: indicator.theme.reducedMotion ? 1.0 : 0.3
 
                     SequentialAnimation on opacity {
-                        running: indicator.running
+                        running: indicator.running && !indicator.theme.reducedMotion
                         loops: Animation.Infinite
-                        PauseAnimation { duration: index * 160 }
-                        NumberAnimation { to: 1.0; duration: 320; easing.type: Easing.InOutQuad }
-                        NumberAnimation { to: 0.3; duration: 320; easing.type: Easing.InOutQuad }
-                        PauseAnimation { duration: (2 - index) * 160 }
+                        PauseAnimation { duration: index * indicator.theme.motionSlow }
+                        NumberAnimation { to: 1.0; duration: indicator.theme.motionSlow * 2; easing.type: Easing.InOutQuad }
+                        NumberAnimation { to: 0.3; duration: indicator.theme.motionSlow * 2; easing.type: Easing.InOutQuad }
+                        PauseAnimation { duration: (2 - index) * indicator.theme.motionSlow }
                     }
                 }
             }
@@ -52,7 +52,7 @@ Item {
             text: indicator.statusText.length > 0 && indicator.statusText !== "Running" ? indicator.statusText : "Pi is working…"
             textFormat: Text.PlainText
             color: indicator.theme.muted
-            font.pixelSize: 12
+            font.pixelSize: indicator.theme.typeBody
             font.italic: true
             elide: Text.ElideRight
         }

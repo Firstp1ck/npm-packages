@@ -17,20 +17,20 @@ Popup {
 
     parent: Overlay.overlay
     anchors.centerIn: parent
-    width: Math.min(parent ? parent.width - 40 : 560, 560)
+    width: Math.min(parent ? parent.width - dialog.theme.space4Xl - dialog.theme.space2Xl : 560, 560)
     modal: true
     focus: true
     closePolicy: Popup.CloseOnEscape
-    padding: 18
+    padding: theme.space3Xl
 
     Overlay.modal: Rectangle {
         color: dialog.theme.dialogOverlay
     }
 
     background: Rectangle {
-        radius: 12
+        radius: dialog.theme.radiusLarge
         color: dialog.theme.surface
-        border.width: 1
+        border.width: dialog.theme.borderWidth
         border.color: dialog.theme.border
     }
 
@@ -47,7 +47,7 @@ Popup {
     onClosed: if (returnFocusItem) returnFocusItem.forceActiveFocus()
 
     contentItem: ColumnLayout {
-        spacing: 12
+        spacing: dialog.theme.spaceXl
         Accessible.role: Accessible.Dialog
         Accessible.name: dialog.title
 
@@ -59,7 +59,7 @@ Popup {
             maximumLineCount: 3
             elide: Text.ElideRight
             color: dialog.theme.heading
-            font.pixelSize: 17
+            font.pixelSize: dialog.theme.typeTitle + 1
             font.bold: true
             Accessible.role: Accessible.Heading
         }
@@ -73,13 +73,13 @@ Popup {
             maximumLineCount: 12
             elide: Text.ElideRight
             color: dialog.theme.foreground
-            font.pixelSize: 13
+            font.pixelSize: dialog.theme.typeBody + 1
         }
 
         ColumnLayout {
             id: body
             Layout.fillWidth: true
-            spacing: 10
+            spacing: dialog.theme.spaceLg
         }
     }
 }

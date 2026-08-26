@@ -1909,17 +1909,35 @@ try {
   assert.ok((forkWhileRunning.body?.data?.tabs || []).some((tab) => tab.id === forkSourceTabId), "fork response should keep the original running tab in the tab list");
   assert.ok((forkWhileRunning.body?.data?.tabs || []).some((tab) => tab.id === forkedTabId), "fork response should include the new fork tab in the tab list");
   assert.match(String(forkWhileRunning.body?.data?.sessionFile || ""), /\.jsonl$/, "fork response should include the new session file");
-  const forkSessionContent = await readFile(forkWhileRunning.body.data.sessionFile, "utf8");
+  const forkSessionFile = forkWhileRunning.body.data.sessionFile;
+  const forkSessionContent = await readFile(forkSessionFile, "utf8");
   assert.match(forkSessionContent, /"type":"session"/, "forked session file should be written before opening its tab");
+  const closeOriginalForkTab = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [forkedTabId] }, timeoutMs: 10_000 });
+  assert.equal(closeOriginalForkTab.status, 200, "the original fork tab should close before testing session resume");
+  const resumedWhileSourceRuns = await request("127.0.0.1", "/api/switch-session", {
+    method: "POST",
+    body: { tab: forkSourceTabId, sessionPath: forkSessionFile },
+    timeoutMs: 10_000,
+  });
+  assert.equal(resumedWhileSourceRuns.status, 200, `session resume should open a new tab while the source runs: ${resumedWhileSourceRuns.body?.error || ""}`);
+  const resumedTabId = resumedWhileSourceRuns.body?.data?.tab?.id;
+  assert.ok(resumedTabId, "session resume should return the new terminal tab");
+  assert.notEqual(resumedTabId, forkSourceTabId, "session resume must not replace the source terminal");
+  assert.equal(resumedWhileSourceRuns.body?.data?.sourceTab?.id, forkSourceTabId, "session resume should identify the unchanged source terminal");
+  assert.ok((resumedWhileSourceRuns.body?.data?.tabs || []).some((tab) => tab.id === forkSourceTabId), "session resume should keep the source terminal open");
+  assert.ok((resumedWhileSourceRuns.body?.data?.tabs || []).some((tab) => tab.id === resumedTabId), "session resume should include the new terminal in the tab list");
+  const resumedState = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(resumedTabId)}`);
+  assert.equal(resumedState.status, 200, "the resumed terminal should respond independently");
+  assert.equal(resumedState.body?.data?.sessionFile, forkSessionFile, "the new terminal should load the selected persisted session");
   const sourceAfterFork = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(forkSourceTabId)}`);
-  assert.equal(sourceAfterFork.status, 200, "source tab should still respond after forking");
+  assert.equal(sourceAfterFork.status, 200, "source tab should still respond after forking and resuming elsewhere");
   for (let attempt = 0; attempt < 40 && sourceAfterFork.body?.data?.isStreaming; attempt++) {
     const next = await request("127.0.0.1", `/api/state?tab=${encodeURIComponent(forkSourceTabId)}`);
     if (!next.body?.data?.isStreaming) break;
     await delay(100);
   }
-  const closeForkTestTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [forkSourceTabId, forkedTabId] }, timeoutMs: 10_000 });
-  assert.equal(closeForkTestTabs.status, 200, "fork test tabs should close before continuing baseline endpoint checks");
+  const closeForkTestTabs = await request("127.0.0.1", "/api/tabs/close", { method: "POST", body: { ids: [forkSourceTabId, resumedTabId] }, timeoutMs: 10_000 });
+  assert.equal(closeForkTestTabs.status, 200, "fork and resume test tabs should close before continuing baseline endpoint checks");
 
   const gitAvailable = spawnSync("git", ["--version"], { encoding: "utf8" }).status === 0;
   if (gitAvailable) {

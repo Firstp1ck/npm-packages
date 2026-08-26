@@ -1,6 +1,6 @@
 # Desktop Visual Design
 
-Style desktop apps, Quickshell components, and system surfaces so they fit the user's existing desktop instead of looking bolted on.
+Style desktop apps, Quickshell components, and system surfaces so they fit the user's existing desktop instead of looking bolted on. When no established style exists, the skill uses a restrained Omarchy-inspired fallback.
 
 ## Helpful when
 
@@ -22,11 +22,12 @@ Style desktop apps, Quickshell components, and system surfaces so they fit the u
 
 - A short inventory of the existing visual rules and reusable theme inputs.
 - UI code built from named palette, state, spacing, typography, border, geometry, and motion tokens.
+- A flat terminal-first fallback with monospace text, square controls, thin borders, opaque surfaces, one restrained accent family, and little motion when the target has no visual contract.
 - Checks for component-owned palette literals, missing interaction states, forced light and dark modes, live switching, and visual consistency.
 
 ## Keep in mind
 
-The skill reads existing theme sources and UI code before proposing changes. It does not edit desktop configuration or theme files unless you explicitly request those changes.
+The skill reads existing theme sources and UI code before proposing changes. Existing project tokens and supplied references always override the bundled fallback. The skill does not edit desktop configuration or theme files unless you explicitly request those changes.
 
 ## Install
 

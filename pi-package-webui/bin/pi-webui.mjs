@@ -2879,9 +2879,19 @@ function gitWorkflowPreferenceOptions() {
   };
 }
 
-async function gitWorkflowPreferencesData(tab) {
+async function gitWorkflowPreferencesData(tab, { includeModels = true } = {}) {
+  const preferencesPromise = readGitWorkflowPreferences();
+  if (!includeModels) {
+    const preferences = await preferencesPromise;
+    return {
+      preferences,
+      configured: isGitWorkflowSetupComplete(preferences),
+      options: gitWorkflowPreferenceOptions(),
+      path: webuiSettingsFile(),
+    };
+  }
   const [preferences, models] = await Promise.all([
-    readGitWorkflowPreferences(),
+    preferencesPromise,
     availableGitWorkflowModels(tab),
   ]);
   return {
@@ -15125,28 +15135,29 @@ async function runCloneCommand(tab) {
   });
 }
 
-async function switchTabSession(tab, sessionPath) {
+async function resumeSessionInNewTab(sourceTab, sessionPath) {
   requirePersistentSessions();
-  await requireIdleForSessionAction(tab, "switching sessions");
-  const targetPath = resolveTabPath(tab, sessionPath);
+  const targetPath = resolveTabPath(sourceTab, sessionPath);
   if (!targetPath) throw makeHttpError(400, "sessionPath is required");
   if (!targetPath.endsWith(".jsonl")) throw makeHttpError(400, "sessionPath must point to a .jsonl session file");
   requireAllowedSessionPath(targetPath);
   const targetStats = await stat(targetPath).catch(() => null);
   if (!targetStats?.isFile()) throw makeHttpError(404, `Session file not found: ${targetPath}`);
   const manager = SessionManager.open(targetPath, configuredSessionDir());
-  const response = await tab.rpc.send({ type: "switch_session", sessionPath: manager.getSessionFile() });
-  if (response.success === false) return response;
-  if (!response.data?.cancelled) {
-    tab.cwd = manager.getCwd();
-    scheduleSupervisorMetadataUpdate(tab);
-    const state = await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS);
-    if (state.ok) rememberTabState(tab, state.data);
-  }
+  const sessionName = manager.getSessionName();
+  const resumedTab = await createTab({
+    title: sessionName ? uniqueTabTitle(sessionName, null) : undefined,
+    titleSource: sessionName ? "explicit" : undefined,
+    conversationStarted: true,
+    cwd: manager.getCwd(),
+    sessionFile: manager.getSessionFile(),
+  });
   return rpcSuccess("switch_session", {
-    message: response.data?.cancelled ? "Resume cancelled." : "Resumed selected session.",
-    result: response.data,
-    tab: tabMeta(tab),
+    message: "Resumed selected session in a new terminal tab.",
+    result: { cancelled: false, sessionFile: manager.getSessionFile() },
+    tab: tabMeta(resumedTab),
+    tabs: listTabs(),
+    sourceTab: tabMeta(sourceTab),
   });
 }
 
@@ -17185,8 +17196,8 @@ const server = createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const tab = getRequestedTab(req, url, body);
       ensureNaturalConversationRouteAllowed(tab, "session switching is blocked");
-      const response = await switchTabSession(tab, body.sessionPath || body.path);
-      sendJson(res, response.success === false ? 400 : 200, responseWithTab(response, tab));
+      const response = await resumeSessionInNewTab(tab, body.sessionPath || body.path);
+      sendJson(res, response.success === false ? 400 : 200, response);
       return;
     }
 
@@ -17412,7 +17423,8 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/git-workflow/preferences" && req.method === "GET") {
       const tab = getRequestedTab(req, url);
-      sendJson(res, 200, { ok: true, data: await gitWorkflowPreferencesData(tab) });
+      const includeModels = url.searchParams.get("includeModels") !== "false";
+      sendJson(res, 200, { ok: true, data: await gitWorkflowPreferencesData(tab, { includeModels }) });
       return;
     }
 

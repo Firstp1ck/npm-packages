@@ -13,10 +13,10 @@ Use Pi in a Linux desktop window built with Quickshell and Qt Quick.
 - Search the transcript, copy any message, and switch between Detailed and Compact transcript rows.
 - Get a desktop notification when a run finishes or Pi needs input while the window is in the background.
 - See the active provider, model ID, and thinking effort beside the prompt, plus status chips from extensions such as the Git footer.
-- Choose a model from Pi's current scoped-model list and set thinking effort from drop-ups above the prompt control strip; configure tool, skill, and sampling profiles or compact long conversations from the same strip.
+- Choose a model from Pi's current scoped-model list, drag explicitly scoped models into a preferred order that persists across restarts, and set thinking effort from drop-ups above the prompt control strip; configure tool, skill, and sampling profiles or compact long conversations from the same strip.
 - Open several projects in tabs, each with its own Pi session, resume any saved session for a folder, and start a Git worktree for a new branch in its own tab.
 - Reach every action, tab, model, session, and Pi command from one keyboard-first palette (`Ctrl+K`), watch context and token usage in the footer, and review events and diagnostics without leaving the window.
-- Work in the project directory where you started `qt-webui` (your tabs come back after a restart), and follow the desktop's light or dark color scheme.
+- Work in the project directory where you started `qt-webui` (your tabs come back after a restart), follow live desktop light/dark changes, or choose a saved light/dark override and reduced motion from the command palette.
 
 ## Install
 
@@ -49,7 +49,7 @@ Then enter this command inside Pi:
 
 The command starts Qt WebUI for Pi's current working directory and returns immediately, leaving Pi open. With the global npm installation, run `qt-webui` from the project directory instead.
 
-Choose a workspace tab from the left rail, then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). While Pi is working, `Enter` sends a steering message and `Alt+Enter` queues a follow-up; the **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
+Choose a workspace tab from the left rail, then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). The prompt control defaults to **Steer mode**. Switch it to **Follow-up mode** when you want `Enter` and the nearby run action to queue the next prompt instead; `Alt+Enter` always queues a follow-up. The **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. The three-line **More options** menu below the prompt holds Resources, display preferences, Events, and Diagnostics without crowding the main window. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
 
 Useful shortcuts:
 
@@ -57,12 +57,12 @@ Useful shortcuts:
 - `Ctrl+T` shows or hides thinking sections.
 - `Ctrl+Shift+M` switches between **Detailed** and **Compact** transcript rows.
 - `Ctrl+L` returns focus to the prompt.
-- `Ctrl+M` opens Pi's scoped-model list above the model control and `Ctrl+E` opens the thinking-effort list above its control; `Ctrl+Shift+P` and `Ctrl+Shift+E` cycle through them.
-- `Ctrl+Shift+R` opens resource profiles for enabled tools, enabled skills, and model-supported sampling values.
+- `Ctrl+M` opens Pi's scoped-model list above the model control. When Pi supplies an explicit scope, drag the **≡** handle or press `Ctrl+Shift+Up` / `Ctrl+Shift+Down` to reorder it. `Ctrl+E` opens thinking effort; `Ctrl+Shift+P` and `Ctrl+Shift+E` cycle through the model and effort lists.
+- `Ctrl+Shift+R` opens **Resources** from the **More options** menu for enabled tools, enabled skills, and model-supported sampling values.
 - `Ctrl+Shift+A` attaches files and `Ctrl+Shift+S` opens your saved prompt sequences.
 - Type `/` to complete a command or `@` to complete a workspace path; `Tab` or `Enter` completes without sending.
 - `Ctrl+N` opens a tab in the same folder, `Ctrl+O` picks another folder, `Ctrl+W` closes the tab, `Ctrl+Tab` switches tabs, `Ctrl+Shift+O` resumes a saved session, `Ctrl+Shift+N` starts a new one, and `Ctrl+Shift+B` creates a Git worktree.
-- `Ctrl+K` opens the command palette, `Ctrl+Shift+L` the event history, and `Ctrl+Shift+D` diagnostics.
+- `Ctrl+K` opens the command palette, where you can cycle Automatic/Light/Dark appearance and reduced motion; `Ctrl+Shift+L` opens event history and `Ctrl+Shift+D` opens diagnostics.
 
 Links in answers open in your default application only after you confirm the full address. Your display choices are saved between sessions.
 

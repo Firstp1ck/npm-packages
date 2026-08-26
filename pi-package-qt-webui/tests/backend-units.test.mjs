@@ -80,14 +80,32 @@ test("validateRequest bounds prompt, dialog answers, settings, links, and notifi
   assert.throws(() => answer({ value: "x".repeat(LIMITS.maxDialogValueCharacters + 1) }), /exceeds/);
 
   const settings = (values) => validateRequest({ v: 1, id: "s", type: "settings_set", values });
-  assert.deepEqual(settings({ compactTranscript: true }).values, { compactTranscript: true });
+  assert.deepEqual(settings({ compactTranscript: true, appearanceMode: "dark", reducedMotion: true }).values, { compactTranscript: true, appearanceMode: "dark", reducedMotion: true });
   assert.throws(() => settings({ unknown: true }), /unknown setting/);
   assert.throws(() => settings({ compactTranscript: "yes" }), /must be boolean/);
+  assert.throws(() => settings({ appearanceMode: "sepia" }), /must be one of automatic, light, dark/);
   assert.throws(() => settings([]), /values object/);
 
   assert.throws(() => validateRequest({ v: 1, id: "l", type: "open_link", url: "x".repeat(LIMITS.maxLinkUrlCharacters + 1) }), /exceeds/);
   assert.throws(() => validateRequest({ v: 1, id: "n", type: "notify", title: "x".repeat(LIMITS.maxNotificationCharacters + 1) }), /exceeds/);
   assert.equal(validateRequest({ v: 1, id: "n", type: "notify", title: "done" }).body, "");
+});
+
+test("validateRequest normalizes bounded modelOrder setting writes", () => {
+  const settings = (modelOrder) => validateRequest({ v: 1, id: "s", type: "settings_set", values: { modelOrder } }).values.modelOrder;
+  assert.deepEqual(settings(["anthropic/claude-sonnet", "openrouter/anthropic/claude-sonnet", "anthropic/claude-sonnet"]), [
+    "anthropic/claude-sonnet",
+    "openrouter/anthropic/claude-sonnet",
+  ]);
+  assert.deepEqual(settings([]), []);
+  assert.doesNotThrow(() => settings([`${"p".repeat(LIMITS.maxProviderCharacters)}/${"m".repeat(LIMITS.maxModelIdCharacters)}`]));
+  assert.throws(() => settings("anthropic/claude-sonnet"), /must be an array/);
+  for (const malformed of [[""], ["anthropic"], ["/claude"], ["anthropic/"], ["anthropic/   "], [7]]) {
+    assert.throws(() => settings(malformed), (error) => error.code === "invalid_request");
+  }
+  assert.throws(() => settings(Array.from({ length: LIMITS.maxModels + 1 }, (_, index) => `provider/model-${index}`)), (error) => error.code === "limit_exceeded");
+  assert.throws(() => settings([`${"p".repeat(LIMITS.maxProviderCharacters + 1)}/model`]), (error) => error.code === "limit_exceeded");
+  assert.throws(() => settings([`provider/${"m".repeat(LIMITS.maxModelIdCharacters + 1)}`]), (error) => error.code === "limit_exceeded");
 });
 
 test("validateRequest bounds model, thinking, and compaction requests", () => {
@@ -485,26 +503,61 @@ test("settings store uses XDG config, private permissions, atomic writes, and va
   const store = createSettingsStore({ env: { XDG_CONFIG_HOME: home } });
   assert.equal(store.path, path.join(home, "qt-webui", "settings.json"));
   assert.deepEqual(store.read(), { settings: defaultSettings(), problems: [], path: store.path });
+  assert.deepEqual(defaultSettings().modelOrder, []);
 
-  const written = store.write({ compactTranscript: true });
+  const modelOrder = ["anthropic/claude-sonnet", "openrouter/anthropic/claude-sonnet"];
+  const written = store.write({ compactTranscript: true, appearanceMode: "dark", reducedMotion: true, modelOrder: [...modelOrder, modelOrder[0]] });
   assert.equal(written.settings.compactTranscript, true);
+  assert.equal(written.settings.appearanceMode, "dark");
+  assert.equal(written.settings.reducedMotion, true);
+  assert.deepEqual(written.settings.modelOrder, modelOrder);
   assert.equal((await stat(store.directory)).mode & 0o777, 0o700);
   assert.equal((await stat(store.path)).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(await readFile(store.path, "utf8")), { ...defaultSettings(), compactTranscript: true });
+  assert.deepEqual(JSON.parse(await readFile(store.path, "utf8")), { ...defaultSettings(), compactTranscript: true, appearanceMode: "dark", reducedMotion: true, modelOrder });
+  assert.deepEqual(store.read().settings.modelOrder, modelOrder);
   assert.throws(() => store.write({ unknown: 1 }), /unknown setting/);
   assert.throws(() => store.write({ showThinking: "no" }), /expected boolean/);
+  assert.throws(() => store.write({ appearanceMode: "sepia" }), /expected one of automatic, light, dark/);
+  assert.throws(() => store.write({ modelOrder: ["not-an-identity"] }), /provider\/model-id/);
 
   await writeFile(store.path, "{not json");
   assert.match(store.read().problems[0], /not valid JSON/);
   assert.deepEqual(store.read().settings, defaultSettings());
-  await writeFile(store.path, JSON.stringify({ compactTranscript: true, extra: 1, showThinking: 3 }));
+  await writeFile(store.path, JSON.stringify({ compactTranscript: true, appearanceMode: "light", extra: 1, showThinking: 3 }));
   const partial = store.read();
   assert.equal(partial.settings.compactTranscript, true);
+  assert.equal(partial.settings.appearanceMode, "light");
   assert.equal(partial.settings.showThinking, true);
   assert.equal(partial.problems.length, 2);
   await writeFile(store.path, `{"compactTranscript":true,"pad":"${"x".repeat(LIMITS.maxSettingsFileBytes)}"}`);
   assert.match(store.read().problems[0], /exceeds/);
   assert.equal(store.read().settings.compactTranscript, false);
+});
+
+test("settings reads ignore malformed persisted modelOrder values and report each problem", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "qt-webui-model-order-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const store = createSettingsStore({ env: { XDG_CONFIG_HOME: home } });
+  await mkdir(store.directory, { recursive: true });
+  const malformedValues = [
+    "provider/model",
+    ["not-an-identity"],
+    Array.from({ length: LIMITS.maxModels + 1 }, (_, index) => `provider/model-${index}`),
+    [`${"p".repeat(LIMITS.maxProviderCharacters + 1)}/model`],
+    [`provider/${"m".repeat(LIMITS.maxModelIdCharacters + 1)}`],
+  ];
+  for (const modelOrder of malformedValues) {
+    await writeFile(store.path, JSON.stringify({ compactTranscript: true, modelOrder }));
+    const result = store.read();
+    assert.equal(result.settings.compactTranscript, true, "valid scalar settings must survive an invalid modelOrder");
+    assert.deepEqual(result.settings.modelOrder, []);
+    assert(result.problems.some((problem) => problem.startsWith("ignored modelOrder:")));
+  }
+
+  await writeFile(store.path, JSON.stringify({ modelOrder: ["provider/model", "provider/model", "provider/other"] }));
+  const deduplicated = store.read();
+  assert.deepEqual(deduplicated.settings.modelOrder, ["provider/model", "provider/other"]);
+  assert.deepEqual(deduplicated.problems, []);
 });
 
 test("settings directory falls back to ~/.config when XDG_CONFIG_HOME is relative or unset", async () => {

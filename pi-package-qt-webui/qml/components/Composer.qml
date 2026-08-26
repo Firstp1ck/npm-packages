@@ -23,6 +23,7 @@ Rectangle {
     property string completionQuery: ""
     property string completionEmptyText: ""
     property string suppressedCompletion: ""
+    property string busyPromptMode: "steer"
     readonly property bool overLimit: prompt.text.length > maxCharacters
     readonly property bool hasText: prompt.text.trim().length > 0 && !overLimit
     readonly property bool completionOpen: completionPopup.visible
@@ -39,10 +40,10 @@ Rectangle {
     signal completionRequested(string kind, string query)
     signal draftEdited(string text)
 
-    implicitHeight: column.implicitHeight + 24
-    radius: 12
+    implicitHeight: column.implicitHeight + theme.space4Xl
+    radius: theme.radiusLarge
     color: theme.composerSurface
-    border.width: prompt.activeFocus ? 2 : 1
+    border.width: prompt.activeFocus ? theme.focusBorderWidth : theme.borderWidth
     border.color: prompt.activeFocus ? theme.focusRing : theme.composerBorder
     layer.enabled: true
     layer.effect: MultiEffect {
@@ -62,6 +63,10 @@ Rectangle {
         if (mode === "send" && active) return
         if ((mode === "steer" || mode === "followUp") && !active) mode = "send"
         sendRequested(value, mode)
+    }
+
+    function toggleBusyPromptMode() {
+        busyPromptMode = busyPromptMode === "steer" ? "followUp" : "steer"
     }
 
     function clearAndFocus() {
@@ -158,8 +163,8 @@ Rectangle {
     ColumnLayout {
         id: column
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 7
+        anchors.margins: composer.theme.spaceXl
+        spacing: composer.theme.spaceSm + 1
 
         CompletionPopup {
             id: completionPopup
@@ -191,7 +196,8 @@ Rectangle {
                 Accessible.role: Accessible.EditableText
                 Accessible.name: "Prompt"
                 Accessible.description: composer.completionOpen ? "Suggestions are open: Up and Down choose, Tab or Enter completes without sending, Escape closes"
-                    : composer.active ? "Enter steers the current run, Alt+Enter queues a follow-up, Shift+Enter inserts a new line" : "Enter sends the prompt, Shift+Enter inserts a new line"
+                    : composer.active ? (composer.busyPromptMode === "steer" ? "Enter steers the current run" : "Enter queues a follow-up") + ", Alt+Enter always queues a follow-up, Shift+Enter inserts a new line"
+                    : "Enter sends the prompt, Shift+Enter inserts a new line"
                 KeyNavigation.tab: primaryButton
                 onTextChanged: {
                     composer.refreshCompletion()
@@ -226,7 +232,7 @@ Rectangle {
                     if (!enter) return
                     if (event.modifiers & Qt.ShiftModifier) return // default: insert a new line
                     if (event.modifiers & Qt.AltModifier) composer.trySend(composer.active ? "followUp" : "send")
-                    else composer.trySend(composer.active ? "steer" : "send")
+                    else composer.trySend(composer.active ? composer.busyPromptMode : "send")
                     event.accepted = true
                 }
             }
@@ -236,7 +242,7 @@ Rectangle {
         Flow {
             Layout.fillWidth: true
             visible: composer.attachments.length > 0
-            spacing: 6
+            spacing: composer.theme.spaceSm
             Accessible.role: Accessible.Grouping
             Accessible.name: composer.attachments.length + " attachments"
 
@@ -246,12 +252,12 @@ Rectangle {
                 delegate: Rectangle {
                     id: chip
                     required property var modelData
-                    implicitWidth: chipRow.implicitWidth + 12
+                    implicitWidth: chipRow.implicitWidth + composer.theme.spaceXl
                     width: Math.min(implicitWidth, parent ? parent.width : implicitWidth)
-                    implicitHeight: chipRow.implicitHeight + 8
-                    radius: 6
+                    implicitHeight: chipRow.implicitHeight + composer.theme.spaceMd
+                    radius: composer.theme.radiusSmall
                     color: composer.theme.surfaceRaised
-                    border.width: 1
+                    border.width: composer.theme.borderWidth
                     border.color: composer.theme.border
                     Accessible.role: Accessible.Grouping
                     Accessible.name: "Attachment " + String(modelData.name) + ", " + String(modelData.kind) + ", " + composer.sizeLabel(modelData.size) + (modelData.edited ? ", edited" : "")
@@ -261,9 +267,9 @@ Rectangle {
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.verticalCenter: parent.verticalCenter
-                        anchors.leftMargin: 6
-                        anchors.rightMargin: 6
-                        spacing: 6
+                        anchors.leftMargin: composer.theme.spaceSm
+                        anchors.rightMargin: composer.theme.spaceSm
+                        spacing: composer.theme.spaceSm
 
                         Label {
                             Layout.fillWidth: true
@@ -272,7 +278,7 @@ Rectangle {
                             text: String(chip.modelData.kind === "image" ? "🖼 " : "📄 ") + String(chip.modelData.name)
                             textFormat: Text.PlainText
                             color: composer.theme.foreground
-                            font.pixelSize: 12
+                            font.pixelSize: composer.theme.typeBody
                             elide: Text.ElideMiddle
                         }
 
@@ -281,7 +287,7 @@ Rectangle {
                             text: composer.sizeLabel(chip.modelData.size) + (chip.modelData.edited ? " · edited" : "")
                             textFormat: Text.PlainText
                             color: composer.theme.muted
-                            font.pixelSize: 11
+                            font.pixelSize: composer.theme.typeSmall
                             elide: Text.ElideRight
                         }
 
@@ -314,16 +320,16 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: 8
+            spacing: composer.theme.spaceMd
 
             Label {
                 Layout.fillWidth: true
                 text: composer.overLimit ? "Prompt exceeds " + composer.maxCharacters + " characters"
-                    : composer.active ? "Pi is working · Enter steers · Alt+Enter queues a follow-up · Shift+Enter new line"
+                    : composer.active ? "Pi is working · Enter " + (composer.busyPromptMode === "steer" ? "steers" : "queues a follow-up") + " · Alt+Enter queues a follow-up · Shift+Enter new line"
                     : composer.ready ? "Enter to send · Shift+Enter for a new line" : "Pi is not available"
                 textFormat: Text.PlainText
                 color: composer.overLimit ? composer.theme.destructive : composer.theme.muted
-                font.pixelSize: 12
+                font.pixelSize: composer.theme.typeBody
                 elide: Text.ElideRight
             }
 
@@ -332,7 +338,7 @@ Rectangle {
                 text: prompt.text.length + " / " + composer.maxCharacters
                 textFormat: Text.PlainText
                 color: composer.overLimit ? composer.theme.destructive : composer.theme.muted
-                font.pixelSize: 11
+                font.pixelSize: composer.theme.typeSmall
             }
 
             AppButton {
@@ -359,23 +365,27 @@ Rectangle {
             }
 
             AppButton {
-                id: followUpButton
-                visible: composer.active && composer.ready
+                id: busyPromptModeButton
+                visible: composer.ready
                 theme: composer.theme
-                text: "Follow-up"
-                accessibleName: "Queue as follow-up"
-                enabled: composer.hasText
-                onClicked: composer.trySend("followUp")
+                variant: "ghost"
+                text: composer.busyPromptMode === "steer" ? "Steer mode" : "Follow-up mode"
+                accessibleName: composer.busyPromptMode === "steer" ? "Busy prompt mode: Steer" : "Busy prompt mode: Follow-up"
+                accessibleDescription: composer.busyPromptMode === "steer" ? "Click to make Enter and the run action queue follow-ups" : "Click to make Enter and the run action steer"
+                active: composer.busyPromptMode === "followUp"
+                Accessible.checked: composer.busyPromptMode === "followUp"
+                onClicked: composer.toggleBusyPromptMode()
             }
 
             AppButton {
-                id: steerButton
+                id: busyPromptActionButton
                 visible: composer.active && composer.ready
                 theme: composer.theme
-                text: "Steer"
-                accessibleName: "Send as steering message"
+                variant: "primary"
+                text: composer.busyPromptMode === "steer" ? "Steer" : "Queue"
+                accessibleName: composer.busyPromptMode === "steer" ? "Send as steering message" : "Queue as follow-up"
                 enabled: composer.hasText
-                onClicked: composer.trySend("steer")
+                onClicked: composer.trySend(composer.busyPromptMode)
             }
 
             AppButton {

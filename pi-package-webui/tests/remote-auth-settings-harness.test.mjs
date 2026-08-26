@@ -14,6 +14,7 @@ const port = 30000 + Math.floor(Math.random() * 20000);
 const cwd = await mkdtemp(path.join(tmpdir(), "pi-webui-remote-auth-settings-"));
 const settingsFile = path.join(cwd, "webui-settings.json");
 const safetyGuardSettingsFile = path.join(cwd, "safety-guard.json");
+const rpcLogFile = path.join(cwd, "rpc-commands.jsonl");
 
 async function request(pathname, { method = "GET", body, timeoutMs = 5_000 } = {}) {
   const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
@@ -35,6 +36,7 @@ const child = spawn(process.execPath, [serverScript, "--cwd", cwd, "--host", "12
     ...process.env,
     PI_WEBUI_SETTINGS_FILE: settingsFile,
     PI_SAFETY_GUARD_CONFIG_FILE: safetyGuardSettingsFile,
+    FAKE_PI_LOG_FILE: rpcLogFile,
   },
 });
 let serverOutput = "";
@@ -139,6 +141,20 @@ try {
     thinkingLevel: "low",
   }, "existing settings should expose fallback as disabled until explicitly selected");
   assert.equal(initialGitSetup.body?.data?.models?.[0]?.id, "fake-model");
+
+  const modelRpcCount = async () => (await readFile(rpcLogFile, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((entry) => entry.direction === "command" && entry.type === "get_available_models")
+    .length;
+  const modelRpcCountBeforeLightweightRead = await modelRpcCount();
+  const lightweightGitSetup = await request("/api/git-workflow/preferences?includeModels=false");
+  assert.equal(lightweightGitSetup.status, 200);
+  assert.equal(lightweightGitSetup.body?.data?.configured, false);
+  assert.equal(lightweightGitSetup.body?.data?.models, undefined, "startup-only reads should not return the setup model catalog");
+  assert.equal(await modelRpcCount(), modelRpcCountBeforeLightweightRead, "startup-only reads must not issue get_available_models on Pi's control channel");
 
   const unsupportedEffort = await request("/api/git-workflow/preferences", {
     method: "POST",

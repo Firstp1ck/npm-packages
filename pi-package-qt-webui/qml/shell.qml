@@ -11,6 +11,7 @@ ShellRoot {
 
     readonly property bool smokeMode: Quickshell.env("QT_WEBUI_SMOKE_MODE") === "1"
     readonly property bool themeDark: appTheme.dark
+    readonly property int themeAnimationDuration: appTheme.animationDuration
     readonly property var backendBridge: bridge
     readonly property var extensionDialog: extensionDialogItem
     readonly property bool linkDialogOpened: linkDialogItem.opened
@@ -89,6 +90,7 @@ ShellRoot {
             ["attach", "Attach files", "Ctrl+Shift+A"], ["sequences", "Saved prompt sequences", "Ctrl+Shift+S"], ["search", "Search the transcript", "Ctrl+F"],
             ["toggle-thinking", (bridge.showThinking ? "Hide" : "Show") + " thinking sections", "Ctrl+T"], ["toggle-compact", bridge.compactTranscript ? "Use comfortable rows" : "Use compact rows", "Ctrl+Shift+M"],
             ["toggle-highlighting", bridge.syntaxHighlighting ? "Turn off syntax highlighting" : "Turn on syntax highlighting", ""], ["toggle-notifications", bridge.desktopNotifications ? "Turn off desktop notifications" : "Turn on desktop notifications", ""],
+            ["cycle-appearance", "Appearance: " + root.appearanceModeLabel(), ""], ["toggle-reduced-motion", bridge.reducedMotion ? "Use standard motion" : "Reduce motion", ""],
             ["choose-model", "Choose a model", "Ctrl+M"], ["cycle-model", "Cycle to the next model", "Ctrl+Shift+P"], ["choose-thinking", "Choose the thinking effort", "Ctrl+E"], ["cycle-thinking", "Cycle the thinking effort", "Ctrl+Shift+E"],
             ["resource-profiles", "Configure tools, skills, and sampling", "Ctrl+Shift+R"], ["compact-context", "Compact the conversation context", ""], ["abort", "Abort the current run", "Ctrl+Shift+X"], ["restart", "Restart Pi in this tab", ""],
             ["events", "Show events", "Ctrl+Shift+L"], ["diagnostics", "Show diagnostics", "Ctrl+Shift+D"], ["focus-prompt", "Focus the prompt", "Ctrl+L"],
@@ -113,6 +115,19 @@ ShellRoot {
             if (command.source === "skill" && command.path.length > 0) push("Skill", "skill:" + command.path, "Open skill file " + command.name.replace(/^skill:/, ""), command.path)
         }
         return items
+    }
+
+    function appearanceModeLabel() {
+        if (bridge.appearanceMode === "light") return "Light"
+        if (bridge.appearanceMode === "dark") return "Dark"
+        return "Automatic"
+    }
+
+    function cycleAppearanceMode() {
+        const modes = ["automatic", "light", "dark"]
+        const current = modes.indexOf(bridge.appearanceMode)
+        bridge.updateSetting("appearanceMode", modes[(current + 1) % modes.length])
+        return true
     }
 
     function openPalette() {
@@ -148,6 +163,8 @@ ShellRoot {
         case "toggle-compact": bridge.updateSetting("compactTranscript", !bridge.compactTranscript); return true
         case "toggle-highlighting": bridge.updateSetting("syntaxHighlighting", !bridge.syntaxHighlighting); return true
         case "toggle-notifications": bridge.updateSetting("desktopNotifications", !bridge.desktopNotifications); return true
+        case "cycle-appearance": return root.cycleAppearanceMode()
+        case "toggle-reduced-motion": bridge.updateSetting("reducedMotion", !bridge.reducedMotion); return true
         case "choose-model": return root.openModelPicker()
         case "cycle-model": return bridge.cycleModel()
         case "choose-thinking": return root.openThinkingPicker()
@@ -207,6 +224,11 @@ ShellRoot {
 
     Theme {
         id: appTheme
+        requestedMode: bridge.appearanceMode
+        portalMode: bridge.portalColorScheme
+        reducedMotion: bridge.reducedMotion
+        desktopCornerRadius: bridge.desktopCornerRadius
+        desktopEdgeGap: bridge.desktopEdgeGap
     }
 
     BackendBridge {
@@ -286,7 +308,7 @@ ShellRoot {
     // ---- models, thinking, and compaction ------------------------------------------------
 
     function composerPickerOpen() {
-        return pickerDialogItem.opened || modelDropUpItem.opened || thinkingDropUpItem.opened || modelPickerLoading || thinkingPickerLoading
+        return pickerDialogItem.opened || composerMenuDropUpItem.opened || modelDropUpItem.opened || thinkingDropUpItem.opened || modelPickerLoading || thinkingPickerLoading
     }
 
     function invalidateComposerPickers() {
@@ -297,8 +319,34 @@ ShellRoot {
         thinkingPickerGeneration = -1
         modelPickerTabId = ""
         thinkingPickerTabId = ""
+        if (composerMenuDropUpItem.opened) composerMenuDropUpItem.close()
         if (modelDropUpItem.opened) modelDropUpItem.close()
         if (thinkingDropUpItem.opened) thinkingDropUpItem.close()
+    }
+
+    function composerMenuItems() {
+        return [
+            { value: "resource-profiles", label: "Resources", detail: "Tools, skills, and sampling · Ctrl+Shift+R", current: false },
+            { value: "toggle-thinking", label: (bridge.showThinking ? "Hide" : "Show") + " thinking sections", detail: "Ctrl+T", current: false },
+            { value: "toggle-highlighting", label: (bridge.syntaxHighlighting ? "Turn off" : "Turn on") + " syntax highlighting", detail: "Code blocks", current: false },
+            { value: "toggle-notifications", label: (bridge.desktopNotifications ? "Turn off" : "Turn on") + " desktop notifications", detail: "Background runs and input requests", current: false },
+            { value: "cycle-appearance", label: "Appearance", detail: root.appearanceModeLabel(), current: false },
+            { value: "toggle-reduced-motion", label: bridge.reducedMotion ? "Use standard motion" : "Reduce motion", detail: bridge.reducedMotion ? "Reduced motion is on" : "Reduced motion is off", current: false },
+            { value: "events", label: "Events", detail: "Recent notices · Ctrl+Shift+L", current: false },
+            { value: "diagnostics", label: "Diagnostics", detail: "Runtime report · Ctrl+Shift+D", current: false },
+        ]
+    }
+
+    function openComposerMenu() {
+        if (!bridge.ready || bridge.active || bridge.modelActionPending || bridge.resourceActionPending || bridge.resourceLoading || composerPickerOpen()) return false
+        composerMenuDropUpItem.present({ title: "More options", message: "", items: composerMenuItems(), searchable: false })
+        return true
+    }
+
+    function composerMenuPicked(value) {
+        Qt.callLater(() => {
+            if (root.runPaletteAction(value)) bridge.recordAction("action:" + value)
+        })
     }
 
     function modelPickerResult(originTab, generation, response) {
@@ -318,12 +366,13 @@ ShellRoot {
                          current: model.provider === bridge.currentProvider && model.id === bridge.currentModelId })
         }
         if (!bridge.ready || bridge.active || bridge.activeTabId !== originTab || generation !== composerPickerGeneration
-                || generation !== modelPickerGeneration || originTab !== modelPickerTabId || pickerDialogItem.opened || thinkingDropUpItem.opened) {
+                || generation !== modelPickerGeneration || originTab !== modelPickerTabId || pickerDialogItem.opened || composerMenuDropUpItem.opened || thinkingDropUpItem.opened) {
             modelPickerGeneration = -1
             modelPickerTabId = ""
             return false
         }
-        modelDropUpItem.present({ title: "Choose a model", message: response.data.omitted > 0 ? response.data.omitted + " configured models are not listed" : "", items: items, searchable: true, emptyText: "Pi reports no configured models" })
+        const reorderable = response.data.scope && response.data.scope.explicit === true && items.length >= 2
+        modelDropUpItem.present({ title: "Choose a model", message: response.data.omitted > 0 ? response.data.omitted + " configured models are not listed" : "", items: items, searchable: true, reorderable: reorderable, emptyText: "Pi reports no configured models" })
         return true
     }
 
@@ -338,7 +387,7 @@ ShellRoot {
         const items = []
         for (const level of response.data.levels) items.push({ value: level, label: level, detail: "", current: level === bridge.currentThinkingLevel })
         if (!bridge.ready || bridge.active || bridge.activeTabId !== originTab || generation !== composerPickerGeneration
-                || generation !== thinkingPickerGeneration || originTab !== thinkingPickerTabId || pickerDialogItem.opened || modelDropUpItem.opened) {
+                || generation !== thinkingPickerGeneration || originTab !== thinkingPickerTabId || pickerDialogItem.opened || composerMenuDropUpItem.opened || modelDropUpItem.opened) {
             thinkingPickerGeneration = -1
             thinkingPickerTabId = ""
             return false
@@ -383,6 +432,18 @@ ShellRoot {
         if (!bridge.ready || bridge.active || bridge.activeTabId !== modelPickerTabId || modelPickerGeneration !== composerPickerGeneration) return
         const slash = value.indexOf("/")
         if (slash > 0) bridge.selectModel(value.slice(0, slash), value.slice(slash + 1))
+    }
+
+    function modelsReordered(values) {
+        if (!bridge.ready || bridge.active || !modelDropUpItem.opened || !modelDropUpItem.reorderable
+                || bridge.activeTabId !== modelPickerTabId || modelPickerGeneration !== composerPickerGeneration) return false
+        const identities = Array.isArray(values) ? values.map(value => String(value)) : []
+        if (identities.length !== modelDropUpItem.items.length) return false
+        for (let index = 0; index < identities.length; index++) {
+            if (identities[index] !== String(modelDropUpItem.items[index].value)) return false
+        }
+        bridge.saveModelOrder(identities)
+        return true
     }
 
     function thinkingPicked(value) {
@@ -926,6 +987,20 @@ ShellRoot {
                             }
 
                             AppButton {
+                                id: reloadPiButton
+                                visible: bridge.ready
+                                theme: appTheme
+                                variant: "ghost"
+                                text: "Reload Pi"
+                                accessibleName: "Reload Pi resources"
+                                enabled: !bridge.active
+                                padding: 4
+                                leftPadding: 8
+                                rightPadding: 8
+                                onClicked: bridge.sendPrompt("/reload", "send")
+                            }
+
+                            AppButton {
                                 theme: appTheme
                                 variant: bridge.backendRunning && bridge.ready ? "ghost" : "warning"
                                 text: bridge.restarting ? "Restarting…" : (bridge.backendRunning ? "Restart Pi" : "Start backend")
@@ -1177,18 +1252,22 @@ ShellRoot {
 
                                 // Response and transcript controls belong with the prompt they affect,
                                 // rather than occupying a second row beneath the workspace title.
-                                Flow {
+                                RowLayout {
                                     id: responseControls
                                     Layout.fillWidth: true
-                                    Layout.preferredHeight: childrenRect.height
-                                    Layout.leftMargin: 4
-                                    Layout.rightMargin: 4
                                     spacing: 4
                                     Accessible.role: Accessible.Grouping
                                     Accessible.name: "Response and transcript controls for workspace " + bridge.workspaceCwd
 
-                                    AppButton {
-                                        id: modelButton
+                                    Flow {
+                                        id: primaryResponseControls
+                                        Layout.fillWidth: true
+                                        Layout.leftMargin: 4
+                                        Layout.preferredHeight: childrenRect.height
+                                        spacing: 4
+
+                                        AppButton {
+                                            id: modelButton
                                         visible: bridge.runtimeInfoText.length > 0
                                         theme: appTheme
                                         variant: "ghost"
@@ -1221,21 +1300,6 @@ ShellRoot {
                                     }
 
                                     AppButton {
-                                        id: resourceProfilesButton
-                                        visible: bridge.ready
-                                        theme: appTheme
-                                        variant: "ghost"
-                                        text: bridge.resourceLoading ? "Resources…" : "Resources"
-                                        accessibleName: "Configure tool, skill, and sampling profiles"
-                                        accessibleDescription: "Ctrl+Shift+R; session, exact-model, and global scopes"
-                                        enabled: !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending && !bridge.resourceLoading
-                                        padding: 4
-                                        leftPadding: 8
-                                        rightPadding: 8
-                                        onClicked: root.openResourceProfiles()
-                                    }
-
-                                    AppButton {
                                         visible: bridge.ready && bridge.transcriptModel.count > 0
                                         theme: appTheme
                                         variant: "ghost"
@@ -1260,6 +1324,27 @@ ShellRoot {
                                         leftPadding: 8
                                         rightPadding: 8
                                         onClicked: bridge.updateSetting("compactTranscript", !bridge.compactTranscript)
+                                    }
+
+                                    }
+
+                                    AppButton {
+                                        id: composerMenuButton
+                                        visible: bridge.ready
+                                        Layout.alignment: Qt.AlignRight | Qt.AlignTop
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        text: "☰"
+                                        accessibleName: "More options"
+                                        accessibleDescription: "Resources, display settings, events, and diagnostics"
+                                        enabled: !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending && !bridge.resourceLoading
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: root.openComposerMenu()
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "More options"
+                                        ToolTip.delay: 400
                                     }
                                 }
 
@@ -1303,12 +1388,23 @@ ShellRoot {
             }
 
             DropUpPicker {
+                id: composerMenuDropUpItem
+                theme: appTheme
+                boundsItem: contentRoot
+                anchorItem: composerMenuButton
+                returnFocusItem: composerMenuButton
+                maximumWidth: 360
+                onPicked: value => root.composerMenuPicked(value)
+            }
+
+            DropUpPicker {
                 id: modelDropUpItem
                 theme: appTheme
                 boundsItem: contentRoot
                 anchorItem: modelButton
                 returnFocusItem: modelButton
                 onPicked: value => root.modelPicked(value)
+                onReordered: values => root.modelsReordered(values)
                 onCancelled: {
                     root.modelPickerGeneration = -1
                     root.modelPickerTabId = ""

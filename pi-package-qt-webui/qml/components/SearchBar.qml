@@ -17,10 +17,10 @@ Rectangle {
     signal previousRequested()
     signal closeRequested()
 
-    implicitHeight: layout.implicitHeight + 16
-    radius: 8
+    implicitHeight: layout.implicitHeight + theme.space2Xl
+    radius: theme.radiusMedium
     color: theme.surface
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: field.activeFocus ? theme.focusRing : theme.border
     Accessible.role: Accessible.Grouping
     Accessible.name: "Transcript search"
@@ -33,8 +33,8 @@ Rectangle {
     RowLayout {
         id: layout
         anchors.fill: parent
-        anchors.margins: 8
-        spacing: 8
+        anchors.margins: bar.theme.spaceMd
+        spacing: bar.theme.spaceMd
 
         TextField {
             id: field
@@ -44,9 +44,9 @@ Rectangle {
             placeholderTextColor: bar.theme.muted
             selectionColor: bar.theme.selection
             background: Rectangle {
-                radius: 6
+                radius: bar.theme.radiusSmall
                 color: bar.theme.surfaceRaised
-                border.width: 1
+                border.width: bar.theme.borderWidth
                 border.color: bar.theme.border
             }
             Accessible.role: Accessible.EditableText
@@ -70,7 +70,7 @@ Rectangle {
                 : (bar.currentIndex + 1) + " of " + bar.matchCount
             textFormat: Text.PlainText
             color: bar.theme.muted
-            font.pixelSize: 12
+            font.pixelSize: bar.theme.typeBody
             Accessible.role: Accessible.StaticText
             Accessible.name: text
         }

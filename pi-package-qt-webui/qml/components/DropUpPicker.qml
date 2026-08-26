@@ -16,27 +16,32 @@ Popup {
     property string message: ""
     property string emptyText: "Nothing to choose from"
     property bool searchable: true
+    property bool reorderable: false
     property string filter: ""
     property int currentIndex: -1
+    property int dragFromIndex: -1
+    property int dragTargetIndex: -1
     property real maximumWidth: 480
     property real maximumHeight: 300
-    property real edgeMargin: 8
-    property real anchorGap: 6
+    property real edgeMargin: theme.edgeGap
+    property real anchorGap: theme.spaceSm
     readonly property var visibleItems: filterItems(items, filter)
     readonly property int visibleCount: visibleItems.length
+    readonly property bool reorderEnabled: reorderable && items.length >= 2 && String(filter || "").trim().length === 0
     property point anchorPosition: Qt.point(edgeMargin, boundsItem.height)
     readonly property real dropUpAvailableHeight: Math.max(0, anchorPosition.y - edgeMargin - anchorGap)
     readonly property bool focusedOnOpen: filterField.activeFocus || optionList.activeFocus
     readonly property bool optionsFocused: optionList.activeFocus
 
     signal picked(string value)
+    signal reordered(var values)
     signal cancelled()
 
     parent: boundsItem
     modal: false
     focus: true
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-    padding: 8
+    padding: theme.spaceMd
     width: Math.min(maximumWidth, Math.max(160, boundsItem.width - edgeMargin * 2))
     height: Math.min(implicitHeight, maximumHeight, dropUpAvailableHeight)
     x: Math.max(edgeMargin, Math.min(anchorPosition.x, boundsItem.width - width - edgeMargin))
@@ -44,9 +49,9 @@ Popup {
     implicitHeight: pickerColumn.implicitHeight + topPadding + bottomPadding
 
     background: Rectangle {
-        radius: 8
+        radius: popup.theme.radiusMedium
         color: popup.theme.surfaceRaised
-        border.width: 1
+        border.width: popup.theme.borderWidth
         border.color: popup.theme.border
     }
 
@@ -82,8 +87,11 @@ Popup {
         message = String(config.message || "")
         emptyText = String(config.emptyText || "Nothing to choose from")
         searchable = config.searchable !== false
+        reorderable = config.reorderable === true
         items = Array.isArray(config.items) ? config.items : []
         filter = ""
+        dragFromIndex = -1
+        dragTargetIndex = -1
         filterField.text = ""
         selectCurrentItem()
         updateAnchorPosition()
@@ -100,7 +108,36 @@ Popup {
         currentIndex = currentIndex < 0 ? 0 : (currentIndex + delta + visibleCount) % visibleCount
     }
 
-    function handleOptionListKey(key) {
+    function moveItem(fromIndex, toIndex) {
+        if (!opened || !reorderEnabled || fromIndex < 0 || fromIndex >= items.length || toIndex < 0 || toIndex >= items.length || fromIndex === toIndex) return false
+        const selectedValue = currentIndex >= 0 && currentIndex < items.length ? String(items[currentIndex].value) : ""
+        const reorderedItems = items.slice()
+        const moved = reorderedItems.splice(fromIndex, 1)[0]
+        reorderedItems.splice(toIndex, 0, moved)
+        items = reorderedItems
+        currentIndex = selectedValue.length > 0 ? 0 : -1
+        for (let index = 0; index < reorderedItems.length; index++) {
+            if (String(reorderedItems[index].value) === selectedValue) currentIndex = index
+        }
+        reordered(reorderedItems.map(item => String(item.value)))
+        return true
+    }
+
+    function moveCurrentItem(delta) {
+        if (!reorderEnabled || currentIndex < 0) return false
+        const target = Math.max(0, Math.min(items.length - 1, currentIndex + delta))
+        return moveItem(currentIndex, target)
+    }
+
+    function handleReorderKey(key, modifiers) {
+        const moveModifier = (modifiers & Qt.ControlModifier) !== 0 && (modifiers & Qt.ShiftModifier) !== 0
+        if (!reorderEnabled || !moveModifier || (key !== Qt.Key_Up && key !== Qt.Key_Down)) return false
+        moveCurrentItem(key === Qt.Key_Up ? -1 : 1)
+        return true
+    }
+
+    function handleOptionListKey(key, modifiers) {
+        if (handleReorderKey(key, modifiers || Qt.NoModifier)) return true
         if (key === Qt.Key_Down) {
             moveSelection(1)
             return true
@@ -114,6 +151,22 @@ Popup {
             return true
         }
         return false
+    }
+
+    function updateDragTarget(fromIndex, centerY) {
+        if (!reorderEnabled || fromIndex < 0) return
+        let target = optionList.indexAt(1, centerY)
+        if (target < 0 && centerY <= optionList.contentY) target = 0
+        if (target < 0 && centerY >= optionList.contentY + optionList.height) target = items.length - 1
+        if (target >= 0) dragTargetIndex = target
+    }
+
+    function finishDrag() {
+        const fromIndex = dragFromIndex
+        const targetIndex = dragTargetIndex
+        dragFromIndex = -1
+        dragTargetIndex = -1
+        if (fromIndex >= 0 && targetIndex >= 0) moveItem(fromIndex, targetIndex)
     }
 
     function focusOptions() {
@@ -167,7 +220,7 @@ Popup {
 
     contentItem: ColumnLayout {
         id: pickerColumn
-        spacing: 5
+        spacing: popup.theme.spaceXs + 1
         Accessible.role: Accessible.Dialog
         Accessible.name: popup.title
 
@@ -176,7 +229,7 @@ Popup {
             text: popup.title
             textFormat: Text.PlainText
             color: popup.theme.heading
-            font.pixelSize: 13
+            font.pixelSize: popup.theme.typeBody + 1
             font.bold: true
             elide: Text.ElideRight
             Accessible.role: Accessible.Heading
@@ -188,7 +241,7 @@ Popup {
             text: popup.message
             textFormat: Text.PlainText
             color: popup.theme.muted
-            font.pixelSize: 11
+            font.pixelSize: popup.theme.typeSmall
             wrapMode: Text.Wrap
             maximumLineCount: 2
             elide: Text.ElideRight
@@ -203,17 +256,19 @@ Popup {
             placeholderTextColor: popup.theme.muted
             selectionColor: popup.theme.selection
             background: Rectangle {
-                radius: 6
+                radius: popup.theme.radiusSmall
                 color: popup.theme.controlSurface
-                border.width: filterField.activeFocus ? 2 : 1
+                border.width: filterField.activeFocus ? popup.theme.focusBorderWidth : popup.theme.borderWidth
                 border.color: filterField.activeFocus ? popup.theme.focusRing : popup.theme.border
             }
             Accessible.role: Accessible.EditableText
             Accessible.name: "Filter " + popup.title
-            Accessible.description: "Arrow keys move the selection, Enter chooses, Escape closes"
+            Accessible.description: popup.reorderable ? "Arrow keys move the selection; Ctrl+Shift+Up or Ctrl+Shift+Down reorders when the filter is empty; Enter chooses; Escape closes" : "Arrow keys move the selection, Enter chooses, Escape closes"
             onTextChanged: popup.filter = text
             Keys.onPressed: event => {
-                if (event.key === Qt.Key_Down) {
+                if (popup.handleReorderKey(event.key, event.modifiers)) {
+                    event.accepted = true
+                } else if (event.key === Qt.Key_Down) {
                     popup.moveSelection(1)
                     event.accepted = true
                 } else if (event.key === Qt.Key_Up) {
@@ -232,7 +287,7 @@ Popup {
             text: popup.items.length === 0 ? popup.emptyText : "No matches"
             textFormat: Text.PlainText
             color: popup.theme.muted
-            font.pixelSize: 12
+            font.pixelSize: popup.theme.typeBody
         }
 
         ListView {
@@ -251,7 +306,7 @@ Popup {
             Accessible.role: Accessible.List
             Accessible.name: popup.title + " options"
             Keys.onPressed: event => {
-                if (popup.handleOptionListKey(event.key)) event.accepted = true
+                if (popup.handleOptionListKey(event.key, event.modifiers)) event.accepted = true
             }
 
             ScrollBar.vertical: ScrollBar {
@@ -264,33 +319,40 @@ Popup {
                 required property var modelData
                 readonly property bool current: modelData.current === true
                 width: optionList.width
-                implicitHeight: optionColumn.implicitHeight + 12
-                radius: 6
-                color: index === popup.currentIndex ? popup.theme.selection : "transparent"
-                border.width: index === popup.currentIndex && (optionList.activeFocus || filterField.activeFocus) ? 2 : 0
-                border.color: popup.theme.focusRing
+                readonly property bool selected: index === popup.currentIndex
+                readonly property bool focused: selected && (optionList.activeFocus || filterField.activeFocus)
+                implicitHeight: optionColumn.implicitHeight + popup.theme.spaceXl
+                radius: popup.theme.radiusSmall
+                color: popup.theme.interactiveFill(selected, optionHover.hovered, optionTap.pressed)
+                border.width: popup.theme.focusBorderWidth
+                border.color: popup.theme.interactiveBorder(selected, focused)
+                z: reorderDrag.active ? 1 : 0
+                transform: Translate { y: reorderDrag.active ? reorderDrag.translation.y : 0 }
+                Behavior on color { ColorAnimation { duration: popup.theme.motionNormal } }
+                Behavior on border.color { ColorAnimation { duration: popup.theme.motionNormal } }
                 Accessible.role: Accessible.ListItem
                 Accessible.name: String(modelData.label || "") + (String(modelData.detail || "").length > 0 ? ", " + String(modelData.detail) : "") + (current ? ", current" : "")
+                Accessible.description: popup.reorderable ? (popup.reorderEnabled ? "Drag the reorder handle or press Ctrl+Shift+Up or Ctrl+Shift+Down to move this item" : "Clear the filter to reorder items") : ""
                 Accessible.focusable: true
                 Accessible.selected: index === popup.currentIndex
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.margins: 6
-                    spacing: 6
+                    anchors.margins: popup.theme.spaceSm
+                    spacing: popup.theme.spaceSm
 
                     ColumnLayout {
                         id: optionColumn
                         Layout.fillWidth: true
-                        spacing: 1
+                        spacing: popup.theme.spaceXxs / 2
 
                         Label {
                             Layout.fillWidth: true
                             text: String(optionRow.modelData.label || "")
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
-                            color: popup.theme.foreground
-                            font.pixelSize: 12
+                            color: optionRow.selected ? popup.theme.selectionForeground : popup.theme.foreground
+                            font.pixelSize: popup.theme.typeBody
                             font.bold: optionRow.current
                         }
 
@@ -301,7 +363,47 @@ Popup {
                             textFormat: Text.PlainText
                             elide: Text.ElideRight
                             color: popup.theme.muted
-                            font.pixelSize: 10
+                            font.pixelSize: popup.theme.typeCaption
+                        }
+                    }
+
+                    Item {
+                        id: reorderHandle
+                        visible: popup.reorderable
+                        enabled: popup.reorderEnabled
+                        Layout.preferredWidth: 26
+                        Layout.preferredHeight: 26
+                        Layout.alignment: Qt.AlignVCenter
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "Move " + String(optionRow.modelData.label || "")
+                        Accessible.description: enabled ? "Drag to reorder, or focus the list and press Ctrl+Shift+Up or Ctrl+Shift+Down" : "Clear the filter to reorder"
+
+                        Label {
+                            anchors.centerIn: parent
+                            text: "≡"
+                            color: reorderHandle.enabled ? popup.theme.foreground : popup.theme.muted
+                            font.pixelSize: popup.theme.typeSubtitle
+                            Accessible.ignored: true
+                        }
+
+                        HoverHandler {
+                            cursorShape: reorderHandle.enabled ? Qt.OpenHandCursor : Qt.ArrowCursor
+                        }
+
+                        DragHandler {
+                            id: reorderDrag
+                            enabled: reorderHandle.enabled
+                            target: null
+                            xAxis.enabled: false
+                            onActiveChanged: {
+                                if (active) {
+                                    popup.dragFromIndex = optionRow.index
+                                    popup.dragTargetIndex = optionRow.index
+                                } else {
+                                    popup.finishDrag()
+                                }
+                            }
+                            onTranslationChanged: if (active) popup.updateDragTarget(optionRow.index, optionRow.y + optionRow.height / 2 + translation.y)
                         }
                     }
 
@@ -311,14 +413,19 @@ Popup {
                         kind: "ok"
                         text: "current"
                         fontSize: 9
+                        horizontalPadding: popup.theme.spaceMd
+                        verticalPadding: popup.theme.spaceXxs
+                        Layout.alignment: Qt.AlignVCenter
                     }
                 }
 
                 HoverHandler {
+                    id: optionHover
                     cursorShape: Qt.PointingHandCursor
                 }
 
                 TapHandler {
+                    id: optionTap
                     onTapped: popup.pickIndex(optionRow.index)
                 }
             }
@@ -326,10 +433,10 @@ Popup {
 
         Label {
             Layout.fillWidth: true
-            text: popup.visibleCount + " of " + popup.items.length + " · Enter or Space chooses · Escape closes"
+            text: popup.visibleCount + " of " + popup.items.length + (popup.reorderable ? (popup.reorderEnabled ? " · Drag ≡ or Ctrl+Shift+↑/↓ to reorder" : " · Clear the filter to reorder") : "") + " · Enter or Space chooses · Escape closes"
             textFormat: Text.PlainText
             color: popup.theme.muted
-            font.pixelSize: 10
+            font.pixelSize: popup.theme.typeCaption
             elide: Text.ElideRight
         }
     }

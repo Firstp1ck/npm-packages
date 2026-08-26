@@ -7,6 +7,7 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   boundedEnvironmentValue,
+  detectDesktopGeometry,
   detectSystemColorScheme,
   launchQtWebUi,
   parseLauncherArgs,
@@ -44,6 +45,32 @@ test("detectSystemColorScheme reads the XDG portal preference", () => {
   assert.deepEqual(calls[0].args.slice(-2), ["org.freedesktop.appearance", "color-scheme"]);
   assert.equal(calls[0].options.shell, undefined);
   assert.equal(calls[0].options.timeout, 1_500);
+});
+
+test("detectDesktopGeometry accepts bounded Hyprland rounding and outer gaps", () => {
+  const calls = [];
+  const geometry = detectDesktopGeometry({
+    spawnSyncImpl: (command, args, options) => {
+      calls.push({ command, args, options });
+      const name = args.at(-1);
+      return name === "decoration:rounding"
+        ? { status: 0, stdout: '{"int":5}' }
+        : { status: 0, stdout: '{"css":"8 6 8 6"}' };
+    },
+    env: { HYPRLAND_INSTANCE_SIGNATURE: "test" },
+  });
+  assert.deepEqual(geometry, { cornerRadius: 5, edgeGap: 6 });
+  assert(calls.every((call) => call.command === "hyprctl"));
+  assert(calls.every((call) => call.options.timeout === 1_500));
+});
+
+test("detectDesktopGeometry rejects malformed, negative, oversized, and unavailable values", () => {
+  const detect = (rounding, gaps) => detectDesktopGeometry({
+    spawnSyncImpl: (_command, args) => args.at(-1) === "decoration:rounding" ? rounding : gaps,
+  });
+  assert.deepEqual(detect({ status: 0, stdout: '{"int":-1}' }, { status: 0, stdout: '{"css":"65"}' }), { cornerRadius: null, edgeGap: null });
+  assert.deepEqual(detect({ status: 0, stdout: "bad" }, { status: 1, stdout: "" }), { cornerRadius: null, edgeGap: null });
+  assert.deepEqual(detect({ error: new Error("missing") }, { error: new Error("missing") }), { cornerRadius: null, edgeGap: null });
 });
 
 test("detectSystemColorScheme handles light, unset, malformed, and unavailable portals", () => {
@@ -91,6 +118,7 @@ test("prepareLaunch passes resolved paths and caller cwd as bounded environment 
     nodeExecutable: "/usr/bin/node",
     resolvePiEntry: () => piEntry,
     detectColorScheme: () => "dark",
+    detectGeometry: () => ({ cornerRadius: 5, edgeGap: 7 }),
   });
 
   assert.equal(launch.command, "quickshell");
@@ -106,11 +134,23 @@ test("prepareLaunch passes resolved paths and caller cwd as bounded environment 
   assert.equal(launch.options.env.QT_WEBUI_PI_CLI_ENTRY, piEntry);
   assert.equal(launch.options.env.QT_WEBUI_DEVELOPMENT_MODE, "1");
   assert.equal(launch.options.env.QT_WEBUI_SYSTEM_COLOR_SCHEME, "dark");
+  assert.equal(launch.options.env.QT_WEBUI_DESKTOP_CORNER_RADIUS, "5");
+  assert.equal(launch.options.env.QT_WEBUI_DESKTOP_EDGE_GAP, "7");
   assert.equal(launch.options.env.PATH, "/test/bin");
   assert.equal(launch.options.env.QT_NO_XDG_DESKTOP_PORTAL, "1");
   assert.equal(launch.options.env.QT_WEBUI_SMOKE_MODE, undefined);
   assert.equal(launch.options.env.QT_WEBUI_THEME_MODE, undefined);
   assert.equal(launch.options.env.QT_WEBUI_UNDOCUMENTED, undefined);
+});
+
+test("prepareLaunch uses explicit unknown markers for unavailable desktop geometry", () => {
+  const launch = prepareLaunch({
+    env: {}, root: "/tmp/qt-webui", cwd: "/tmp/project", nodeExecutable: "/usr/bin/node",
+    resolvePiEntry: () => "/tmp/pi-cli.js", detectColorScheme: () => "unknown",
+    detectGeometry: () => ({ cornerRadius: -1, edgeGap: 100 }),
+  });
+  assert.equal(launch.options.env.QT_WEBUI_DESKTOP_CORNER_RADIUS, "unknown");
+  assert.equal(launch.options.env.QT_WEBUI_DESKTOP_EDGE_GAP, "unknown");
 });
 
 test("prepareLaunch preserves an explicit Qt portal override", () => {

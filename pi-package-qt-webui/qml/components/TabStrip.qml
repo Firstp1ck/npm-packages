@@ -23,9 +23,9 @@ Rectangle {
 
     implicitWidth: vertical ? 196 : 520
     implicitHeight: vertical ? 260 : 46
-    radius: 8
+    radius: theme.radiusMedium
     color: theme.surfaceRaised
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: theme.border
     Accessible.role: Accessible.PageTabList
     Accessible.name: tabs.length + " tabs"
@@ -53,6 +53,7 @@ Rectangle {
     function revealActiveTab() {
         for (let index = 0; index < tabs.length; index++) {
             if (tabs[index].id === activeTabId) {
+                tabList.currentIndex = index
                 tabList.positionViewAtIndex(index, ListView.Contain)
                 return
             }
@@ -64,11 +65,11 @@ Rectangle {
 
     GridLayout {
         anchors.fill: parent
-        anchors.margins: 4
+        anchors.margins: strip.theme.spaceXs
         columns: strip.vertical ? 1 : 2
         rows: strip.vertical ? 2 : 1
-        rowSpacing: 4
-        columnSpacing: 4
+        rowSpacing: strip.theme.spaceXs
+        columnSpacing: strip.theme.spaceXs
 
         ListView {
             id: tabList
@@ -76,12 +77,18 @@ Rectangle {
             Layout.fillHeight: true
             Layout.minimumHeight: strip.vertical ? 80 : 34
             orientation: strip.vertical ? ListView.Vertical : ListView.Horizontal
-            spacing: 4
+            spacing: strip.theme.spaceXs
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             model: strip.tabs
+            keyNavigationEnabled: true
+            keyNavigationWraps: true
+            activeFocusOnTab: true
             Accessible.role: Accessible.PageTabList
             Accessible.name: strip.Accessible.name
+            Keys.onReturnPressed: if (currentItem) strip.selectRequested(currentItem.modelData.id)
+            Keys.onEnterPressed: if (currentItem) strip.selectRequested(currentItem.modelData.id)
+            Keys.onSpacePressed: if (currentItem) strip.selectRequested(currentItem.modelData.id)
 
             ScrollBar.vertical: ScrollBar {
                 policy: strip.vertical ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
@@ -95,13 +102,16 @@ Rectangle {
                 required property int index
                 required property var modelData
                 readonly property bool current: modelData.id === strip.activeTabId
+                readonly property bool keyboardCursor: index === tabList.currentIndex && tabList.activeFocus
                 readonly property string label: strip.tabLabel(modelData)
-                width: strip.vertical ? tabList.width : Math.min(tabRow.implicitWidth + 16, 260)
-                height: strip.vertical ? 46 : tabRow.implicitHeight + 10
-                radius: 6
-                color: current ? strip.theme.surface : "transparent"
-                border.width: current ? 1 : 0
-                border.color: current ? strip.theme.accent : "transparent"
+                width: strip.vertical ? tabList.width : Math.min(tabRow.implicitWidth + strip.theme.space2Xl, 260)
+                height: strip.vertical ? 46 : tabRow.implicitHeight + strip.theme.spaceLg
+                radius: strip.theme.radiusSmall
+                color: strip.theme.interactiveFill(current, keyboardCursor || tabHover.hovered, tabTap.pressed)
+                border.width: strip.theme.focusBorderWidth
+                border.color: strip.theme.interactiveBorder(current, keyboardCursor)
+                Behavior on color { ColorAnimation { duration: strip.theme.motionNormal } }
+                Behavior on border.color { ColorAnimation { duration: strip.theme.motionNormal } }
                 Accessible.role: Accessible.PageTab
                 Accessible.name: "Tab " + (index + 1) + ": " + label + ", " + strip.statusDescription(modelData)
                     + (modelData.unread > 0 ? ", " + modelData.unread + " unread" : "")
@@ -118,17 +128,21 @@ Rectangle {
                 }
 
                 TapHandler {
-                    onTapped: strip.selectRequested(tabItem.modelData.id)
+                    id: tabTap
+                    onTapped: {
+                        tabList.currentIndex = tabItem.index
+                        strip.selectRequested(tabItem.modelData.id)
+                    }
                 }
 
                 RowLayout {
                     id: tabRow
                     anchors.fill: parent
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 4
-                    anchors.topMargin: 4
-                    anchors.bottomMargin: 4
-                    spacing: 6
+                    anchors.leftMargin: strip.theme.spaceMd
+                    anchors.rightMargin: strip.theme.spaceXs
+                    anchors.topMargin: strip.theme.spaceXs
+                    anchors.bottomMargin: strip.theme.spaceXs
+                    spacing: strip.theme.spaceSm
 
                     Rectangle {
                         width: 8
@@ -150,7 +164,7 @@ Rectangle {
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
                             color: strip.theme.foreground
-                            font.pixelSize: 12
+                            font.pixelSize: strip.theme.typeBody
                             font.bold: tabItem.current
                         }
 
@@ -161,14 +175,14 @@ Rectangle {
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
                             color: strip.theme.muted
-                            font.pixelSize: 10
+                            font.pixelSize: strip.theme.typeCaption
                         }
                     }
 
                     Rectangle {
                         visible: tabItem.modelData.unread > 0
-                        implicitWidth: unreadLabel.implicitWidth + 8
-                        implicitHeight: unreadLabel.implicitHeight + 2
+                        implicitWidth: unreadLabel.implicitWidth + strip.theme.spaceMd
+                        implicitHeight: unreadLabel.implicitHeight + strip.theme.spaceXxs
                         radius: height / 2
                         color: strip.theme.accent
                         Label {
@@ -176,25 +190,25 @@ Rectangle {
                             anchors.centerIn: parent
                             text: String(tabItem.modelData.unread)
                             textFormat: Text.PlainText
-                            color: strip.theme.buttonForeground
-                            font.pixelSize: 10
+                            color: strip.theme.primaryButtonForeground
+                            font.pixelSize: strip.theme.typeCaption
                             font.bold: true
                         }
                     }
 
                     Rectangle {
                         visible: tabItem.modelData.needsInput > 0
-                        implicitWidth: inputLabel.implicitWidth + 8
-                        implicitHeight: inputLabel.implicitHeight + 2
-                        radius: 4
+                        implicitWidth: inputLabel.implicitWidth + strip.theme.spaceMd
+                        implicitHeight: inputLabel.implicitHeight + strip.theme.spaceXxs
+                        radius: strip.theme.radiusSmall
                         color: strip.theme.warning
                         Label {
                             id: inputLabel
                             anchors.centerIn: parent
                             text: "input"
                             textFormat: Text.PlainText
-                            color: strip.theme.buttonForeground
-                            font.pixelSize: 10
+                            color: strip.theme.warningButtonForeground
+                            font.pixelSize: strip.theme.typeCaption
                             font.bold: true
                         }
                     }
@@ -216,7 +230,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: strip.vertical
-            spacing: 4
+            spacing: strip.theme.spaceXs
 
             AppButton {
                 theme: strip.theme

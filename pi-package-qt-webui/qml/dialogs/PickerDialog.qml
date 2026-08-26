@@ -159,12 +159,16 @@ AppDialog {
             required property int index
             required property var modelData
             readonly property bool current: modelData.current === true
+            readonly property bool selected: ListView.isCurrentItem
+            readonly property bool focused: selected && (optionList.activeFocus || filterField.activeFocus)
             width: optionList.width
-            implicitHeight: optionColumn.implicitHeight + 14
-            radius: 6
-            color: ListView.isCurrentItem ? dialog.theme.selection : "transparent"
-            border.width: ListView.isCurrentItem && (optionList.activeFocus || filterField.activeFocus) ? 2 : 0
-            border.color: dialog.theme.focusRing
+            implicitHeight: optionColumn.implicitHeight + dialog.theme.spaceXl + dialog.theme.spaceXxs
+            radius: dialog.theme.radiusSmall
+            color: dialog.theme.interactiveFill(selected, optionHover.hovered, optionTap.pressed)
+            border.width: dialog.theme.focusBorderWidth
+            border.color: dialog.theme.interactiveBorder(selected, focused)
+            Behavior on color { ColorAnimation { duration: dialog.theme.motionNormal } }
+            Behavior on border.color { ColorAnimation { duration: dialog.theme.motionNormal } }
             Accessible.role: Accessible.ListItem
             Accessible.name: (String(modelData.group || "").length > 0 ? String(modelData.group) + ": " : "") + String(modelData.label || "") + (String(modelData.detail || "").length > 0 ? ", " + String(modelData.detail) : "") + (current ? ", current" : "")
             Accessible.focusable: true
@@ -172,24 +176,24 @@ AppDialog {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.margins: 7
-                spacing: 8
+                anchors.margins: dialog.theme.spaceSm + 1
+                spacing: dialog.theme.spaceMd
 
                 ColumnLayout {
                     id: optionColumn
                     Layout.fillWidth: true
-                    spacing: 1
+                    spacing: dialog.theme.spaceXxs / 2
 
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 6
+                        spacing: dialog.theme.spaceSm
 
                         Label {
                             visible: String(optionRow.modelData.group || "").length > 0
                             text: String(optionRow.modelData.group || "")
                             textFormat: Text.PlainText
                             color: dialog.theme.accentForeground
-                            font.pixelSize: 10
+                            font.pixelSize: dialog.theme.typeCaption
                             font.bold: true
                         }
 
@@ -198,8 +202,8 @@ AppDialog {
                             text: String(optionRow.modelData.label || "")
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
-                            color: dialog.theme.foreground
-                            font.pixelSize: 13
+                            color: optionRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
+                            font.pixelSize: dialog.theme.typeBody + 1
                             font.bold: optionRow.current
                         }
                     }
@@ -211,7 +215,7 @@ AppDialog {
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         color: dialog.theme.muted
-                        font.pixelSize: 11
+                        font.pixelSize: dialog.theme.typeSmall
                     }
                 }
 
@@ -225,10 +229,12 @@ AppDialog {
             }
 
             HoverHandler {
+                id: optionHover
                 cursorShape: Qt.PointingHandCursor
             }
 
             TapHandler {
+                id: optionTap
                 onTapped: dialog.pickIndex(optionRow.index)
             }
         }

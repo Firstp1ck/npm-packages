@@ -26,10 +26,13 @@ These reads are non-destructive. The skill must identify which source owns each 
 - Hyprland settings can provide optional corner radius and gap values through `hyprctl`.
 - Other compositors and desktop environments are supported when the project exposes equivalent settings or visual references.
 - The bundled token profile is a fallback and starting point. Existing project tokens take priority.
+- With no project-owned visual contract, the fallback is Omarchy-inspired: monospace UI text, flat opaque surfaces, square or minimally rounded geometry, solid 1px borders, one cool accent family, sparse decoration, and no positional hover motion.
 
 ## Configuration
 
 A portable app may accept an explicit theme directory or file path from its own configuration. Keep that path app-owned and user-configurable instead of assuming a distribution-specific location.
+
+The Omarchy-inspired fallback is a design relationship, not a copied palette or a forced dark theme. Automatic mode still follows the authoritative desktop preference. In either color scheme, the theme owner provides the base, surface, foreground, muted, accent, and urgent values while components consume only those semantic roles.
 
 For live retheming, watch only the authoritative theme inputs. Debounce file reloads, validate parsed values, and retain the last valid theme when a read fails. Toolkit color-scheme signals should update semantic tokens directly.
 

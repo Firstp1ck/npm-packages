@@ -8,13 +8,15 @@ Rectangle {
     required property QtObject theme
     property string kind: "neutral"
     property string text: ""
-    property int fontSize: 12
+    property int fontSize: theme.typeBody
+    property real horizontalPadding: theme.spaceLg
+    property real verticalPadding: theme.spaceLg / 2
 
-    implicitWidth: label.implicitWidth + 20
-    implicitHeight: label.implicitHeight + 10
+    implicitWidth: label.implicitWidth + 2 * horizontalPadding
+    implicitHeight: label.implicitHeight + 2 * verticalPadding
     radius: height / 2
     color: theme.statusBackground(kind)
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: theme.statusBorder(kind)
     Accessible.role: Accessible.StaticText
     Accessible.name: text

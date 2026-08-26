@@ -49,8 +49,8 @@ Item {
         width: row.kind === "tool" || (!row.fromUser && row.kind !== "thinking") ? parent.width
             : Math.min(parent.width * (row.compact ? 0.92 : 0.84), Math.max(row.fromUser ? 120 : 240, content.implicitWidth + 32))
         implicitHeight: content.implicitHeight + (row.kind === "tool" ? 0 : row.compact ? 14 : 20)
-        radius: 9
-        color: row.kind === "tool" || (!row.fromUser && row.kind !== "thinking" && !row.searchCurrent) ? "transparent"
+        radius: row.theme.radiusMedium
+        color: row.kind === "tool" || (!row.fromUser && row.kind !== "thinking" && !row.searchCurrent) ? row.theme.transparent
             : row.searchCurrent ? row.theme.searchHighlight
             : row.fromUser ? row.theme.userBubble
             : row.theme.thinkingBackground
@@ -76,7 +76,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 visible: row.kind !== "tool"
-                spacing: 8
+                spacing: row.theme.spaceMd
 
                 Label {
                     text: row.roleLabel
@@ -84,7 +84,7 @@ Item {
                     color: row.fromUser ? row.theme.accentForeground
                         : row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.muted
                     font.weight: Font.DemiBold
-                    font.pixelSize: 11
+                    font.pixelSize: row.theme.typeSmall
                 }
 
                 Label {
@@ -92,7 +92,7 @@ Item {
                     text: row.modeLabel
                     textFormat: Text.PlainText
                     color: row.theme.muted
-                    font.pixelSize: 11
+                    font.pixelSize: row.theme.typeSmall
                 }
 
                 Label {
@@ -100,7 +100,7 @@ Item {
                     text: "streaming…"
                     textFormat: Text.PlainText
                     color: row.theme.muted
-                    font.pixelSize: 11
+                    font.pixelSize: row.theme.typeSmall
                     font.italic: true
                 }
 
@@ -109,7 +109,7 @@ Item {
                     text: "shortened"
                     textFormat: Text.PlainText
                     color: row.theme.warning
-                    font.pixelSize: 11
+                    font.pixelSize: row.theme.typeSmall
                 }
 
                 Item { Layout.fillWidth: true }
@@ -145,7 +145,7 @@ Item {
                 maximumLineCount: 2
                 elide: Text.ElideRight
                 color: row.theme.muted
-                font.pixelSize: 11
+                font.pixelSize: row.theme.typeSmall
             }
 
             MarkdownBlocks {

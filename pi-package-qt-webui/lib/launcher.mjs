@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readPortalColorScheme } from "./backend/appearance.mjs";
 
 const PI_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
 const MAX_ENV_VALUE_BYTES = 16 * 1024;
@@ -84,31 +85,41 @@ export function detectSystemColorScheme({
   spawnSyncImpl = spawnSync,
   env = process.env,
 } = {}) {
+  return readPortalColorScheme({ spawnSyncImpl, env });
+}
+
+function readHyprlandOption(name, { spawnSyncImpl, env }) {
   try {
-    const result = spawnSyncImpl("busctl", [
-      "--user",
-      "call",
-      "org.freedesktop.portal.Desktop",
-      "/org/freedesktop/portal/desktop",
-      "org.freedesktop.portal.Settings",
-      "Read",
-      "ss",
-      "org.freedesktop.appearance",
-      "color-scheme",
-    ], {
+    const result = spawnSyncImpl("hyprctl", ["-j", "getoption", name], {
       encoding: "utf8",
       env,
       timeout: 1_500,
+      maxBuffer: 16 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    if (result.error || result.status !== 0) return "unknown";
-    const match = String(result.stdout ?? "").match(/\bu\s+(\d+)\s*$/);
-    if (match?.[1] === "1") return "dark";
-    if (match?.[1] === "2") return "light";
-    return "unknown";
+    if (result.error || result.status !== 0 || Buffer.byteLength(String(result.stdout ?? ""), "utf8") > 16 * 1024) return null;
+    const parsed = JSON.parse(String(result.stdout ?? ""));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
-    return "unknown";
+    return null;
   }
+}
+
+function boundedDesktopMetric(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 64 ? value : null;
+}
+
+export function detectDesktopGeometry({ spawnSyncImpl = spawnSync, env = process.env } = {}) {
+  const rounding = readHyprlandOption("decoration:rounding", { spawnSyncImpl, env });
+  const gaps = readHyprlandOption("general:gaps_out", { spawnSyncImpl, env });
+  const cornerRadius = boundedDesktopMetric(rounding?.int);
+  const gapValues = typeof gaps?.css === "string"
+    ? gaps.css.trim().split(/\s+/).map((value) => Number(value))
+    : [];
+  const edgeGap = gapValues.length >= 1 && gapValues.length <= 4 && gapValues.every((value) => boundedDesktopMetric(value) !== null)
+    ? Math.min(...gapValues)
+    : null;
+  return { cornerRadius, edgeGap };
 }
 
 export function boundedEnvironmentValue(name, value) {
@@ -128,6 +139,7 @@ export function prepareLaunch({
   nodeExecutable = process.execPath,
   resolvePiEntry = resolvePiCliEntry,
   detectColorScheme = detectSystemColorScheme,
+  detectGeometry = detectDesktopGeometry,
   testOnlyEnvironment = {},
 } = {}) {
   const { development } = parseLauncherArgs(argv);
@@ -141,6 +153,9 @@ export function prepareLaunch({
   const systemColorScheme = ["dark", "light"].includes(detectedColorScheme)
     ? detectedColorScheme
     : "unknown";
+  const detectedGeometry = detectGeometry({ env: inheritedEnvironment }) ?? {};
+  const desktopCornerRadius = boundedDesktopMetric(detectedGeometry.cornerRadius);
+  const desktopEdgeGap = boundedDesktopMetric(detectedGeometry.edgeGap);
   const explicitTestEnvironment = Object.fromEntries(
     Object.entries(testOnlyEnvironment).map(([name, value]) => {
       if (!TEST_ONLY_ENVIRONMENT_NAMES.has(name)) throw new Error(`Unsupported test-only environment value: ${name}`);
@@ -157,6 +172,8 @@ export function prepareLaunch({
     QT_WEBUI_PI_CLI_ENTRY: boundedEnvironmentValue("QT_WEBUI_PI_CLI_ENTRY", piCliEntry),
     QT_WEBUI_DEVELOPMENT_MODE: development ? "1" : "0",
     QT_WEBUI_SYSTEM_COLOR_SCHEME: systemColorScheme,
+    QT_WEBUI_DESKTOP_CORNER_RADIUS: desktopCornerRadius === null ? "unknown" : String(desktopCornerRadius),
+    QT_WEBUI_DESKTOP_EDGE_GAP: desktopEdgeGap === null ? "unknown" : String(desktopEdgeGap),
     ...explicitTestEnvironment,
   };
 
@@ -184,6 +201,7 @@ export function launchQtWebUi({
   nodeExecutable = process.execPath,
   resolvePiEntry = resolvePiCliEntry,
   detectColorScheme = detectSystemColorScheme,
+  detectGeometry = detectDesktopGeometry,
   spawnImpl = spawn,
   signalSource = process,
   testOnlyEnvironment = {},
@@ -196,6 +214,7 @@ export function launchQtWebUi({
     nodeExecutable,
     resolvePiEntry,
     detectColorScheme,
+    detectGeometry,
     testOnlyEnvironment,
   });
 

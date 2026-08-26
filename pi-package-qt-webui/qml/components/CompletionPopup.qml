@@ -18,10 +18,10 @@ Rectangle {
     signal accepted(int index)
 
     visible: kind.length > 0 && (count > 0 || emptyText.length > 0)
-    implicitHeight: visible ? column.implicitHeight + 12 : 0
-    radius: 8
+    implicitHeight: visible ? column.implicitHeight + theme.spaceXl : 0
+    radius: theme.radiusMedium
     color: theme.surfaceRaised
-    border.width: 1
+    border.width: theme.borderWidth
     border.color: theme.border
     Accessible.role: Accessible.List
     Accessible.name: kind === "command" ? "Command suggestions" : "Path suggestions"
@@ -39,15 +39,15 @@ Rectangle {
     ColumnLayout {
         id: column
         anchors.fill: parent
-        anchors.margins: 6
-        spacing: 4
+        anchors.margins: popup.theme.spaceSm
+        spacing: popup.theme.spaceXs
 
         Label {
             Layout.fillWidth: true
             text: popup.kind === "command" ? "Commands · Tab or Enter completes, Escape closes" : "Workspace paths · Tab or Enter completes, Escape closes"
             textFormat: Text.PlainText
             color: popup.theme.muted
-            font.pixelSize: 11
+            font.pixelSize: popup.theme.typeSmall
             elide: Text.ElideRight
         }
 
@@ -57,7 +57,7 @@ Rectangle {
             text: popup.emptyText
             textFormat: Text.PlainText
             color: popup.theme.muted
-            font.pixelSize: 12
+            font.pixelSize: popup.theme.typeBody
         }
 
         ListView {
@@ -79,9 +79,14 @@ Rectangle {
                 required property int index
                 required property var modelData
                 width: list.width
-                implicitHeight: entryRow.implicitHeight + 8
-                radius: 5
-                color: index === popup.currentIndex ? popup.theme.selection : "transparent"
+                readonly property bool selected: index === popup.currentIndex
+                implicitHeight: entryRow.implicitHeight + popup.theme.spaceMd
+                radius: popup.theme.radiusSmall
+                color: popup.theme.interactiveFill(selected, entryHover.hovered, entryTap.pressed)
+                border.width: popup.theme.focusBorderWidth
+                border.color: popup.theme.interactiveBorder(selected, selected)
+                Behavior on color { ColorAnimation { duration: popup.theme.motionNormal } }
+                Behavior on border.color { ColorAnimation { duration: popup.theme.motionNormal } }
                 Accessible.role: Accessible.ListItem
                 Accessible.name: String(modelData.label || "") + (String(modelData.detail || "").length > 0 ? ", " + String(modelData.detail) : "")
                 Accessible.selected: index === popup.currentIndex
@@ -89,15 +94,15 @@ Rectangle {
                 RowLayout {
                     id: entryRow
                     anchors.fill: parent
-                    anchors.margins: 4
-                    spacing: 8
+                    anchors.margins: popup.theme.spaceXs
+                    spacing: popup.theme.spaceMd
 
                     Label {
                         text: String(entry.modelData.label || "")
                         textFormat: Text.PlainText
-                        color: popup.theme.foreground
+                        color: entry.selected ? popup.theme.selectionForeground : popup.theme.foreground
                         font.family: popup.theme.monospaceFamily
-                        font.pixelSize: 12
+                        font.pixelSize: popup.theme.typeBody
                         elide: Text.ElideMiddle
                         Layout.maximumWidth: entryRow.width * 0.6
                     }
@@ -107,16 +112,18 @@ Rectangle {
                         text: String(entry.modelData.detail || "")
                         textFormat: Text.PlainText
                         color: popup.theme.muted
-                        font.pixelSize: 11
+                        font.pixelSize: popup.theme.typeSmall
                         elide: Text.ElideRight
                     }
                 }
 
                 HoverHandler {
+                    id: entryHover
                     cursorShape: Qt.PointingHandCursor
                 }
 
                 TapHandler {
+                    id: entryTap
                     onTapped: popup.accepted(entry.index)
                 }
             }

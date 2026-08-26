@@ -131,17 +131,17 @@ Column {
             property bool selectable: false
             readonly property bool highlighted: root.highlight && hasTokens && !selectable
             width: parent.width
-            implicitHeight: codeColumn.implicitHeight + 16
-            radius: 8
+            implicitHeight: codeColumn.implicitHeight + root.theme.space2Xl
+            radius: root.theme.radiusMedium
             color: root.theme.codeBackground
-            border.width: 1
+            border.width: root.theme.borderWidth
             border.color: root.theme.codeBorder
 
             ColumnLayout {
                 id: codeColumn
                 anchors.fill: parent
-                anchors.margins: 8
-                spacing: 4
+                anchors.margins: root.theme.spaceMd
+                spacing: root.theme.spaceXs
 
                 RowLayout {
                     Layout.fillWidth: true
@@ -150,7 +150,7 @@ Column {
                         text: (block.language && block.language.length > 0 ? block.language : "code") + (block.closed === false ? " · unterminated" : "")
                         textFormat: Text.PlainText
                         color: root.theme.muted
-                        font.pixelSize: 11
+                        font.pixelSize: root.theme.typeSmall
                         font.family: root.theme.monospaceFamily
                         elide: Text.ElideRight
                     }
@@ -272,8 +272,8 @@ Column {
                         Layout.minimumWidth: 60
                         implicitWidth: cellLabel.implicitWidth + 16
                         implicitHeight: cellLabel.implicitHeight + 10
-                        color: isHeader ? root.theme.surfaceRaised : "transparent"
-                        border.width: 1
+                        color: isHeader ? root.theme.surfaceRaised : root.theme.transparent
+                        border.width: root.theme.borderWidth
                         border.color: root.theme.tableBorder
 
                         Label {
@@ -301,7 +301,7 @@ Column {
                 text: visible ? block.droppedRows + " more rows omitted" : ""
                 textFormat: Text.PlainText
                 color: root.theme.muted
-                font.pixelSize: 11
+                font.pixelSize: root.theme.typeSmall
             }
         }
     }
@@ -326,7 +326,7 @@ Column {
             wrapMode: Text.Wrap
             color: root.theme.muted
             font.italic: true
-            font.pixelSize: 12
+            font.pixelSize: root.theme.typeBody
         }
     }
 }

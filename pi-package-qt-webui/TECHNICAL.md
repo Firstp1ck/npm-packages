@@ -14,7 +14,7 @@ Advanced user guidance for requirements, commands, runtime behavior, settings, s
 
 Other operating systems, X11-only sessions, and Quickshell releases older than 0.3 are not supported. Qt WebUI runs one Pi session per tab, up to eight tabs per window; file browsing and Git status views are not available yet.
 
-Qt WebUI reads the XDG desktop portal's color-scheme preference at startup, then falls back to Qt's current preference when the portal has no answer. It uses the built-in dark palette when the desktop asks for dark mode and the built-in light palette when the desktop asks for light mode. Qt preference changes update the open window without restarting Pi.
+Qt WebUI reads the XDG desktop portal's color-scheme preference at startup and follows later portal changes. If the portal has no valid preference, it follows Qt's current preference. Automatic mode is the default; the command palette can save a Light or Dark override and can reduce motion. Returning to Automatic immediately uses the current portal or Qt preference.
 
 The launcher defaults `QT_NO_XDG_DESKTOP_PORTAL=1` for Quickshell because this app does not use Qt's desktop-services portal bridge. This prevents Qt's host-registry startup warning without hiding other `qt.qpa.services` warnings. The launcher still reads the portal's color scheme before Quickshell starts. A custom QML build that needs Qt's portal bridge can opt back in with `QT_NO_XDG_DESKTOP_PORTAL=0 qt-webui`.
 
@@ -47,7 +47,7 @@ Development mode does not add a separate file watcher or restart loop. Quickshel
 
 ## The window
 
-A persistent left rail holds Qt WebUI identity, Pi status, workspace tabs, folder actions, session actions, and secondary utilities. The compact main header shows the session name, active workspace directory, and transcript search. A wrapping control strip below the prompt editor shows the active provider and model ID followed by the thinking effort, for example `openai-codex/gpt-5.6-sol` and `thinking high`, alongside resource, compaction, and transcript-view controls. The model and thinking controls open bounded lists above the strip; see [Models, thinking effort, and compaction](#models-thinking-effort-and-compaction).
+A persistent left rail holds Qt WebUI identity, Pi status, workspace tabs, folder actions, session actions, and secondary utilities. The compact main header shows the session name, active workspace directory, and transcript search. A wrapping control strip below the prompt editor shows a three-line **More options** menu, the active provider and model ID followed by the thinking effort, context compaction, and transcript density. The menu contains Resources, thinking-section visibility, syntax highlighting, desktop notifications, appearance, reduced motion, Events, and Diagnostics. The model and thinking controls open bounded lists above the strip; see [Models, thinking effort, and compaction](#models-thinking-effort-and-compaction).
 
 The conversation and prompt editor share a centered maximum width instead of stretching across the full window. Assistant messages use the quiet conversation surface, while your messages and thinking sections remain visually distinct. The prompt editor stays in the normal page flow, with a raised surface and visible focus border, so suggestions, attachments, queues, notices, and status remain usable at the minimum window size.
 
@@ -85,7 +85,7 @@ The footer shows a **Usage** group once Pi reports statistics for the tab: the c
 
 ## Prompts, steering, and follow-ups
 
-`Enter` sends the prompt while Pi is idle; `Shift+Enter` inserts a new line. While Pi is working the editor stays available: `Enter` or **Steer** delivers a steering message after the current tool calls finish, and `Alt+Enter` or **Follow-up** queues a message for after the run ends. An animated indicator under the last transcript entry shows the current activity while a run is active. **Abort** (or `Ctrl+Shift+X`) stops the active run; an abort sent before Pi acknowledges the prompt is applied as soon as the run starts. Queued messages are listed above the editor.
+`Enter` sends the prompt while Pi is idle; `Shift+Enter` inserts a new line. The mode control defaults to **Steer mode** and stays visible while the session is ready. While Pi is working, `Enter` and the adjacent action use the selected mode: **Steer** delivers the message after the current tool calls finish, while **Queue** adds a follow-up for after the run ends. Click the mode control to switch between **Steer mode** and **Follow-up mode**. `Alt+Enter` always queues a follow-up. An animated indicator under the last transcript entry shows the current activity while a run is active. **Abort** (or `Ctrl+Shift+X`) stops the active run; an abort sent before Pi acknowledges the prompt is applied as soon as the run starts. Queued messages are listed above the editor.
 
 Prompts are limited to 8,192 characters; the editor shows a counter near the limit and refuses longer text.
 
@@ -101,13 +101,17 @@ The prompt you have not sent yet is saved as a draft shortly after you stop typi
 
 ## Models, thinking effort, and compaction
 
-The model control beneath the prompt editor (or `Ctrl+M`) opens a list above the strip. It mirrors the ordered models Pi exposes for the current session through `/scoped-models`, with provider, ID, display name, and capabilities such as thinking, images, and context size. When Pi has no explicit model scope, its documented behavior is that every available model is usable, so the list falls back to the available catalogue. Type to filter, use the arrow keys, and press `Enter` or `Space` to switch; `Escape` closes the list and returns focus to the model control. `Ctrl+Shift+P` cycles to Pi's next model without opening the list.
+The model control beneath the prompt editor (or `Ctrl+M`) opens a list above the strip. It mirrors the models Pi exposes for the current session through `/scoped-models`, with provider, ID, display name, and capabilities such as thinking, images, and context size. When Pi has no explicit model scope, its documented behavior is that every available model is usable, so the list falls back to the available catalogue. Type to filter, use the arrow keys, and press `Enter` or `Space` to switch; `Escape` closes the list and returns focus to the model control. `Ctrl+Shift+P` cycles to Pi's next model without opening the list.
+
+When Pi reports an explicit scope with at least two available entries, each row has a **≡** handle. Drag the handle, or highlight a row and press `Ctrl+Shift+Up` or `Ctrl+Shift+Down`, to move it without selecting the model or closing the list. The current selection and keyboard focus stay in place. Reordering is disabled while the filter contains text; clear the filter to restore the handles and keyboard commands.
+
+The preference uses exact `provider/model-id` identities. Saved entries that still exist appear first in the saved order; newly available entries follow in Pi's relative order. Entries temporarily absent from one scope are retained when possible, so reordering one tab does not erase preferences for another scope. Pi remains authoritative for membership, and available-catalogue fallback lists cannot be reordered. At most 256 identities are kept; identities in the scope you just reordered take priority if that bound is reached.
 
 The thinking control (or `Ctrl+E`) opens another list above the strip with the effort levels the current model supports, from `off` to `max`; `Ctrl+Shift+E` cycles through them. When a model does not support thinking, the list contains only `off` and cycling reports that there is nothing to cycle. This control sets reasoning effort. Showing or hiding rendered thinking sections remains a separate display setting available through `Ctrl+T` and the command palette.
 
 Changing the model can change the thinking effort, because Pi applies the new model's supported levels; the prompt control strip always shows the values Pi confirmed. Both controls are disabled while Pi is working, and a change that Pi rejects is shown as a notice with Pi's reason. Choosing the entry that is already active does nothing. Up to 256 scoped or available models are listed; the list reports how many more were omitted.
 
-**Resources** (`Ctrl+Shift+R`) opens profiles for enabled tools, enabled skills, and sampling values. First choose the scope:
+**Resources** in the **More options** menu (`Ctrl+Shift+R`) opens profiles for enabled tools, enabled skills, and sampling values. First choose the scope:
 
 - **Session** overrides only the current Pi session. It stays with a persisted session; for an ephemeral session the dialog warns that the override applies only until the session ends.
 - **This model** applies to the exact active provider/model pair when its sessions inherit.
@@ -146,6 +150,9 @@ Display choices are saved in `$XDG_CONFIG_HOME/qt-webui/settings.json` (usually 
 | `showThinking` | `true` | Show thinking sections. |
 | `desktopNotifications` | `true` | Send desktop notifications while the window is unfocused. |
 | `syntaxHighlighting` | `true` | Highlight fenced code blocks. |
+| `appearanceMode` | `automatic` | Use `automatic`, `light`, or `dark` appearance. |
+| `reducedMotion` | `false` | Stop decorative animation and make state transitions immediate. |
+| `modelOrder` | `[]` | Preferred order of up to 256 exact `provider/model-id` identities for explicit scoped-model lists. |
 
 The file is rewritten atomically. An unreadable or invalid file is ignored with a notice and the defaults apply. Saved prompt sequences live next to it in `sequences.json`; global and exact-model resource profiles live in `resources.json`; and unsent drafts, open tabs, and pinned and recent folders live in `$XDG_STATE_HOME/qt-webui/state.json` (usually `~/.local/state/qt-webui/state.json`), all with owner-only permissions. Session resource profiles stay in Pi's own saved session history rather than the shared profile file. If Pi reports that a session is ephemeral, the profile remains in memory only and the dialog shows that it is not durably saved. Sessions are listed from Pi's own session directory for the folder (`~/.pi/agent/sessions/`, or `$PI_CODING_AGENT_DIR/sessions/`). Attachments stay in memory until they are sent, and Pi keeps its own session files in your Pi agent directory.
 
@@ -163,7 +170,7 @@ Everything Pi and its extensions produce is treated as untrusted text. Raw HTML 
 
 | Keys | Action |
 |---|---|
-| `Enter` | Send the prompt, or steer the active run |
+| `Enter` | Send the prompt, or use the selected Steer/Follow-up mode during an active run |
 | `Shift+Enter` | Insert a new line in the prompt |
 | `Alt+Enter` | Queue a follow-up while Pi is working |
 | `Ctrl+Shift+X` | Abort the active run |
@@ -171,7 +178,7 @@ Everything Pi and its extensions produce is treated as untrusted text. Raw HTML 
 | `Ctrl+T` | Show or hide thinking sections |
 | `Ctrl+Shift+M` | Switch between Detailed and Compact transcript rows |
 | `Ctrl+L` | Focus the prompt editor |
-| `Ctrl+M` | Choose a model; `Ctrl+Shift+P` cycles to the next model |
+| `Ctrl+M` | Choose a model; in an unfiltered explicit scope, `Ctrl+Shift+Up` / `Ctrl+Shift+Down` moves the highlighted model; `Ctrl+Shift+P` cycles to the next model |
 | `Ctrl+E` | Choose the thinking effort; `Ctrl+Shift+E` cycles through the levels |
 | `Ctrl+Shift+R` | Open tool, skill, and sampling resource profiles |
 | `Ctrl+Shift+A` | Attach files |
@@ -242,7 +249,7 @@ Install `libnotify` (for `notify-send`) and `xdg-utils` (for `xdg-open`). Notifi
 
 ### The color scheme does not match the desktop
 
-Qt WebUI prefers the color scheme reported by the XDG desktop portal and falls back to Qt. Confirm the portal result with `busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings Read ss org.freedesktop.appearance color-scheme`. The final number is `1` for dark, `2` for light, and `0` for no preference. If the portal cannot be read, confirm that other Qt applications see the expected theme and that your session exports the intended Qt platform theme.
+Choose **Appearance** in the command palette until it shows **Automatic**. Qt WebUI then prefers the color scheme reported by the XDG desktop portal and falls back to Qt. Confirm the portal result with `busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Settings Read ss org.freedesktop.appearance color-scheme`. The final number is `1` for dark, `2` for light, and `0` for no preference. If the portal cannot be read, confirm that other Qt applications see the expected theme and that your session exports the intended Qt platform theme.
 
 ### Development changes do not reload
 

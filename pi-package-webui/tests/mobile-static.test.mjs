@@ -2213,6 +2213,7 @@ assert.match(app, /function openNativeSettingsDialog\(\)[\s\S]*?\/api\/steering-
 assert.match(app, /function openNativeNameDialog\(\)[\s\S]*?sendPrompt\("prompt", `\/name \$\{name\}`\)/, "native /name selector should prompt before running the slash command");
 assert.match(app, /function openNativeForkSelector\(\)[\s\S]*?\/api\/fork-messages[\s\S]*?\/api\/fork/, "native /fork selector should pair fork-point loading with the fork action");
 assert.match(app, /function openNativeResumeSelector\(scope = "current", \{ query = "" \} = \{\}\)[\s\S]*?\/api\/sessions\?scope=\$\{encodeURIComponent\(selectedScope\)\}/, "native /resume selector should list current-cwd or all sessions");
+assert.match(app, /nativeCommandApi\("\/api\/switch-session"[\s\S]*?const resumedTab = syncResponseTabs\(result\)[\s\S]*?await switchTab\(resumedTab\.id\)/, "native /resume should select the new terminal returned by the server");
 assert.match(app, /\/api\/session-rename/, "native /resume selector should rename session metadata");
 assert.match(app, /\/api\/session-delete/, "native /resume selector should delete sessions with confirmation");
 assert.match(app, /function openNativeTreeSelector\(\)[\s\S]*?\/api\/session-tree[\s\S]*?\/api\/tree-navigate/, "native /tree selector should list tree entries and navigate through the backend helper");
@@ -2501,7 +2502,8 @@ assert.match(server, /url\.pathname === "\/api\/scoped-models" && req\.method ==
 assert.match(server, /url\.pathname === "\/api\/fork-messages" && req\.method === "GET"/, "server should expose fork-point data for the native /fork selector");
 assert.match(server, /url\.pathname === "\/api\/sessions" && req\.method === "GET"/, "server should expose session lists for the native /resume selector");
 assert.match(server, /url\.pathname === "\/api\/session-tree" && req\.method === "GET"/, "server should expose session-tree data for the native /tree selector");
-assert.match(server, /url\.pathname === "\/api\/switch-session" && req\.method === "POST"/, "server should expose session switching for the native /resume selector");
+assert.match(server, /url\.pathname === "\/api\/switch-session" && req\.method === "POST"/, "server should expose session resume for the native /resume selector");
+assert.match(server, /async function resumeSessionInNewTab\([\s\S]*?createTab\(\{[\s\S]*?sessionFile: manager\.getSessionFile\(\)[\s\S]*?sourceTab: tabMeta\(sourceTab\)/, "session resume should create a separate terminal and preserve source-tab metadata");
 assert.match(server, /url\.pathname === "\/api\/tree-navigate" && req\.method === "POST"/, "server should expose tree navigation through the Web UI helper command");
 assert.match(server, /function configuredSessionDir\(\)/, "server should honor forwarded --session-dir for session selectors");
 assert.match(server, /SessionManager\.listAll\(sessionDir\) : await SessionManager\.list\(tab\.cwd, sessionDir\)/, "server should support current-cwd and all-session resume scopes");
