@@ -4,19 +4,20 @@ Use Pi in a Linux desktop window built with Quickshell and Qt Quick.
 
 ## What you can do
 
-- Send prompts and read assistant answers as they stream, rendered as Markdown with headings, lists, tables, quotes, links, and syntax-highlighted, copyable code blocks.
+- Send prompts and read assistant answers as they stream. Drag to select transcript text, including syntax-highlighted code; Markdown still renders headings, lists, tables, quotes, and links.
 - Attach text files and images to a prompt, complete `/` commands and `@` workspace paths while typing, keep an unsent draft per session, and save prompt sequences you run again later.
 - See what Pi is doing: thinking sections you can show or hide, and a card for every tool call with its status, duration, and output.
 - Answer questions from Pi extensions in native dialogs: pick an option, confirm, type a value, or edit text.
 - Steer a running task, queue a follow-up, or abort it; restart Pi or the local backend after a failure.
-- Work in a focused desktop layout with workspace tabs in a left rail, a readable centered conversation, and an elevated prompt editor.
-- Search the transcript, copy any message, and switch between Detailed and Compact transcript rows.
-- Get a desktop notification when a run finishes or Pi needs input while the window is in the background.
+- Work in a focused violet-charcoal or light counterpart layout with a resizable workspace rail, a readable centered conversation, and a clearly framed prompt editor.
+- Search the transcript, copy any message, return to new output with **Latest**, and switch between Detailed and Compact transcript rows.
+- Get a desktop notification when a background **Working** session finishes or Pi needs input; **Settled** sessions stay quiet until restored.
 - See the active provider, model ID, and thinking effort beside the prompt, plus status chips from extensions such as the Git footer.
 - Choose a model from Pi's current scoped-model list, drag explicitly scoped models into a preferred order that persists across restarts, and set thinking effort from drop-ups above the prompt control strip; configure tool, skill, and sampling profiles or compact long conversations from the same strip.
-- Open several projects in tabs, each with its own Pi session, resume any saved session for a folder, and start a Git worktree for a new branch in its own tab.
+- Search saved Pi sessions from every project by title or folder in one rail, keep active work in **Working**, move idle sessions to the collapsible **Settled** section, bulk-settle large backlogs, and restore them whenever you need them.
+- Open several projects in tabs, each with its own Pi session, reuse the tab for an already-open saved session, open another saved session in a new tab, and start a Git worktree for a new branch in its own tab.
 - Reach every action, tab, model, session, and Pi command from one keyboard-first palette (`Ctrl+K`), watch context and token usage in the footer, and review events and diagnostics without leaving the window.
-- Work in the project directory where you started `qt-webui` (your tabs come back after a restart), follow live desktop light/dark changes, or choose a saved light/dark override and reduced motion from the command palette.
+- Work in the project directory where you started `qt-webui` (your tabs come back after a restart), follow live desktop light/dark changes, or choose Automatic, Light, Dark, or an installed Pi JSON theme without changing Pi's own theme setting.
 
 ## Install
 
@@ -49,7 +50,19 @@ Then enter this command inside Pi:
 
 The command starts Qt WebUI for Pi's current working directory and returns immediately, leaving Pi open. With the global npm installation, run `qt-webui` from the project directory instead.
 
-Choose a workspace tab from the left rail, then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). The prompt control defaults to **Steer mode**. Switch it to **Follow-up mode** when you want `Enter` and the nearby run action to queue the next prompt instead; `Alt+Enter` always queues a follow-up. The **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. The three-line **More options** menu below the prompt holds Resources, display preferences, Events, and Diagnostics without crowding the main window. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
+Choose a session from **Working** in the left rail. Use **Search workspaces** above the lists to filter loaded **Working** and **Settled** rows by session title, identifier, or folder. Search is case-insensitive; press `Escape` or choose **×** to restore every row. Selecting a session that is already open switches to its tab; selecting another saved session opens it in a new tab and leaves your current tab intact. If another Pi window saves that session, Qt WebUI refreshes the saved-session list and, while the tab is idle, replaces its transcript with the latest complete saved conversation; a background tab gains an unread marker. Use **Settle** to move an idle session out of the active list. When more than 100 saved sessions remain in **Working**, a floating **Settle All** button moves every eligible idle session to **Settled** and then disappears as the count reaches 100 or fewer. Active runs stay in **Working**, and a notice summarizes skipped sessions. Both lists show compact last-activity labels: minutes or hours below one day, whole days through `30d`, then `dd.mm.yyyy` for older sessions. When an existing session gets new activity, its row stays in place for five minutes. Qt WebUI then moves it into last-activity order, which keeps active rows from jumping around while you work. The **Settled** section starts expanded, can be collapsed, and keeps each row quiet with the title, activity label, and **Restore**. Settled sessions do not send desktop notifications if later background activity finishes or requests input. Restoring never changes the saved conversation. Closing a tab does not settle it, and settling a session does not close its tab. When you close the session you are viewing, the main workspace stays empty instead of selecting or creating another session. Other open sessions remain in **Working** until you choose one.
+
+By default, Qt WebUI also settles closed sessions after 30 days without activity. Open **More options**, choose **Automatic settlement**, and enter 1–3,650 days to change the delay. Lowering it can move older closed sessions to **Settled** as soon as you save; open tabs stay in **Working**, and **Restore** gives a session a fresh grace period.
+
+Open **More options** and choose **Theme** to use Automatic, Light, Dark, or a Pi JSON theme from your normal Pi theme locations and installed packages. For example, themes from `@firstpick/pi-themes-bundle` appear after that package is installed and enabled in Pi. If a saved theme disappears or becomes invalid, Qt WebUI uses your last built-in appearance and retries the saved choice when the theme returns.
+
+Drag the rail's right edge to resize it, or focus that edge with `Tab` and press `Shift+Left` / `Shift+Right`. The rail can use the available window width instead of stopping at a fixed maximum. If you scroll up in a transcript, use **Latest** to return to the newest output and follow new messages again. Then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). The prompt control defaults to **Steer mode**. Switch it to **Follow-up mode** when you want `Enter` and the nearby run action to queue the next prompt instead; `Alt+Enter` always queues a follow-up. The **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. The three-line **More options** menu below the prompt holds Resources, automatic settlement, display preferences, Events, and Diagnostics without crowding the main window. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
+
+## Main window
+
+![Qt WebUI dark window with Working sessions above an expanded Settled section in the left rail](screenshots/session-settlement.png)
+
+The screenshot uses the package's deterministic fake-session environment; it contains no real project or conversation data.
 
 Useful shortcuts:
 
@@ -59,9 +72,9 @@ Useful shortcuts:
 - `Ctrl+L` returns focus to the prompt.
 - `Ctrl+M` opens Pi's scoped-model list above the model control. When Pi supplies an explicit scope, drag the **≡** handle or press `Ctrl+Shift+Up` / `Ctrl+Shift+Down` to reorder it. `Ctrl+E` opens thinking effort; `Ctrl+Shift+P` and `Ctrl+Shift+E` cycle through the model and effort lists.
 - `Ctrl+Shift+R` opens **Resources** from the **More options** menu for enabled tools, enabled skills, and model-supported sampling values.
-- `Ctrl+Shift+A` attaches files and `Ctrl+Shift+S` opens your saved prompt sequences.
+- **Sequences** in **More options**, or `Ctrl+Shift+S`, opens your saved prompt sequences. `Ctrl+Shift+A` attaches files.
 - Type `/` to complete a command or `@` to complete a workspace path; `Tab` or `Enter` completes without sending.
-- `Ctrl+N` opens a tab in the same folder, `Ctrl+O` picks another folder, `Ctrl+W` closes the tab, `Ctrl+Tab` switches tabs, `Ctrl+Shift+O` resumes a saved session, `Ctrl+Shift+N` starts a new one, and `Ctrl+Shift+B` creates a Git worktree.
+- `Ctrl+N` opens a tab in the same folder, `Ctrl+O` picks another folder, `Ctrl+W` closes the active tab and leaves no session selected, and `Ctrl+Tab` switches tabs. `Ctrl+Shift+O` resumes a saved session, `Ctrl+Shift+N` starts a new one, and `Ctrl+Shift+B` creates a Git worktree.
 - `Ctrl+K` opens the command palette, where you can cycle Automatic/Light/Dark appearance and reduced motion; `Ctrl+Shift+L` opens event history and `Ctrl+Shift+D` opens diagnostics.
 
 Links in answers open in your default application only after you confirm the full address. Your display choices are saved between sessions.
@@ -72,13 +85,15 @@ For QML development, start the packaged source configuration with native reload 
 qt-webui dev
 ```
 
-From a source checkout, use `npm run dev` instead. Saving a QML file while either development command is running lets Quickshell reload the configuration.
+Saving a QML file while this development command is running lets Quickshell reload the installed configuration.
 
 ## Before you start
 
 Qt WebUI requires Linux, a Wayland desktop session, Quickshell 0.3 or newer, and Node.js 22.19 or newer. It uses your existing Pi credentials and settings; it never asks you to enter provider secrets.
 
 Pi runs with access to the directory where you launch the app. Review prompts, tool cards, extension dialogs, and resource profiles just as you would in Pi's terminal interface, because enabled tools and skills can read or change project files. An empty profile intentionally disables every item in that category; **Inherit** does not. If Pi is using an ephemeral session, Qt WebUI warns that a session profile applies only until that session ends instead of claiming it was saved.
+
+Theme selection stays in Qt WebUI's private settings and never writes Pi's `theme` setting. Theme discovery reads JSON color data only. It ignores arbitrary CSS, gradients, and images from HTML export fields and does not execute package extensions.
 
 ## Technical details
 

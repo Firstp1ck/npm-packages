@@ -21,6 +21,9 @@ Popup {
     property int currentIndex: -1
     property int dragFromIndex: -1
     property int dragTargetIndex: -1
+    property real dragCenterY: -1
+    property real dragStartContentY: 0
+    property real dragLastContentY: 0
     property real maximumWidth: 480
     property real maximumHeight: 300
     property real edgeMargin: theme.edgeGap
@@ -92,6 +95,9 @@ Popup {
         filter = ""
         dragFromIndex = -1
         dragTargetIndex = -1
+        dragCenterY = -1
+        dragStartContentY = optionList.contentY
+        dragLastContentY = optionList.contentY
         filterField.text = ""
         selectCurrentItem()
         updateAnchorPosition()
@@ -161,11 +167,55 @@ Popup {
         if (target >= 0) dragTargetIndex = target
     }
 
+    function dragScrollStep(centerY) {
+        if (dragFromIndex < 0 || centerY < 0) return 0
+        const viewportY = centerY - optionList.contentY
+        const edgeSize = Math.min(36, optionList.height / 3)
+        const maximumContentY = Math.max(0, optionList.contentHeight - optionList.height)
+        if (viewportY < edgeSize && optionList.contentY > 0) return -8
+        if (viewportY > optionList.height - edgeSize && optionList.contentY < maximumContentY) return 8
+        return 0
+    }
+
+    function beginDrag(fromIndex, centerY) {
+        dragFromIndex = fromIndex
+        dragTargetIndex = fromIndex
+        dragStartContentY = optionList.contentY
+        dragLastContentY = optionList.contentY
+        dragCenterY = centerY
+        updateDragTarget(fromIndex, centerY)
+    }
+
+    function updateDragPosition(fromIndex, centerY) {
+        if (dragFromIndex !== fromIndex) return
+        dragCenterY = centerY
+        updateDragTarget(fromIndex, centerY)
+    }
+
+    function handleDragContentYChanged() {
+        if (dragFromIndex < 0) return
+        const delta = optionList.contentY - dragLastContentY
+        dragLastContentY = optionList.contentY
+        if (delta === 0) return
+        dragCenterY += delta
+        updateDragTarget(dragFromIndex, dragCenterY)
+    }
+
+    function scrollDraggedItem() {
+        const step = dragScrollStep(dragCenterY)
+        if (step === 0) return
+        const maximumContentY = Math.max(0, optionList.contentHeight - optionList.height)
+        optionList.contentY = Math.max(0, Math.min(maximumContentY, optionList.contentY + step))
+    }
+
     function finishDrag() {
         const fromIndex = dragFromIndex
         const targetIndex = dragTargetIndex
         dragFromIndex = -1
         dragTargetIndex = -1
+        dragCenterY = -1
+        dragStartContentY = optionList.contentY
+        dragLastContentY = optionList.contentY
         if (fromIndex >= 0 && targetIndex >= 0) moveItem(fromIndex, targetIndex)
     }
 
@@ -216,6 +266,14 @@ Popup {
         function onYChanged() { popup.scheduleAnchorUpdate() }
         function onWidthChanged() { popup.scheduleAnchorUpdate() }
         function onHeightChanged() { popup.scheduleAnchorUpdate() }
+    }
+
+    Timer {
+        id: dragAutoScrollTimer
+        interval: 16
+        repeat: true
+        running: popup.dragScrollStep(popup.dragCenterY) !== 0
+        onTriggered: popup.scrollDraggedItem()
     }
 
     contentItem: ColumnLayout {
@@ -303,6 +361,7 @@ Popup {
             keyNavigationEnabled: true
             keyNavigationWraps: true
             activeFocusOnTab: true
+            onContentYChanged: popup.handleDragContentYChanged()
             Accessible.role: Accessible.List
             Accessible.name: popup.title + " options"
             Keys.onPressed: event => {
@@ -327,7 +386,9 @@ Popup {
                 border.width: popup.theme.focusBorderWidth
                 border.color: popup.theme.interactiveBorder(selected, focused)
                 z: reorderDrag.active ? 1 : 0
-                transform: Translate { y: reorderDrag.active ? reorderDrag.translation.y : 0 }
+                transform: Translate {
+                    y: reorderDrag.active ? reorderDrag.translation.y + optionList.contentY - popup.dragStartContentY : 0
+                }
                 Behavior on color { ColorAnimation { duration: popup.theme.motionNormal } }
                 Behavior on border.color { ColorAnimation { duration: popup.theme.motionNormal } }
                 Accessible.role: Accessible.ListItem
@@ -397,13 +458,12 @@ Popup {
                             xAxis.enabled: false
                             onActiveChanged: {
                                 if (active) {
-                                    popup.dragFromIndex = optionRow.index
-                                    popup.dragTargetIndex = optionRow.index
+                                    popup.beginDrag(optionRow.index, optionRow.y + optionRow.height / 2 + translation.y)
                                 } else {
                                     popup.finishDrag()
                                 }
                             }
-                            onTranslationChanged: if (active) popup.updateDragTarget(optionRow.index, optionRow.y + optionRow.height / 2 + translation.y)
+                            onTranslationChanged: if (active) popup.updateDragPosition(optionRow.index, optionRow.y + optionRow.height / 2 + translation.y + optionList.contentY - popup.dragStartContentY)
                         }
                     }
 

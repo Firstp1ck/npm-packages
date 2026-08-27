@@ -227,6 +227,8 @@ test("terminal diagnostics are safe and generated output parsing keeps quality r
   const short = "feat(core): add guided commit planning";
   const long = `${short}\n\nBind each commit to the staged snapshot.`;
   assert.deepEqual(parseGeneratedOutput(`<<<SHORT>>>\n${short}\n<<<LONG>>>\n${long}\n<<<END>>>`), { short, long });
+  assert.deepEqual(parseGeneratedOutput(long), { short, long });
+  assert.deepEqual(parseGeneratedOutput(`\n\`\`\`text\n${long}\n\`\`\`\n`), { short, long });
   assert.deepEqual(parseGeneratedOutput(`<<<SHORT>>>\nfix: handle failure\n<<<LONG>>>\nfix: handle failure\n<<<END>>>`), { short: "fix: handle failure", long: "fix: handle failure" });
   for (const [advisoryShort, advisoryLong] of [
     ["unknown: type", "different body subject"],
@@ -237,8 +239,7 @@ test("terminal diagnostics are safe and generated output parsing keeps quality r
   }
 
   const invalid = [
-    "feat: missing delimiters",
-    "```\n<<<SHORT>>>\nfeat: fenced\n<<<LONG>>>\nfeat: fenced\n<<<END>>>\n```",
+    "   \n",
     "<<<SHORT>>>\nfeat: nul\x00\n<<<LONG>>>\nfeat: nul\n<<<END>>>",
     "<<<SHORT>>>\nfeat: ansi\x1b[31m\n<<<LONG>>>\nfeat: ansi\n<<<END>>>",
     "<<<SHORT>>>\nfeat: tab\tbad\n<<<LONG>>>\nfeat: tab bad\n<<<END>>>",

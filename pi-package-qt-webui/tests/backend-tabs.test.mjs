@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -47,7 +47,9 @@ async function writeSession(directory, fileName, { id, cwd, name, messages = [],
   if (name !== undefined) lines.push(sessionLine({ type: "session_info", id: `${id}-info`, parentId: null, timestamp, name }));
   messages.forEach((message, index) => lines.push(sessionLine({ type: "message", id: `${id}-${index}`, parentId: null, timestamp, message })));
   await mkdir(directory, { recursive: true });
-  await writeFile(path.join(directory, fileName), lines.join(""));
+  const filePath = path.join(directory, fileName);
+  await writeFile(filePath, lines.join(""));
+  return filePath;
 }
 
 // ---- transcript ----------------------------------------------------------------------------
@@ -115,8 +117,10 @@ test("session listing matches Pi's directory encoding, reads headers and names, 
     }
   }
   assert.deepEqual(await listSessions(cwd, { env }), { sessions: [], omitted: 0, directory });
-  await writeSession(directory, "2026-08-01_older.jsonl", { id: "older", cwd, name: "Older [31mred[0m", messages: [{ role: "user", content: "first  question", timestamp: 1000 }, { role: "assistant", content: "answer", timestamp: 2000 }] });
-  await writeSession(directory, "2026-08-02_newer.jsonl", { id: "newer", cwd, messages: [{ role: "user", content: [{ type: "text", text: "array content" }], timestamp: 5000 }] });
+  const olderPath = await writeSession(directory, "2026-08-01_older.jsonl", { id: "older", cwd, name: "Older [31mred[0m", messages: [{ role: "user", content: "first  question", timestamp: 9000 }, { role: "assistant", content: "answer", timestamp: 10_000 }] });
+  const newerPath = await writeSession(directory, "2026-08-02_newer.jsonl", { id: "newer", cwd, messages: [{ role: "user", content: [{ type: "text", text: "array content" }], timestamp: 1000 }] });
+  await utimes(olderPath, new Date(2000), new Date(2000));
+  await utimes(newerPath, new Date(5000), new Date(5000));
   await writeFile(path.join(directory, "broken.jsonl"), "{\"type\":\"message\"}\n");
   await writeFile(path.join(directory, "notes.txt"), "ignored");
   await mkdir(path.join(directory, "dir.jsonl"));
@@ -130,6 +134,189 @@ test("session listing matches Pi's directory encoding, reads headers and names, 
   const bounded = await listSessions(cwd, { env });
   assert.equal(bounded.sessions.length, LIMITS.maxSessionListEntries);
   assert.equal(bounded.omitted, 3, "files beyond the bound are counted even when they turn out to be invalid");
+});
+
+test("all-project session listing pages every valid session and tolerates duplicate, corrupt, and vanished inputs", async (t) => {
+  const agentDir = await temporary(t, "qt-webui-global-agent-");
+  const env = { PI_CODING_AGENT_DIR: agentDir };
+  const firstCwd = "/work/project-a";
+  const secondCwd = "/work/project-b";
+  const firstDirectory = sessionDirectoryFor(firstCwd, env);
+  const secondDirectory = sessionDirectoryFor(secondCwd, env);
+  const expectedIds = [];
+  for (let index = 0; index < LIMITS.maxSessionListEntries + 2; index += 1) {
+    const cwd = index % 2 === 0 ? firstCwd : secondCwd;
+    const directory = index % 2 === 0 ? firstDirectory : secondDirectory;
+    const id = `global-${String(index).padStart(3, "0")}`;
+    expectedIds.push(id);
+    const filePath = await writeSession(directory, `${id}.jsonl`, {
+      id,
+      cwd,
+      name: index === 0 ? "Newest global" : undefined,
+      messages: [{ role: "user", content: `question ${index}`, timestamp: 1_000_000 - index }],
+    });
+    const modified = new Date(1_700_000_000_000 + index * 1_000);
+    await utimes(filePath, modified, modified);
+  }
+  await writeFile(path.join(firstDirectory, "broken.jsonl"), "{not-json}\n");
+  await symlink(path.join(firstDirectory, "gone.jsonl"), path.join(firstDirectory, "vanished.jsonl"));
+  await symlink(firstDirectory, path.join(agentDir, "sessions", "duplicate-project"));
+  const externalDirectory = await temporary(t, "qt-webui-external-sessions-");
+  const externalFile = await writeSession(externalDirectory, "external.jsonl", { id: "external-file", cwd: "/outside" });
+  await symlink(externalFile, path.join(firstDirectory, "external-file.jsonl"));
+  await symlink(externalDirectory, path.join(agentDir, "sessions", "external-project"));
+
+  const firstPage = await listSessions(firstCwd, { env, scope: "all", offset: 0, now: () => 2_000_000_000_000 });
+  assert.deepEqual({ scope: firstPage.scope, offset: firstPage.offset, nextOffset: firstPage.nextOffset, total: firstPage.total, omitted: firstPage.omitted }, {
+    scope: "all", offset: 0, nextOffset: LIMITS.maxSessionListEntries, total: LIMITS.maxSessionListEntries + 3, omitted: 3,
+  });
+  const secondPage = await listSessions(firstCwd, { env, scope: "all", offset: firstPage.nextOffset, now: () => 2_000_000_000_000 });
+  assert.deepEqual({ offset: secondPage.offset, nextOffset: secondPage.nextOffset, omitted: secondPage.omitted }, {
+    offset: LIMITS.maxSessionListEntries, nextOffset: null, omitted: 0,
+  });
+  const listed = [...firstPage.sessions, ...secondPage.sessions];
+  assert.equal(listed.length, expectedIds.length, "corrupt and vanished files are skipped without losing valid sessions");
+  assert.equal(new Set(listed.map((session) => session.identity)).size, listed.length, "a symlinked project directory does not duplicate sessions");
+  assert.deepEqual(listed.map((session) => session.id).sort(), expectedIds.sort());
+  assert.deepEqual(listed.map((session) => session.id), expectedIds.slice().reverse(), "page membership and returned rows use filesystem mtime even when message timestamps invert the boundary");
+  assert(listed.every((session, index) => index === 0 || listed[index - 1].modified >= session.modified));
+  assert.equal(listed.some((session) => session.id.startsWith("external-")), false, "external file and directory symlinks are skipped");
+  assert(listed.some((session) => session.cwd === firstCwd));
+  assert(listed.some((session) => session.cwd === secondCwd));
+});
+
+test("catalog refresh automatically settles exact-threshold sessions while excluding every open tab", async (t) => {
+  const cwd = await temporary(t, "qt-webui-auto-cwd-");
+  const agentDir = await temporary(t, "qt-webui-auto-agent-");
+  const stateHome = await temporary(t, "qt-webui-auto-state-");
+  const now = 2_000_000_000_000;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const env = { PI_CODING_AGENT_DIR: agentDir, XDG_STATE_HOME: stateHome, QT_WEBUI_SMOKE_NOW_MS: String(now) };
+  const directory = sessionDirectoryFor(cwd, env);
+  const paths = {
+    exact: await writeSession(directory, "exact.jsonl", { id: "exact", cwd }),
+    below: await writeSession(directory, "below.jsonl", { id: "below", cwd }),
+    changedThreshold: await writeSession(directory, "changed-threshold.jsonl", { id: "changed-threshold", cwd }),
+    newer: await writeSession(directory, "newer.jsonl", { id: "newer", cwd }),
+    idleOpen: await writeSession(directory, "idle-open.jsonl", { id: "idle-open", cwd }),
+    runningOpen: await writeSession(directory, "running-open.jsonl", { id: "running-open", cwd }),
+  };
+  await utimes(paths.exact, new Date(now - 30 * dayMs), new Date(now - 30 * dayMs));
+  await utimes(paths.below, new Date(now - 30 * dayMs + 1), new Date(now - 30 * dayMs + 1));
+  await utimes(paths.changedThreshold, new Date(now - 15 * dayMs), new Date(now - 15 * dayMs));
+  await utimes(paths.newer, new Date(now - dayMs), new Date(now - dayMs));
+  await utimes(paths.idleOpen, new Date(now - 60 * dayMs), new Date(now - 60 * dayMs));
+  await utimes(paths.runningOpen, new Date(now - 60 * dayMs), new Date(now - 60 * dayMs));
+  const beforeFiles = Object.fromEntries(await Promise.all(Object.entries(paths).map(async ([key, filePath]) => [key, await readFile(filePath, "utf8")])));
+
+  const backend = await readyBackend(t, { cwd, env });
+  const idle = await backend.send("tab_open", { cwd, sessionPath: paths.idleOpen });
+  await backend.waitForEvent("pi.status", (event) => event.tab === idle.data.tab.id && event.statusKind === "ready");
+  const running = await backend.send("tab_open", { cwd, sessionPath: paths.runningOpen });
+  await backend.waitForEvent("pi.status", (event) => event.tab === running.data.tab.id && event.statusKind === "ready");
+  await backend.send("prompt", { tab: running.data.tab.id, message: "__QT_WEBUI_DELAYED_ABORT__" });
+  await backend.waitForEvent("run.start", (event) => event.tab === running.data.tab.id);
+
+  const catalog = await backend.send("sessions_list", { scope: "all" });
+  const byId = Object.fromEntries(catalog.data.sessions.map((session) => [session.id, session]));
+  assert.equal(byId.exact.settled, true, "the exact elapsed threshold qualifies");
+  assert.equal(byId.below.settled, false, "one millisecond below the threshold does not qualify");
+  assert.equal(byId["changed-threshold"].settled, false, "the default threshold remains authoritative");
+  assert.equal(byId.newer.settled, false, "new activity prevents settlement");
+  assert.deepEqual({ settled: byId["idle-open"].settled, openTabId: byId["idle-open"].openTabId }, { settled: false, openTabId: idle.data.tab.id });
+  assert.deepEqual({ settled: byId["running-open"].settled, openTabId: byId["running-open"].openTabId }, { settled: false, openTabId: running.data.tab.id });
+  assert(catalog.data.sessions.every((session) => !("identity" in session)), "canonical identities remain backend-private");
+
+  const statePath = path.join(stateHome, "qt-webui", "state.json");
+  const stateText = await readFile(statePath, "utf8");
+  const settlementMetadata = JSON.parse(stateText);
+  assert.equal(settlementMetadata.settledSessions.length, 0);
+  assert.equal(settlementMetadata.automaticSettledSessions.length, 1);
+  const privateMetadataText = JSON.stringify({ settledSessions: settlementMetadata.settledSessions, automaticSettledSessions: settlementMetadata.automaticSettledSessions, sessionRestoreGrace: settlementMetadata.sessionRestoreGrace });
+  for (const filePath of Object.values(paths)) assert.equal(privateMetadataText.includes(filePath), false, "private settlement metadata must not leak paths");
+  const stateMtime = (await stat(statePath, { bigint: true })).mtimeNs;
+  await backend.send("sessions_list", { scope: "all" });
+  assert.equal((await stat(statePath, { bigint: true })).mtimeNs, stateMtime, "an unchanged refresh does not rewrite automatic-settlement state");
+  assert.equal((await backend.send("settings_set", { values: { sessionSettleDays: 10 } })).data.settings.sessionSettleDays, 10);
+  const changedCatalog = await backend.send("sessions_list", { scope: "all" });
+  assert.equal(changedCatalog.data.sessions.find((session) => session.id === "changed-threshold").settled, true, "the changed threshold applies on the next catalog refresh");
+  for (const [key, filePath] of Object.entries(paths)) assert.equal(await readFile(filePath, "utf8"), beforeFiles[key], `catalog settlement does not change ${filePath}`);
+  await backend.send("abort", { tab: running.data.tab.id });
+  await backend.waitForEvent("run.end", (event) => event.tab === running.data.tab.id);
+});
+
+test("catalog refresh excludes startup resumes and explicit session-switch targets for their full transitions", async (t) => {
+  const cwd = await temporary(t, "qt-webui-transition-cwd-");
+  const agentDir = await temporary(t, "qt-webui-transition-agent-");
+  const now = 2_000_000_000_000;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const env = { PI_CODING_AGENT_DIR: agentDir, QT_WEBUI_SMOKE_NOW_MS: String(now) };
+  const directory = sessionDirectoryFor(cwd, env);
+  const startupPath = await writeSession(directory, "startup-resume.jsonl", { id: "startup-resume", cwd });
+  const switchPath = await writeSession(directory, "switch-target.jsonl", { id: "switch-target", cwd });
+  await utimes(startupPath, new Date(now - 60 * dayMs), new Date(now - 60 * dayMs));
+  await utimes(switchPath, new Date(now), new Date(now));
+
+  const backend = await readyBackend(t, { cwd, env });
+  const opened = await backend.send("tab_open", { cwd, sessionPath: startupPath });
+  const tabId = opened.data.tab.id;
+  const piPid = opened.data.tab.pid;
+  let stopped = false;
+  const stopPi = () => {
+    process.kill(piPid, "SIGSTOP");
+    stopped = true;
+  };
+  const resumePi = () => {
+    if (!stopped) return;
+    try {
+      process.kill(piPid, "SIGCONT");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    stopped = false;
+  };
+  t.after(resumePi);
+
+  stopPi();
+  const pendingCatalog = await backend.send("sessions_list", { tab: tabId, scope: "all" });
+  const pendingRow = pendingCatalog.data.sessions.find((session) => session.id === "startup-resume");
+  assert.deepEqual({ settled: pendingRow.settled, openTabId: pendingRow.openTabId }, { settled: false, openTabId: tabId }, "a startup resume remains open while Pi is stopped before completing it");
+  assert(pendingCatalog.data.sessions.every((session) => !("identity" in session)), "transition identities remain backend-private");
+  resumePi();
+  await backend.waitForEvent("pi.runtime", (event) => event.tab === tabId && event.sessionFile === startupPath);
+
+  await utimes(switchPath, new Date(now - 60 * dayMs), new Date(now - 60 * dayMs));
+  stopPi();
+  backend.raw(`${JSON.stringify({ v: 1, id: "transition-switch", type: "session_switch", tab: tabId, sessionPath: switchPath })}\n${JSON.stringify({ v: 1, id: "transition-catalog", type: "sessions_list", tab: tabId, scope: "all" })}\n`);
+  const switchingCatalog = await backend.waitFor((record) => record.kind === "response" && record.id === "transition-catalog", "catalog response during session switch");
+  assert.equal(switchingCatalog.ok, true, JSON.stringify(switchingCatalog));
+  const switchingRow = switchingCatalog.data.sessions.find((session) => session.id === "switch-target");
+  assert.deepEqual({ settled: switchingRow.settled, openTabId: switchingRow.openTabId }, { settled: false, openTabId: tabId }, "an explicit switch target remains open until Pi completes the switch");
+  assert(switchingCatalog.data.sessions.every((session) => !("identity" in session)), "transition identities never reach catalog rows");
+  resumePi();
+  const switched = await backend.waitFor((record) => record.kind === "response" && record.id === "transition-switch", "session switch response");
+  assert.equal(switched.ok, true, JSON.stringify(switched));
+});
+
+test("canonical in-root aliases associate with open tabs and settlement without exposing identity keys", async (t) => {
+  const cwd = await temporary(t, "qt-webui-alias-cwd-");
+  const agentDir = await temporary(t, "qt-webui-alias-agent-");
+  const env = { PI_CODING_AGENT_DIR: agentDir };
+  const directory = sessionDirectoryFor(cwd, env);
+  const sessionPath = await writeSession(directory, "canonical.jsonl", { id: "canonical", cwd });
+  const aliasPath = path.join(directory, "z-alias.jsonl");
+  await symlink(sessionPath, aliasPath);
+
+  const backend = await readyBackend(t, { cwd, env });
+  const opened = await backend.send("tab_open", { cwd, sessionPath: aliasPath });
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  await backend.waitForEvent("pi.status", (event) => event.tab === opened.data.tab.id && event.statusKind === "ready");
+  const catalog = await backend.send("sessions_list", { scope: "all" });
+  assert.equal(catalog.data.sessions.length, 1, "in-root aliases remain deduplicated");
+  assert.equal(catalog.data.sessions[0].openTabId, opened.data.tab.id, "canonical identity associates an alias spelling with its open tab");
+  assert.equal("identity" in catalog.data.sessions[0], false, "canonical identity remains backend-internal");
+  assert.equal((await backend.send("session_settled", { sessionPath: aliasPath, settled: true })).data.settled, true);
+  assert.equal((await backend.send("sessions_list", { scope: "all" })).data.sessions[0].settled, true);
 });
 
 // ---- directories ---------------------------------------------------------------------------
@@ -255,8 +442,18 @@ test("validateRequest bounds tab, session, directory, and worktree requests", ()
   assert.throws(() => valid("tab_close", { force: "yes" }), /force must be boolean/);
   assert.throws(() => valid("tab_rename", { name: "n".repeat(LIMITS.maxTabNameCharacters + 1) }), (error) => error.code === "limit_exceeded");
   assert.throws(() => valid("tab_move", { delta: 2 }), /delta/);
+  assert.deepEqual(valid("sessions_list", {}), { id: "x", type: "sessions_list", scope: "workspace", offset: 0 });
+  assert.deepEqual(valid("sessions_list", { scope: "all", offset: 200 }), { id: "x", type: "sessions_list", scope: "all", offset: 200 });
+  assert.throws(() => valid("sessions_list", { scope: "project" }), /workspace or all/);
+  assert.throws(() => valid("sessions_list", { offset: -1 }), /non-negative safe integer/);
+  assert.throws(() => valid("sessions_list", { offset: 1.5 }), /non-negative safe integer/);
+  assert.equal(valid("sessions_list", { scope: "all", offset: Number.MAX_SAFE_INTEGER }).offset, Number.MAX_SAFE_INTEGER, "every backend-emitted safe offset remains valid");
+  assert.throws(() => valid("sessions_list", { offset: Number.MAX_SAFE_INTEGER + 1 }), /non-negative safe integer/);
   assert.throws(() => valid("session_switch", { sessionPath: "/a/b.txt" }), /\.jsonl/);
   assert.equal(valid("session_switch", { sessionPath: "/a/b.jsonl" }).sessionPath, "/a/b.jsonl");
+  assert.deepEqual(valid("session_settled", { sessionPath: "/a/b.jsonl", settled: true }), { id: "x", type: "session_settled", sessionPath: "/a/b.jsonl", settled: true });
+  assert.throws(() => valid("session_settled", { sessionPath: "/a/b.txt", settled: true }), /\.jsonl/);
+  assert.throws(() => valid("session_settled", { sessionPath: "/a/b.jsonl", settled: "yes" }), /boolean settled/);
   assert.equal(valid("directory_list", {}).showHidden, false);
   assert.throws(() => valid("directory_create", { path: "/a" }), /string name/);
   assert.throws(() => valid("directory_pin", { path: "x" }), /absolute/);
@@ -309,7 +506,7 @@ async function readyBackend(t, options = {}) {
   const backend = await startBackend({ startupTimeoutMs: 1_000, ...options });
   t.after(async () => {
     if (backend.exit) return;
-    backend.child.kill("SIGKILL");
+    backend.kill("SIGKILL");
     await backend.exitPromise;
   });
   await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");
@@ -363,16 +560,24 @@ test("tabs run isolated sessions, badge inactive tabs, replay transcripts on sel
   // A busy tab refuses to close without force; force stops its Pi tree.
   await backend.send("prompt", { message: "__QT_WEBUI_DELAYED_ABORT__", tab: secondTab });
   await backend.waitForEvent("run.start", (event) => event.tab === secondTab);
+  const selectedBusy = await backend.send("tab_select", { tab: secondTab });
+  assert.equal(selectedBusy.data.tab.id, secondTab);
   const refused = await backend.send("tab_close", { tab: secondTab });
   assert.equal(refused.error.code, "busy");
   const secondPid = (await backend.send("tabs_list")).data.tabs.find((tab) => tab.id === secondTab).pid;
   const closed = await backend.send("tab_close", { tab: secondTab, force: true });
   assert.equal(closed.data.closed, secondTab);
-  assert.equal(closed.data.activeTab, firstTab);
+  assert.equal(closed.data.activeTab, "");
   await waitUntil(() => !processAlive(secondPid), "second Pi to exit");
-  assert.deepEqual((await backend.send("tabs_list")).data.tabs.map((tab) => tab.id), [firstTab]);
+  const tabsWithoutSelection = (await backend.send("tabs_list")).data;
+  assert.deepEqual(tabsWithoutSelection.tabs.map((tab) => tab.id), [firstTab]);
+  assert.equal(tabsWithoutSelection.activeTab, "");
 
-  // Rename reaches Pi and the saved layout; closing the last tab replaces it with a fresh one.
+  // An open inactive session stays available but must be selected explicitly before use.
+  const reselected = await backend.send("tab_select", { tab: firstTab });
+  assert.equal(reselected.data.tab.id, firstTab);
+
+  // Rename reaches Pi and the saved layout; closing the last tab leaves the workspace empty.
   const renamed = await backend.send("tab_rename", { name: "Renamed tab" });
   assert.deepEqual({ name: renamed.data.tab.name, sessionRenamed: renamed.data.sessionRenamed }, { name: "Renamed tab", sessionRenamed: true });
   await backend.waitForEvent("pi.runtime", (event) => event.tab === firstTab && event.sessionName === "Renamed tab");
@@ -380,24 +585,46 @@ test("tabs run isolated sessions, badge inactive tabs, replay transcripts on sel
   assert.deepEqual(saved.tabs, [{ cwd: await realpath(first), sessionFile: "/tmp/fixture-session.jsonl", name: "Renamed tab" }]);
   const lastClosed = await backend.send("tab_close", {});
   assert.equal(lastClosed.data.closed, firstTab);
-  const remaining = (await backend.send("tabs_list")).data.tabs;
-  assert.equal(remaining.length, 1);
-  assert.notEqual(remaining[0].id, firstTab);
-  assert.equal(remaining[0].cwd, await realpath(first));
+  const emptyTabs = (await backend.send("tabs_list")).data;
+  assert.deepEqual(emptyTabs.tabs, []);
+  assert.equal(emptyTabs.activeTab, "");
+  const emptyCatalog = await backend.send("sessions_list", { scope: "all", offset: 0 });
+  assert.equal(emptyCatalog.ok, true, JSON.stringify(emptyCatalog));
+  assert.equal(emptyCatalog.data.current, "");
+  assert.equal(emptyCatalog.data.cwd, await realpath(first));
+  const emptySaved = JSON.parse(await readFile(path.join(stateHome, "qt-webui", "state.json"), "utf8"));
+  assert.deepEqual({ tabs: emptySaved.tabs, activeTab: emptySaved.activeTab }, { tabs: [], activeTab: -1 });
   const captured = await backend.readCapture();
   assert.deepEqual(captured.filter((command) => command.type === "set_session_name").map((command) => command.name), ["Renamed tab"]);
   await backend.send("shutdown");
   await backend.exitPromise;
 
-  // Restart: the saved layout is restored (the vanished directory is skipped) and the caller
-  // directory gets a tab that is selected.
+  // Restarting an intentionally empty workspace does not create a replacement session.
+  const emptyRestarted = await startBackend({ cwd: first, env: { XDG_STATE_HOME: stateHome }, startupTimeoutMs: 1_000 });
+  t.after(async () => {
+    if (emptyRestarted.exit) return;
+    emptyRestarted.kill("SIGKILL");
+    await emptyRestarted.exitPromise;
+  });
+  const restoredEmpty = await emptyRestarted.waitForEvent("tabs.update", (event) => event.tabs.length === 0 && event.activeTab === "");
+  assert.deepEqual(restoredEmpty.tabs, []);
+  const emptyHello = await emptyRestarted.send("hello");
+  assert.equal(emptyHello.data.session, null);
+  assert.deepEqual(emptyHello.data.attachments, []);
+  const restoredEmptyCatalog = await emptyRestarted.send("sessions_list", { scope: "all", offset: 0 });
+  assert.equal(restoredEmptyCatalog.ok, true, JSON.stringify(restoredEmptyCatalog));
+  assert.equal(restoredEmptyCatalog.data.current, "");
+  await emptyRestarted.send("shutdown");
+  await emptyRestarted.exitPromise;
+
+  // Existing state still restores saved tabs, skips vanished directories, and selects the caller.
   await writeFile(path.join(stateHome, "qt-webui", "state.json"), JSON.stringify({ tabs: [{ cwd: await realpath(second), sessionFile: "/tmp/resume-me.jsonl", name: "Second" }, { cwd: path.join(first, "gone") }], activeTab: 0 }));
   await writeFile("/tmp/resume-me.jsonl", "{\"type\":\"session\",\"id\":\"resume-me\"}\n");
   t.after(() => rm("/tmp/resume-me.jsonl", { force: true }));
   const restarted = await startBackend({ cwd: first, env: { XDG_STATE_HOME: stateHome }, startupTimeoutMs: 1_000 });
   t.after(async () => {
     if (restarted.exit) return;
-    restarted.child.kill("SIGKILL");
+    restarted.kill("SIGKILL");
     await restarted.exitPromise;
   });
   const tabsAfter = await restarted.waitForEvent("tabs.update", (event) => event.tabs.length === 2);
@@ -577,6 +804,59 @@ test("persisted sessions can be listed, resumed with history and an interruption
   const commands = await backend.readCapture();
   assert.deepEqual(commands.filter((command) => command.type === "switch_session").map((command) => path.basename(command.sessionPath)), ["one_resume-me.jsonl", "two_interrupted.jsonl", "three_cancel-me.jsonl"]);
   assert.equal(commands.filter((command) => command.type === "get_messages").length, 2, "history is read only after a switch Pi accepted");
+});
+
+test("session settlement persists, reverses, and refuses to newly settle an active open session", async (t) => {
+  const cwd = await temporary(t);
+  const agentDir = await temporary(t, "qt-webui-settlement-agent-");
+  const stateHome = await temporary(t, "qt-webui-settlement-state-");
+  const env = { PI_CODING_AGENT_DIR: agentDir, XDG_STATE_HOME: stateHome };
+  const directory = sessionDirectoryFor(cwd, env);
+  const sessionPath = await writeSession(directory, "settle-me.jsonl", {
+    id: "settle-me",
+    cwd,
+    name: "Settlement test",
+    messages: [{ role: "user", content: "finish this task", timestamp: 10_000 }],
+  });
+
+  const backend = await readyBackend(t, { cwd, env });
+  const initial = await backend.send("sessions_list", { scope: "all" });
+  assert.deepEqual(initial.data.sessions.map((session) => [session.id, session.settled]), [["settle-me", false]]);
+  const settled = await backend.send("session_settled", { sessionPath, settled: true });
+  assert.deepEqual(settled.data, { path: sessionPath, settled: true });
+  assert(backend.events.some((event) => event.type === "sessions.changed" && event.path === sessionPath && event.settled === true));
+  assert.equal((await backend.send("sessions_list", { scope: "all" })).data.sessions[0].settled, true);
+  const stateText = await readFile(path.join(stateHome, "qt-webui", "state.json"), "utf8");
+  const state = JSON.parse(stateText);
+  assert.equal(state.settledSessions.length, 1);
+  assert.match(state.settledSessions[0], /^[0-9a-f]{64}$/);
+  assert.equal(stateText.includes(sessionPath), false, "settled metadata stores a private fixed-size identity rather than the project path");
+  await backend.send("shutdown");
+  await backend.exitPromise;
+
+  const restarted = await readyBackend(t, { cwd, env });
+  assert.equal((await restarted.send("sessions_list", { scope: "all" })).data.sessions[0].settled, true, "settlement survives a backend restart");
+  assert.equal((await restarted.send("session_settled", { sessionPath, settled: true })).data.settled, true, "settling is idempotent while idle");
+  const resumed = await restarted.send("session_switch", { sessionPath });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  await restarted.send("prompt", { message: "__QT_WEBUI_DELAYED_ABORT__" });
+  await restarted.waitForEvent("run.start");
+  assert.equal((await restarted.send("session_settled", { sessionPath, settled: false })).data.settled, false, "unsetting remains available while active");
+  assert.equal((await restarted.send("session_settled", { sessionPath, settled: true })).error.code, "busy", "an active session cannot be newly settled");
+  await restarted.send("abort");
+  await restarted.waitForEvent("run.end");
+  assert.equal((await restarted.send("session_settled", { sessionPath, settled: true })).data.settled, true, "the idle session can be settled again");
+  assert.equal((await restarted.send("session_settled", { sessionPath, settled: false })).data.settled, false);
+  assert.equal((await restarted.send("session_settled", { sessionPath: "/tmp/outside.jsonl", settled: true })).error.code, "invalid_request");
+  assert.equal((await restarted.send("session_settled", { sessionPath: path.join(directory, "missing.jsonl"), settled: true })).error.code, "unavailable");
+  const externalDirectory = await temporary(t, "qt-webui-settlement-external-");
+  const externalPath = await writeSession(externalDirectory, "external.jsonl", { id: "external", cwd: externalDirectory });
+  const externalFileAlias = path.join(directory, "external-file.jsonl");
+  const externalDirectoryAlias = path.join(path.dirname(directory), "external-directory");
+  await symlink(externalPath, externalFileAlias);
+  await symlink(externalDirectory, externalDirectoryAlias);
+  assert.equal((await restarted.send("session_settled", { sessionPath: externalFileAlias, settled: true })).error.code, "invalid_request");
+  assert.equal((await restarted.send("session_settled", { sessionPath: path.join(externalDirectoryAlias, "external.jsonl"), settled: true })).error.code, "invalid_request");
 });
 
 test("directories and worktrees are served over the protocol and a worktree opens in a new tab", async (t) => {

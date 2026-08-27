@@ -202,3 +202,54 @@ test("Escape closes the composer options menu while its trigger keeps focus", as
   await page.keyboard.press("Escape");
   await expect(panel).toBeHidden();
 });
+
+test("a group with more than eight tabs keeps every titled row reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 520 });
+  await page.goto(baseURL);
+  await expect(page.locator("#promptInput")).toBeVisible();
+
+  const groupedTabs = [];
+  for (let index = 1; index <= 9; index += 1) {
+    const title = `Overflow title ${index}`;
+    const response = await page.request.post(`${baseURL}/api/tabs`, { data: { title } });
+    assert.equal(response.ok(), true, `creating ${title} should succeed`);
+    const payload = await response.json();
+    groupedTabs.push({ id: payload.data.tab.id, title });
+  }
+
+  await page.evaluate((tabs) => {
+    localStorage.setItem("pi-webui-terminal-custom-groups-v1", JSON.stringify({
+      version: 1,
+      groups: [{ id: "overflow-group", title: "Overflow group", tabIds: tabs.map((tab) => tab.id) }],
+    }));
+  }, groupedTabs);
+  await page.reload();
+
+  const group = page.locator(".terminal-tab-custom-group");
+  await expect(group).toHaveCount(1);
+  await group.hover();
+  const menu = group.locator(".terminal-tab-group-menu");
+  await expect(menu).toBeVisible();
+  await expect(menu.locator(".terminal-tab-group-item")).toHaveCount(groupedTabs.length);
+  assert.deepEqual(
+    await menu.locator(".terminal-tab-group-item .terminal-tab-title").allTextContents(),
+    groupedTabs.map((tab) => tab.title),
+    "the group menu should preserve every server-provided tab title",
+  );
+
+  const bounds = await menu.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    return { bottom: rect.bottom, viewportHeight: window.innerHeight, clientHeight: node.clientHeight, scrollHeight: node.scrollHeight };
+  });
+  assert.ok(bounds.bottom <= bounds.viewportHeight - 16, `the group menu should stay inside the viewport: ${JSON.stringify(bounds)}`);
+  assert.ok(bounds.scrollHeight > bounds.clientHeight, `nine group rows should use the bounded menu scroller: ${JSON.stringify(bounds)}`);
+
+  await menu.evaluate((node) => { node.scrollTop = node.scrollHeight; });
+  const lastRow = menu.locator(".terminal-tab-group-item").last();
+  const lastBounds = await lastRow.evaluate((node) => {
+    const row = node.getBoundingClientRect();
+    const scroller = node.parentElement.getBoundingClientRect();
+    return { rowTop: row.top, rowBottom: row.bottom, scrollerTop: scroller.top, scrollerBottom: scroller.bottom };
+  });
+  assert.ok(lastBounds.rowTop >= lastBounds.scrollerTop && lastBounds.rowBottom <= lastBounds.scrollerBottom, `the final titled row should be reachable by scrolling: ${JSON.stringify(lastBounds)}`);
+});

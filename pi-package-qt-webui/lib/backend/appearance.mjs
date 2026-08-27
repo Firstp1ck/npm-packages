@@ -3,6 +3,14 @@ import { spawn, spawnSync } from "node:child_process";
 const MAX_PORTAL_OUTPUT_BYTES = 4 * 1024;
 const PORTAL_NAMESPACE = "org.freedesktop.appearance";
 const PORTAL_KEY = "color-scheme";
+const PORTAL_MONITOR_ARGS = [
+  "monitor",
+  "--session",
+  "--dest",
+  "org.freedesktop.portal.Desktop",
+  "--object-path",
+  "/org/freedesktop/portal/desktop",
+];
 
 export function normalizePortalColorScheme(value) {
   return value === "dark" || value === "light" ? value : "unknown";
@@ -63,6 +71,7 @@ export function createPortalAppearanceMonitor({
   restartDelayMs = 1_000,
   maxRestartDelayMs = 30_000,
   stopGraceMs = 500,
+  parentDeathSignalCommand = process.platform === "linux" ? "setpriv" : "",
 } = {}) {
   let colorScheme = normalizePortalColorScheme(initialColorScheme);
   let child = null;
@@ -71,6 +80,7 @@ export function createPortalAppearanceMonitor({
   let active = false;
   let restartTimer = null;
   let retryCount = 0;
+  let parentDeathSignalAvailable = parentDeathSignalCommand.length > 0;
 
   function apply(value) {
     const next = normalizePortalColorScheme(value);
@@ -123,14 +133,15 @@ export function createPortalAppearanceMonitor({
     if (!active || child) return;
     apply(readColorScheme());
     try {
-      const monitor = spawnImpl("gdbus", [
-        "monitor",
-        "--session",
-        "--dest",
-        "org.freedesktop.portal.Desktop",
-        "--object-path",
-        "/org/freedesktop/portal/desktop",
-      ], {
+      // Quickshell may replace the backend without giving it a shutdown turn. On Linux, setpriv
+      // asks the kernel to kill the monitor when its backend parent disappears, so an abrupt test
+      // teardown or a live QML reload cannot reparent a D-Bus client to PID 1.
+      const protectedByParentDeathSignal = parentDeathSignalAvailable;
+      const command = protectedByParentDeathSignal ? parentDeathSignalCommand : "gdbus";
+      const args = protectedByParentDeathSignal
+        ? ["--pdeathsig", "SIGKILL", "--", "gdbus", ...PORTAL_MONITOR_ARGS]
+        : PORTAL_MONITOR_ARGS;
+      const monitor = spawnImpl(command, args, {
         env,
         shell: false,
         stdio: ["ignore", "pipe", "ignore"],
@@ -138,7 +149,10 @@ export function createPortalAppearanceMonitor({
       child = monitor;
       monitor.stdout?.setEncoding?.("utf8");
       monitor.stdout?.on?.("data", consume);
-      monitor.once?.("error", () => monitorEnded(monitor));
+      monitor.once?.("error", (error) => {
+        if (protectedByParentDeathSignal && error?.code === "ENOENT") parentDeathSignalAvailable = false;
+        monitorEnded(monitor);
+      });
       monitor.once?.("close", () => monitorEnded(monitor));
     } catch {
       child = null;

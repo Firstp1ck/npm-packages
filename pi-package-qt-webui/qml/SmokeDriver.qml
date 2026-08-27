@@ -9,7 +9,10 @@ Item {
 
     required property var bridge
     required property var shell
-    readonly property bool orderOnly: Quickshell.env("QT_WEBUI_THEME_MODE") === "order-only"
+    readonly property string testMode: String(Quickshell.env("QT_WEBUI_THEME_MODE") || "normal")
+    readonly property bool orderOnly: testMode === "order-only"
+    readonly property bool screenshotOnly: testMode === "screenshot"
+    readonly property bool themeOnly: testMode === "theme-only"
     property string phase: "boot"
     property string nextAction: ""
     property bool forceUnfocused: false
@@ -136,7 +139,7 @@ Item {
         if (!text || text.text !== "authoritative final" || text.streaming) return fail("stream reconciliation")
         log("QT_WEBUI_SMOKE_STREAM_RECONCILED")
         const thinking = lastRowOfKind("thinking")
-        if (!thinking || thinking.text !== "thinking about it") return fail("thinking row")
+        if (!thinking || thinking.text !== "**Planning user notification strategy**\n\n**Deciding on partial validation response**") return fail("thinking row")
         log("QT_WEBUI_SMOKE_THINKING_RENDERED")
         const tool = lastRowOfKind("tool")
         if (!tool || tool.toolStatus !== "ok" || tool.toolName !== "<b>read</b>" || tool.toolDurationMs < 0 || tool.toolOutput !== "final tool output") return fail("tool card")
@@ -181,6 +184,64 @@ Item {
     function startAppearanceChecks() {
         phase = "appearance-light"
         bridge.updateSetting("appearanceMode", "light")
+    }
+
+    function startThemeChecks() {
+        phase = "theme-builtin"
+        if (!shell.openThemePicker()) return fail("theme picker refused")
+        waitFor("theme picker inventory", () => shell.pickerDialog.opened && shell.pickerDialog.items.length >= 5, () => {
+            const builtinLight = JSON.stringify({ kind: "builtin", name: "light" })
+            const externalLight = JSON.stringify({ kind: "external", name: "light" })
+            if (!shell.pickerDialog.items.some(item => item.value === builtinLight)
+                    || !shell.pickerDialog.items.some(item => item.value === externalLight)) return fail("typed light theme identities")
+            if (!shell.pickerDialog.pickValue(builtinLight)) return fail("built-in light selection")
+            waitFor("built-in light theme", () => bridge.themeState.requested.kind === "builtin" && bridge.themeState.requested.name === "light", () => selectExternalLight())
+        })
+    }
+
+    function selectExternalLight() {
+        phase = "theme-external"
+        if (!shell.openThemePicker()) return fail("external theme picker refused")
+        waitFor("external theme picker", () => shell.pickerDialog.opened, () => {
+            if (!shell.pickerDialog.pickValue(JSON.stringify({ kind: "external", name: "light" }))) return fail("external light selection")
+            waitFor("external theme palette", () => bridge.themeState.requested.kind === "external"
+                    && bridge.themeState.requested.name === "light" && shell.externalThemeEffective, () => checkExternalTheme())
+        })
+    }
+
+    function checkExternalTheme() {
+        if (String(shell.themeAccent).toLowerCase() !== "#654321") return fail("external palette accent " + String(shell.themeAccent))
+        log("QT_WEBUI_SMOKE_EXTERNAL_THEME_APPLIED")
+        log("QT_WEBUI_SMOKE_THEME_TYPED_COLLISION")
+        log("QT_WEBUI_SMOKE_THEME_SELECTION_PERSISTED")
+        const active = bridge.themeState
+        const fallback = {
+            generation: active.generation + 1,
+            requested: { kind: "external", name: "light" },
+            effective: { kind: "builtin", name: "light" },
+            fallbackReason: "requested_theme_unavailable",
+            inventory: active.inventory,
+            diagnostics: active.diagnostics,
+            palette: null,
+            projectTrusted: active.projectTrusted
+        }
+        if (!bridge.applyThemeState(fallback) || shell.externalThemeEffective
+                || shell.themeStatusMessage().indexOf("unavailable") === -1) return fail("external theme fallback")
+        log("QT_WEBUI_SMOKE_THEME_FALLBACK")
+        const recovered = {
+            generation: fallback.generation + 1,
+            requested: { kind: "external", name: "light" },
+            effective: { kind: "external", name: "light" },
+            fallbackReason: "",
+            inventory: active.inventory,
+            diagnostics: active.diagnostics,
+            palette: active.palette,
+            projectTrusted: active.projectTrusted
+        }
+        if (!bridge.applyThemeState(recovered) || !shell.externalThemeEffective
+                || String(shell.themeAccent).toLowerCase() !== "#654321") return fail("external theme recovery")
+        log("QT_WEBUI_SMOKE_THEME_RECOVERED")
+        schedule(themeOnly ? "quit" : "composer")
     }
 
     // Composer phase: command and path completion through the composer's own entry points (never
@@ -273,6 +334,171 @@ Item {
                             composerStep = ""
                             schedule("models")
                         })
+                    })
+                })
+            })
+        })
+    }
+
+    // Global session phase: settle and restore a saved session, collapse and expand the bottom
+    // section, open the saved session in a new tab, then reuse that tab from the same row.
+    function catalogSession(sessionId) {
+        for (const session of bridge.sessionCatalog) if (String(session.id) === sessionId) return session
+        return null
+    }
+
+    function finishScreenshotSetup() {
+        bridge.visibleError = ""
+        bridge.clearNotices()
+        shell.noticeBarItem.message = ""
+        log("QT_WEBUI_SCREENSHOT_READY")
+    }
+
+    function startScreenshot() {
+        phase = "screenshot"
+        waitFor("screenshot session catalog", () => !bridge.sessionCatalogLoading && catalogSession("resume-me") !== null, () => {
+            const target = catalogSession("resume-me")
+            if (!target) return fail("screenshot session missing")
+            if (target.settled === true) {
+                finishScreenshotSetup()
+                return
+            }
+            if (!bridge.setSessionSettled(target.path, true, response => {
+                if (!response.ok) return fail("screenshot settle " + response.error.message)
+                waitFor("screenshot settled row", () => {
+                    const current = catalogSession("resume-me")
+                    return current !== null && current.settled === true
+                }, () => finishScreenshotSetup())
+            })) fail("screenshot settle request refused")
+        })
+    }
+
+    function checkWorkspaceSearch(target, settled) {
+        const list = shell.sessionListItem
+        const workingBefore = list.workingSessions.length
+        const settledBefore = list.settledSessions.length
+        list.searchQuery = "  RESUMABLE SMOKE  "
+        const matches = settled ? list.settledSessions : list.workingSessions
+        const otherMatches = settled ? list.workingSessions : list.settledSessions
+        if (matches.length !== 1 || String(matches[0].id) !== String(target.id) || otherMatches.length !== 0) {
+            fail("workspace search match " + list.workingSessions.length + "/" + list.settledSessions.length)
+            return false
+        }
+        list.searchQuery = "no-workspace-has-this-title"
+        if (list.workingSessions.length !== 0 || list.settledSessions.length !== 0) {
+            fail("workspace search empty result")
+            return false
+        }
+        list.searchQuery = "   "
+        if (list.workingSessions.length !== workingBefore || list.settledSessions.length !== settledBefore) {
+            fail("workspace search whitespace clear")
+            return false
+        }
+        list.searchQuery = ""
+        return true
+    }
+
+    function checkSessionAgeLabels() {
+        const list = shell.sessionListItem
+        const hourMs = 60 * 60 * 1000
+        const dayMs = 24 * hourMs
+        const now = new Date(2026, 7, 31, 12, 0, 0).getTime()
+        const oldModified = new Date(2025, 0, 9, 12, 0, 0).getTime()
+        if (list.sessionAgeLabel({ modified: now - 22 * hourMs }, now) !== "22h") return fail("session age hours")
+        if (list.sessionAgeLabel({ modified: now - 7 * dayMs }, now) !== "7d") return fail("session age days")
+        if (list.sessionAgeLabel({ modified: now - 30 * dayMs }, now) !== "30d") return fail("session age 30 day boundary")
+        if (list.sessionAgeLabel({ modified: oldModified }, now) !== "09.01.2025") return fail("session age calendar date")
+        if (list.sessionAgeLabel({}, now) !== "") return fail("temporary session age")
+        return true
+    }
+
+    function checkSessionActivitySortGrace() {
+        const list = shell.sessionListItem
+        const minuteMs = 60 * 1000
+        const now = new Date(2026, 7, 31, 12, 0, 0).getTime()
+        const initialRows = [
+            { path: "/sessions/first.jsonl", id: "first", modified: now - minuteMs },
+            { path: "/sessions/second.jsonl", id: "second", modified: now - 2 * minuteMs }
+        ]
+        const initial = list.deferredSessionOrder(initialRows, ({}), now)
+        const activeRows = [
+            { path: "/sessions/second.jsonl", id: "second", modified: now },
+            initialRows[0]
+        ]
+        const held = list.deferredSessionOrder(activeRows, initial.committedByKey, now + 5 * minuteMs - 1)
+        if (held.sessions.map(session => session.id).join(",") !== "first,second") return fail("session ordering grace")
+        const released = list.deferredSessionOrder(activeRows, held.committedByKey, now + 5 * minuteMs)
+        if (released.sessions.map(session => session.id).join(",") !== "second,first") return fail("session ordering release")
+
+        const restartedRows = [Object.assign({}, activeRows[0], { modified: now + 4 * minuteMs }), initialRows[0]]
+        const restarted = list.deferredSessionOrder(restartedRows, initial.committedByKey, now + 4 * minuteMs)
+        const stillHeld = list.deferredSessionOrder(restartedRows, restarted.committedByKey, now + 5 * minuteMs)
+        if (stillHeld.sessions.map(session => session.id).join(",") !== "first,second") return fail("session ordering grace restart")
+        const removed = list.deferredSessionOrder([initialRows[0]], stillHeld.committedByKey, now + 5 * minuteMs)
+        if (Object.keys(removed.committedByKey).length !== 1) return fail("session ordering state pruning")
+        return true
+    }
+
+    function startSessionCatalog() {
+        phase = "sessions"
+        waitFor("global session catalog", () => !bridge.sessionCatalogLoading && catalogSession("resume-me") !== null, () => {
+            const target = catalogSession("resume-me")
+            if (!target || target.settled === true) return fail("initial session catalog")
+            if (!shell.sessionListItem.settledExpanded) return fail("settled section was not expanded by default")
+            if (!checkSessionAgeLabels()) return
+            log("QT_WEBUI_SMOKE_SESSION_AGE_LABELS")
+            if (!checkSessionActivitySortGrace()) return
+            log("QT_WEBUI_SMOKE_SESSION_SORT_GRACE")
+            if (!checkWorkspaceSearch(target, false)) return
+            log("QT_WEBUI_SMOKE_SESSION_CATALOG_LOADED")
+            if (!bridge.setSessionSettled(target.path, true, response => {
+                if (!response.ok) return fail("session settle " + response.error.message)
+                waitFor("session settled", () => {
+                    const current = catalogSession("resume-me")
+                    return current !== null && current.settled === true
+                }, () => {
+                    const settledTarget = catalogSession("resume-me")
+                    if (!checkWorkspaceSearch(settledTarget, true)) return
+                    log("QT_WEBUI_SMOKE_WORKSPACE_SEARCH_FILTERED")
+                    log("QT_WEBUI_SMOKE_SESSION_SETTLED")
+                    if (shell.sessionListItem.toggleSettled() !== false) return fail("settled section collapse")
+                    log("QT_WEBUI_SMOKE_SETTLED_COLLAPSED")
+                    if (shell.sessionListItem.toggleSettled() !== true) return fail("settled section expand")
+                    log("QT_WEBUI_SMOKE_SETTLED_EXPANDED")
+                    if (!bridge.setSessionSettled(settledTarget.path, false, response => {
+                        if (!response.ok) return fail("session restore " + response.error.message)
+                        waitFor("session restored to working", () => {
+                            const current = catalogSession("resume-me")
+                            return current !== null && current.settled !== true
+                        }, () => {
+                            log("QT_WEBUI_SMOKE_SESSION_RESTORED")
+                            resumeCatalogSessionInNewTab()
+                        })
+                    })) fail("session restore request refused")
+                })
+            })) fail("session settle request refused")
+        })
+    }
+
+    function resumeCatalogSessionInNewTab() {
+        const firstTab = bridge.activeTabId
+        const before = bridge.tabCount
+        const target = catalogSession("resume-me")
+        if (!target || !shell.openCatalogSession(target)) return fail("catalog new-tab resume refused")
+        waitFor("catalog session new tab", () => bridge.tabCount === before + 1 && bridge.activeTabId !== firstTab && bridge.sessionFile.indexOf("resume-me") !== -1 && bridge.transcriptModel.count === 5 && bridge.ready, () => {
+            const resumedTab = bridge.activeTabId
+            log("QT_WEBUI_SMOKE_SESSION_NEW_TAB_RESUMED")
+            if (!bridge.selectTab(firstTab)) return fail("catalog original tab select refused")
+            waitFor("catalog original tab", () => bridge.activeTabId === firstTab && bridge.ready, () => {
+                const current = catalogSession("resume-me")
+                if (!current || !shell.openCatalogSession(current)) return fail("catalog existing-tab resume refused")
+                waitFor("catalog existing tab", () => bridge.activeTabId === resumedTab && bridge.tabCount === before + 1 && bridge.ready && !bridge.resourceLoading, () => {
+                    log("QT_WEBUI_SMOKE_SESSION_EXISTING_TAB_REUSED")
+                    if (!bridge.closeTab(resumedTab, false)) return fail("catalog resumed tab close refused")
+                    waitFor("catalog resumed tab closed", () => bridge.tabCount === before && bridge.activeTabId === "" && !shell.hasActiveSession, () => {
+                        log("QT_WEBUI_SMOKE_EMPTY_SESSION_STATE")
+                        if (!bridge.selectTab(firstTab)) return fail("catalog original tab reselect refused")
+                        waitFor("catalog original tab reselected", () => bridge.activeTabId === firstTab && bridge.ready, () => schedule("tabs"))
                     })
                 })
             })
@@ -420,6 +646,7 @@ Item {
         const extras = bridge.tabs.filter(tab => tab.id !== firstTab).map(tab => tab.id)
         const closeNext = () => {
             if (extras.length === 0) {
+                if (bridge.activeTabId !== firstTab && !bridge.selectTab(firstTab)) return fail("final original tab reselect refused")
                 waitFor("single tab", () => bridge.tabCount === 1 && bridge.activeTabId === firstTab && bridge.ready, () => {
                     log("QT_WEBUI_SMOKE_TAB_CLOSED")
                     phase = "tabs-done"
@@ -655,7 +882,7 @@ Item {
                 if (bridge.resourceState.sampling.applied.top_k !== undefined || dialog.samplingReason("top_k").length === 0) return fail("unsupported sampling was applied or has no reason")
                 log("QT_WEBUI_SMOKE_RESOURCE_UNSUPPORTED_PRESERVED")
                 dialog.close()
-                schedule("tabs")
+                schedule("sessions")
             })
         })) fail("session sampling save refused")
     }
@@ -722,6 +949,9 @@ Item {
                 break
             case "models":
                 driver.startModels()
+                break
+            case "sessions":
+                driver.startSessionCatalog()
                 break
             case "tabs":
                 driver.startTabs()
@@ -802,7 +1032,9 @@ Item {
             if (!driver.piReadyOnce) {
                 driver.piReadyOnce = true
                 driver.log("QT_WEBUI_SMOKE_READY")
-                if (driver.orderOnly) driver.startModels()
+                if (driver.screenshotOnly) driver.startScreenshot()
+                else if (driver.orderOnly) driver.startModels()
+                else if (driver.themeOnly) driver.startThemeChecks()
                 else driver.schedule("stream")
             } else if (driver.phase === "restart-recovered") {
                 driver.log("QT_WEBUI_SMOKE_RESTART_RECEIPT")
@@ -911,7 +1143,7 @@ Item {
                 driver.phase = "appearance-automatic"
                 driver.bridge.updateSetting("appearanceMode", "automatic")
             } else if (driver.phase === "appearance-restore-motion" && !driver.bridge.reducedMotion && driver.shell.themeAnimationDuration > 0) {
-                driver.schedule("composer")
+                driver.startThemeChecks()
             }
         }
 

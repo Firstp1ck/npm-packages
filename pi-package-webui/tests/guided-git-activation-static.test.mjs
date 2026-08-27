@@ -72,10 +72,11 @@ test("native generation capabilities are extension-only and tab-local", () => {
 
 test("server dispatch requires extension provenance and completes on a fresh native artifact", () => {
   assert.match(server, /async function resolveGuidedGitNativeCommand[\s\S]*candidate\?\.source === "extension"[\s\S]*Same-named prompt templates are not used/u);
-  assert.match(server, /record\.message = gitWorkflowGenerationPrompt\(kind, preferences, nativeCommandName\)/u);
-  assert.match(server, /if \(record\.nativeGeneration\) \{\s+await assertGuidedGitNativeArtifactUpdated\(tab, record\);[\s\S]*finishGitWorkflowGeneration\(tab, record, \{ successful: true \}\)/u);
+  assert.match(server, /record\.nativeCommandName = nativeCommandName;\s+record\.message = gitWorkflowGenerationPrompt\(kind, preferences, nativeCommandName\)/u);
+  assert.match(server, /function guidedGitNativeCommandErrorFromEvent[\s\S]*event\?\.type !== "extension_error"[\s\S]*event\.extensionPath !== `command:\$\{commandName\}`/u);
+  assert.match(server, /if \(record\.nativeCommandError\) throw record\.nativeCommandError;[\s\S]*await assertGuidedGitNativeArtifactUpdated\(tab, record\);[\s\S]*finishGitWorkflowGeneration\(tab, record, \{ successful: true \}\)/u);
   assert.match(server, /const target = path\.resolve\(base, `\$\{encodeURIComponent\(branch\)\}\.md`\)/u);
-  assert.match(development, /synchronous RPC command response plus a fresh correlated artifact/u);
+  assert.match(development, /correlated `extension_error` event as the native command's terminal failure/u);
 });
 
 test("fixture, cache revisions, and layered docs expose the migration contract", () => {

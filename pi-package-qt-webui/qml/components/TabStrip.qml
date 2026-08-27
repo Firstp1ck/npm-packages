@@ -26,7 +26,7 @@ Rectangle {
     radius: theme.radiusMedium
     color: theme.surfaceRaised
     border.width: theme.borderWidth
-    border.color: theme.border
+    border.color: theme.frameBorder
     Accessible.role: Accessible.PageTabList
     Accessible.name: tabs.length + " tabs"
 
@@ -164,6 +164,7 @@ Rectangle {
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
                             color: strip.theme.foreground
+                            font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeBody
                             font.bold: tabItem.current
                         }
@@ -175,6 +176,7 @@ Rectangle {
                             textFormat: Text.PlainText
                             elide: Text.ElideMiddle
                             color: strip.theme.muted
+                            font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
                         }
                     }
@@ -191,6 +193,7 @@ Rectangle {
                             text: String(tabItem.modelData.unread)
                             textFormat: Text.PlainText
                             color: strip.theme.primaryButtonForeground
+                            font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
                             font.bold: true
                         }
@@ -208,6 +211,7 @@ Rectangle {
                             text: "input"
                             textFormat: Text.PlainText
                             color: strip.theme.warningButtonForeground
+                            font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
                             font.bold: true
                         }

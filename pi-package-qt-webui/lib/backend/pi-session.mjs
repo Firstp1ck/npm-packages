@@ -312,6 +312,23 @@ export function createPiSession({
     emit("pi.runtime", session.runtime);
   }
 
+  // Reflect complete persisted metadata while keeping the child marked stale by the registry.
+  // The next mutation still goes through switch_session before Pi is allowed to write again.
+  function applyPersistedSnapshotMetadata(snapshot, messageCount) {
+    const model = snapshot?.model && typeof snapshot.model === "object" ? snapshot.model : null;
+    session.runtime = {
+      ...session.runtime,
+      provider: boundedString(model?.provider, LIMITS.maxProviderCharacters, "").trim(),
+      modelId: boundedString(model?.modelId ?? model?.id, LIMITS.maxModelIdCharacters, "").trim(),
+      thinkingLevel: boundedString(snapshot?.thinkingLevel, LIMITS.maxRuntimeInfoCharacters, "").trim(),
+      sessionId: boundedString(snapshot?.sessionId, LIMITS.maxRuntimeInfoCharacters, "").trim(),
+      sessionName: boundedString(snapshot?.name, LIMITS.maxRuntimeInfoCharacters, "").trim(),
+      sessionFile: boundedString(snapshot?.path ?? session.runtime.sessionFile, 1024, "").trim(),
+      messageCount: Number.isInteger(messageCount) ? messageCount : session.runtime.messageCount,
+    };
+    emit("pi.runtime", session.runtime);
+  }
+
   function nextId(prefix) {
     session.requestSerial += 1;
     return `qt-webui-${prefix}-${session.requestSerial}`;
@@ -371,7 +388,7 @@ export function createPiSession({
 
   function finishStreamingParts() {
     if (!session.currentMessage) return;
-    for (const part of session.currentMessage.parts.values()) {
+    for (const part of new Set(session.currentMessage.parts.values())) {
       if (part.renderTimer) clearTimeout(part.renderTimer);
       part.renderTimer = null;
     }
@@ -853,10 +870,28 @@ export function createPiSession({
       message.truncatedParts += 1;
       return null;
     }
+    if (kind === "thinking") {
+      const previous = message.parts.get(`thinking:${contentIndex - 1}`);
+      if (previous) {
+        message.parts.set(key, previous);
+        return previous;
+      }
+    }
     message.partSerial += 1;
-    part = { id: `${message.id}.${message.partSerial}`, kind, text: "", truncated: false, renderTimer: null, dirty: false, contentIndex };
+    part = {
+      id: `${message.id}.${message.partSerial}`,
+      kind,
+      text: "",
+      truncated: false,
+      renderTimer: null,
+      dirty: false,
+      contentIndex,
+      begun: kind !== "thinking",
+      fragments: kind === "thinking" ? new Map() : null,
+      fragmentTruncated: kind === "thinking" ? new Map() : null,
+    };
     message.parts.set(key, part);
-    emit("part.begin", { messageId: message.id, partId: part.id, partKind: kind });
+    if (part.begun) emit("part.begin", { messageId: message.id, partId: part.id, partKind: kind });
     return part;
   }
 
@@ -865,13 +900,32 @@ export function createPiSession({
     if (part.renderTimer) clearTimeout(part.renderTimer);
     part.renderTimer = null;
     part.dirty = false;
+    if (part.kind === "thinking" && part.text.trim().length === 0) {
+      if (part.begun) emit("part.remove", { messageId, partId: part.id });
+      part.begun = false;
+      return;
+    }
+    if (!part.begun) {
+      emit("part.begin", { messageId, partId: part.id, partKind: part.kind });
+      part.begun = true;
+    }
     const payload = { messageId, partId: part.id, partKind: part.kind, text: part.text, truncated: part.truncated, final };
-    if (part.kind === "text") payload.blocks = renderMarkdown(part.text).blocks;
+    if (part.kind === "text" || part.kind === "thinking") payload.blocks = renderMarkdown(part.text).blocks;
     emit("part.render", payload);
   }
 
+  function schedulePartRender(part) {
+    part.dirty = true;
+    if (!part.renderTimer) {
+      part.renderTimer = setTimeout(() => {
+        part.renderTimer = null;
+        if (part.dirty) renderPart(part, { final: false });
+      }, renderCadenceMs);
+    }
+  }
+
   function appendDelta(part, delta) {
-    const limit = part.kind === "thinking" ? LIMITS.maxThinkingCharacters : LIMITS.maxMessageCharacters;
+    const limit = LIMITS.maxMessageCharacters;
     if (part.text.length >= limit) {
       part.truncated = true;
       return;
@@ -883,13 +937,26 @@ export function createPiSession({
     } else {
       part.text += delta;
     }
-    part.dirty = true;
-    if (!part.renderTimer) {
-      part.renderTimer = setTimeout(() => {
-        part.renderTimer = null;
-        if (part.dirty) renderPart(part, { final: false });
-      }, renderCadenceMs);
-    }
+    schedulePartRender(part);
+  }
+
+  function rebuildThinkingPart(part) {
+    const ordered = [...part.fragments.entries()].sort(([left], [right]) => left - right);
+    const combined = ordered.map(([, value]) => value).filter((value) => value.trim().length > 0).join("\n\n");
+    part.text = boundedString(combined, LIMITS.maxThinkingCharacters);
+    part.truncated = combined.length > LIMITS.maxThinkingCharacters || [...part.fragmentTruncated.values()].some(Boolean);
+  }
+
+  function setThinkingContent(part, contentIndex, content) {
+    const value = typeof content === "string" ? content : "";
+    part.fragments.set(contentIndex, boundedString(value, LIMITS.maxThinkingCharacters));
+    part.fragmentTruncated.set(contentIndex, value.length > LIMITS.maxThinkingCharacters);
+    rebuildThinkingPart(part);
+  }
+
+  function appendThinkingDelta(part, contentIndex, delta) {
+    setThinkingContent(part, contentIndex, `${part.fragments.get(contentIndex) ?? ""}${delta}`);
+    schedulePartRender(part);
   }
 
   function handleMessageUpdate(record) {
@@ -920,16 +987,13 @@ export function createPiSession({
         break;
       case "thinking_delta": {
         const part = partFor(contentIndex, "thinking");
-        if (part && typeof update.delta === "string") appendDelta(part, update.delta);
+        if (part && typeof update.delta === "string") appendThinkingDelta(part, contentIndex, update.delta);
         break;
       }
       case "thinking_end": {
         const part = partFor(contentIndex, "thinking");
         if (!part) break;
-        if (typeof update.content === "string") {
-          part.text = boundedString(update.content, LIMITS.maxThinkingCharacters);
-          part.truncated = update.content.length > LIMITS.maxThinkingCharacters;
-        }
+        if (typeof update.content === "string") setThinkingContent(part, contentIndex, update.content);
         renderPart(part, { final: false });
         break;
       }
@@ -943,8 +1007,15 @@ export function createPiSession({
     if (!message || message.role !== "assistant") return;
     const current = session.currentMessage ?? beginMessage();
     finishStreamingParts();
+    for (const part of new Set(current.parts.values())) {
+      if (part.kind !== "thinking") continue;
+      part.fragments.clear();
+      part.fragmentTruncated.clear();
+      rebuildThinkingPart(part);
+    }
     const content = typeof message.content === "string" ? [{ type: "text", text: message.content }] : Array.isArray(message.content) ? message.content : [];
     const seen = new Set();
+    const finalParts = new Set();
     content.forEach((entry, contentIndex) => {
       if (!entry || typeof entry !== "object") return;
       if (entry.type === "text" && typeof entry.text === "string") {
@@ -953,17 +1024,17 @@ export function createPiSession({
         part.text = boundedString(entry.text, LIMITS.maxMessageCharacters);
         part.truncated = entry.text.length > LIMITS.maxMessageCharacters;
         seen.add(part.id);
-        renderPart(part, { final: true });
+        finalParts.add(part);
       } else if (entry.type === "thinking" && typeof entry.thinking === "string") {
         const part = partFor(contentIndex, "thinking");
         if (!part) return;
-        part.text = boundedString(entry.thinking, LIMITS.maxThinkingCharacters);
-        part.truncated = entry.thinking.length > LIMITS.maxThinkingCharacters;
+        setThinkingContent(part, contentIndex, entry.thinking);
         seen.add(part.id);
-        renderPart(part, { final: true });
+        finalParts.add(part);
       }
     });
-    for (const part of current.parts.values()) {
+    for (const part of finalParts) renderPart(part, { final: true });
+    for (const part of new Set(current.parts.values())) {
       if (!seen.has(part.id)) emit("part.remove", { messageId: current.id, partId: part.id });
     }
     emit("message.end", {
@@ -1398,6 +1469,7 @@ export function createPiSession({
     newSession,
     setSessionName,
     loadHistory,
+    applyPersistedSnapshotMetadata,
     get cwd() {
       return cwd;
     },

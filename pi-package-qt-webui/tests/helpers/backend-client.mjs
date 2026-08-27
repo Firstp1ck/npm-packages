@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJsonlReader } from "../../lib/backend/jsonl.mjs";
+import { signalProcessTree } from "../../lib/backend/process-tree.mjs";
 import { PROTOCOL_VERSION } from "../../lib/backend/protocol.mjs";
 
 export const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -18,16 +19,35 @@ export async function startBackend({ env = {}, cwd, smoke = true, startupTimeout
   await writeFile(capturePath, "");
   const childEnv = {
     ...process.env,
-    XDG_CONFIG_HOME: path.join(temporary, "config"),
-    XDG_STATE_HOME: path.join(temporary, "state"),
+    ...env,
+    XDG_CONFIG_HOME: env.XDG_CONFIG_HOME ?? path.join(temporary, "config"),
+    XDG_STATE_HOME: env.XDG_STATE_HOME ?? path.join(temporary, "state"),
     QT_WEBUI_PI_CLI_ENTRY: fakePiEntry,
     QT_WEBUI_NODE_EXECUTABLE: process.execPath,
     QT_WEBUI_CALLER_CWD: cwd ?? temporary,
     ...(smoke ? { QT_WEBUI_SMOKE_MODE: "1", QT_WEBUI_SMOKE_CAPTURE_PATH: capturePath, QT_WEBUI_SMOKE_STATE_PATH: statePath } : {}),
     ...(startupTimeoutMs ? { QT_WEBUI_PI_STARTUP_TIMEOUT_MS: String(startupTimeoutMs) } : {}),
-    ...env,
+    // A backend test must never connect helpers to the developer's live session bus.
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(temporary, "isolated-session-bus")}`,
   };
-  const child = spawn(process.execPath, [backendEntry], { cwd: cwd ?? temporary, env: childEnv, stdio: ["pipe", "pipe", "pipe"] });
+  if (!smoke) {
+    delete childEnv.QT_WEBUI_SMOKE_MODE;
+    delete childEnv.QT_WEBUI_SMOKE_CAPTURE_PATH;
+    delete childEnv.QT_WEBUI_SMOKE_STATE_PATH;
+  }
+  // Test backends are detached process-group leaders so teardown can sweep every descendant.
+  // On Linux, also have the kernel kill the backend if the test worker itself disappears before
+  // its after-hook runs; the backend applies the same protection to its portal monitor.
+  const backendCommand = process.platform === "linux" ? "setpriv" : process.execPath;
+  const backendArgs = process.platform === "linux"
+    ? ["--pdeathsig", "SIGKILL", "--", process.execPath, backendEntry]
+    : [backendEntry];
+  const child = spawn(backendCommand, backendArgs, {
+    cwd: cwd ?? temporary,
+    env: childEnv,
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+  });
   const events = [];
   const responses = new Map();
   const waiters = [];
@@ -128,7 +148,7 @@ export async function startBackend({ env = {}, cwd, smoke = true, startupTimeout
     resume() { paused = false; child.stdout.resume(); },
     get paused() { return paused; },
     closeStdin() { child.stdin.end(); },
-    kill(signal = "SIGTERM") { child.kill(signal); },
+    kill(signal = "SIGTERM") { return signalProcessTree(child, signal); },
   };
 }
 

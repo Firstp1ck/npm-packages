@@ -12,7 +12,10 @@ ShellRoot {
     readonly property bool smokeMode: Quickshell.env("QT_WEBUI_SMOKE_MODE") === "1"
     readonly property bool themeDark: appTheme.dark
     readonly property int themeAnimationDuration: appTheme.animationDuration
+    readonly property color themeAccent: appTheme.accent
+    readonly property bool externalThemeEffective: appTheme.externalPalette !== null
     readonly property var backendBridge: bridge
+    readonly property bool hasActiveSession: bridge.activeTabId.length > 0
     readonly property var extensionDialog: extensionDialogItem
     readonly property bool linkDialogOpened: linkDialogItem.opened
     readonly property var pickerDialog: pickerDialogItem
@@ -28,6 +31,8 @@ ShellRoot {
     readonly property var eventsDialog: eventsDialogItem
     readonly property var diagnosticsDialog: diagnosticsDialogItem
     readonly property var resourceProfilesDialog: resourceProfilesDialogItem
+    readonly property var sessionListItem: sessionListItem
+    readonly property var noticeBarItem: noticeBar
     property var paletteModels: []
     property var paletteSessions: []
     property string draftKeyInUse: ""
@@ -39,6 +44,7 @@ ShellRoot {
     property string thinkingPickerTabId: ""
     property bool modelPickerLoading: false
     property bool thinkingPickerLoading: false
+    property bool themePickerLoading: false
     property string pendingPathQuery: ""
     property bool searchOpen: false
     property string searchQuery: ""
@@ -46,6 +52,9 @@ ShellRoot {
     property int searchIndex: -1
     readonly property int searchMatchCount: searchMatches.length
     readonly property int searchCurrentRow: searchIndex >= 0 && searchIndex < searchMatches.length ? searchMatches[searchIndex] : -1
+    readonly property int workspaceRailMinimumWidth: 148
+    readonly property int workspaceRailMaximumWidth: Math.max(workspaceRailMinimumWidth, contentRoot.width - workspaceRailMinimumWidth)
+    property real workspaceRailRequestedWidth: 0
 
     // Metrics grouped by the publisher's own sections so related values share one frame.
     readonly property var statusGroups: groupStatusChips(bridge.statusChips, bridge.statusEntries, bridge.usage)
@@ -57,6 +66,18 @@ ShellRoot {
         if (number >= 1000000) return (number / 1000000).toFixed(1) + "M"
         if (number >= 1000) return Math.round(number / 1000) + "k"
         return String(number)
+    }
+
+    function clampWorkspaceRailWidth(width) {
+        return Math.min(workspaceRailMaximumWidth, Math.max(workspaceRailMinimumWidth, width))
+    }
+
+    function setWorkspaceRailWidth(width) {
+        workspaceRailRequestedWidth = clampWorkspaceRailWidth(width)
+    }
+
+    function shiftWorkspaceRailWidth(delta) {
+        setWorkspaceRailWidth(workspaceRail.width + delta)
     }
 
     function groupStatusChips(chips, entries, usage) {
@@ -90,7 +111,8 @@ ShellRoot {
             ["attach", "Attach files", "Ctrl+Shift+A"], ["sequences", "Saved prompt sequences", "Ctrl+Shift+S"], ["search", "Search the transcript", "Ctrl+F"],
             ["toggle-thinking", (bridge.showThinking ? "Hide" : "Show") + " thinking sections", "Ctrl+T"], ["toggle-compact", bridge.compactTranscript ? "Use comfortable rows" : "Use compact rows", "Ctrl+Shift+M"],
             ["toggle-highlighting", bridge.syntaxHighlighting ? "Turn off syntax highlighting" : "Turn on syntax highlighting", ""], ["toggle-notifications", bridge.desktopNotifications ? "Turn off desktop notifications" : "Turn on desktop notifications", ""],
-            ["cycle-appearance", "Appearance: " + root.appearanceModeLabel(), ""], ["toggle-reduced-motion", bridge.reducedMotion ? "Use standard motion" : "Reduce motion", ""],
+            ["choose-theme", "Theme: " + root.themeSelectionLabel(), ""], ["cycle-appearance", "Appearance: " + root.appearanceModeLabel(), ""], ["toggle-reduced-motion", bridge.reducedMotion ? "Use standard motion" : "Reduce motion", ""],
+            ["session-settle-days", "Automatic settlement: " + bridge.sessionSettleDays + " days", ""],
             ["choose-model", "Choose a model", "Ctrl+M"], ["cycle-model", "Cycle to the next model", "Ctrl+Shift+P"], ["choose-thinking", "Choose the thinking effort", "Ctrl+E"], ["cycle-thinking", "Cycle the thinking effort", "Ctrl+Shift+E"],
             ["resource-profiles", "Configure tools, skills, and sampling", "Ctrl+Shift+R"], ["compact-context", "Compact the conversation context", ""], ["abort", "Abort the current run", "Ctrl+Shift+X"], ["restart", "Restart Pi in this tab", ""],
             ["events", "Show events", "Ctrl+Shift+L"], ["diagnostics", "Show diagnostics", "Ctrl+Shift+D"], ["focus-prompt", "Focus the prompt", "Ctrl+L"],
@@ -117,6 +139,59 @@ ShellRoot {
         return items
     }
 
+    function themeIdentityMatches(first, second) {
+        return first && second && first.kind === second.kind && first.name === second.name
+    }
+
+    function themeIdentityLabel(identity) {
+        if (!identity || typeof identity !== "object") return "Unknown"
+        for (const entry of bridge.themeState.inventory) {
+            if (themeIdentityMatches(entry.identity, identity)) return String(entry.label)
+        }
+        if (identity.kind === "builtin") return identity.name === "automatic" ? "Automatic" : identity.name === "light" ? "Light" : "Dark"
+        return String(identity.name || "Unknown")
+    }
+
+    function themeSelectionLabel() {
+        return themeIdentityLabel(bridge.themeState.requested)
+    }
+
+    function themeStatusMessage() {
+        const requested = themeIdentityLabel(bridge.themeState.requested)
+        const effective = themeIdentityLabel(bridge.themeState.effective)
+        if (bridge.themeState.fallbackReason.length > 0) {
+            return "Requested theme " + requested + " is unavailable. Using " + effective + ". Qt WebUI will retry the saved choice when it returns."
+        }
+        return "Current theme: " + effective + "."
+    }
+
+    function themeItems() {
+        const items = []
+        for (const entry of bridge.themeState.inventory) {
+            const identity = entry.identity
+            items.push({
+                value: JSON.stringify({ kind: identity.kind, name: identity.name }),
+                label: String(entry.label),
+                detail: identity.kind === "builtin" ? "Qt WebUI built-in" : "Pi JSON theme",
+                current: themeIdentityMatches(identity, bridge.themeState.requested)
+            })
+        }
+        return items
+    }
+
+    function openThemePicker() {
+        if (!bridge.backendReady || themePickerLoading || pickerDialogItem.opened) return false
+        themePickerLoading = true
+        const requestId = bridge.listThemes(response => {
+            themePickerLoading = false
+            if (!response.ok || pickerDialogItem.opened) return
+            root.pickerKind = "theme"
+            pickerDialogItem.present({ title: "Choose a theme", message: root.themeStatusMessage(), items: root.themeItems(), searchable: true, emptyText: "No themes are available" })
+        })
+        if (!requestId) themePickerLoading = false
+        return requestId.length > 0
+    }
+
     function appearanceModeLabel() {
         if (bridge.appearanceMode === "light") return "Light"
         if (bridge.appearanceMode === "dark") return "Dark"
@@ -127,6 +202,27 @@ ShellRoot {
         const modes = ["automatic", "light", "dark"]
         const current = modes.indexOf(bridge.appearanceMode)
         bridge.updateSetting("appearanceMode", modes[(current + 1) % modes.length])
+        return true
+    }
+
+    function sessionSettleDaysProblem(text) {
+        const value = String(text || "").trim()
+        if (value.length === 0) return "Enter a number of days"
+        if (!/^[0-9]+$/.test(value)) return "Enter a whole number from 1 to 3,650"
+        const days = Number(value)
+        if (!Number.isInteger(days) || days < 1 || days > 3650) return "Enter a whole number from 1 to 3,650"
+        return ""
+    }
+
+    function openSessionSettleDays() {
+        if (!bridge.backendReady || bridge.sessionSettleDaysPending || inputDialogItem.opened) return false
+        inputDialogItem.present({
+            title: "Automatic session settlement",
+            message: "Closed inactive sessions move to Settled after this many days. Lowering the value may settle closed inactive sessions when the catalog refreshes.",
+            placeholder: "Days (1–3,650)", prefill: String(bridge.sessionSettleDays), submitLabel: "Save",
+            maxCharacters: 4, validate: text => root.sessionSettleDaysProblem(text),
+            context: { action: "session-settle-days", previousDays: bridge.sessionSettleDays }
+        })
         return true
     }
 
@@ -163,8 +259,10 @@ ShellRoot {
         case "toggle-compact": bridge.updateSetting("compactTranscript", !bridge.compactTranscript); return true
         case "toggle-highlighting": bridge.updateSetting("syntaxHighlighting", !bridge.syntaxHighlighting); return true
         case "toggle-notifications": bridge.updateSetting("desktopNotifications", !bridge.desktopNotifications); return true
+        case "choose-theme": return root.openThemePicker()
         case "cycle-appearance": return root.cycleAppearanceMode()
         case "toggle-reduced-motion": bridge.updateSetting("reducedMotion", !bridge.reducedMotion); return true
+        case "session-settle-days": return root.openSessionSettleDays()
         case "choose-model": return root.openModelPicker()
         case "cycle-model": return bridge.cycleModel()
         case "choose-thinking": return root.openThinkingPicker()
@@ -226,6 +324,7 @@ ShellRoot {
         id: appTheme
         requestedMode: bridge.appearanceMode
         portalMode: bridge.portalColorScheme
+        themeState: bridge.themeState
         reducedMotion: bridge.reducedMotion
         desktopCornerRadius: bridge.desktopCornerRadius
         desktopEdgeGap: bridge.desktopEdgeGap
@@ -327,11 +426,14 @@ ShellRoot {
     function composerMenuItems() {
         return [
             { value: "resource-profiles", label: "Resources", detail: "Tools, skills, and sampling · Ctrl+Shift+R", current: false },
+            { value: "sequences", label: "Sequences", detail: "Saved prompt sequences · Ctrl+Shift+S", current: false },
             { value: "toggle-thinking", label: (bridge.showThinking ? "Hide" : "Show") + " thinking sections", detail: "Ctrl+T", current: false },
             { value: "toggle-highlighting", label: (bridge.syntaxHighlighting ? "Turn off" : "Turn on") + " syntax highlighting", detail: "Code blocks", current: false },
             { value: "toggle-notifications", label: (bridge.desktopNotifications ? "Turn off" : "Turn on") + " desktop notifications", detail: "Background runs and input requests", current: false },
+            { value: "choose-theme", label: "Theme", detail: root.themeSelectionLabel(), current: false },
             { value: "cycle-appearance", label: "Appearance", detail: root.appearanceModeLabel(), current: false },
             { value: "toggle-reduced-motion", label: bridge.reducedMotion ? "Use standard motion" : "Reduce motion", detail: bridge.reducedMotion ? "Reduced motion is on" : "Reduced motion is off", current: false },
+            { value: "session-settle-days", label: "Automatic settlement", detail: bridge.sessionSettleDays + " days", current: false },
             { value: "events", label: "Events", detail: "Recent notices · Ctrl+Shift+L", current: false },
             { value: "diagnostics", label: "Diagnostics", detail: "Runtime report · Ctrl+Shift+D", current: false },
         ]
@@ -458,6 +560,13 @@ ShellRoot {
             bridge.switchSession(value)
         } else if (kind === "palette") {
             root.palettePicked(value)
+        } else if (kind === "theme") {
+            try {
+                const identity = JSON.parse(value)
+                bridge.selectTheme(identity)
+            } catch (error) {
+                bridge.postNotice("error", "Could not read the selected theme")
+            }
         }
     }
 
@@ -488,7 +597,17 @@ ShellRoot {
     }
 
     function newSessionInTab() {
-        return bridge.newSession()
+        return root.hasActiveSession ? bridge.newSession() : bridge.openTab("", "")
+    }
+
+    function openCatalogSession(session) {
+        if (!session || typeof session !== "object") return false
+        const openTabId = String(session.openTabId || "")
+        if (openTabId.length > 0) {
+            if (openTabId === bridge.activeTabId) return true
+            return bridge.selectTab(openTabId)
+        }
+        return bridge.openCatalogSession(session)
     }
 
     function openDirectoryPicker() {
@@ -560,6 +679,7 @@ ShellRoot {
     function inputSubmitted(text, context) {
         if (!context) return
         if (context.action === "rename-tab") bridge.renameTab(String(context.tabId), text)
+        else if (context.action === "session-settle-days") bridge.setSessionSettleDays(text)
     }
 
     // The composer belongs to the tab: save the unsent text under the previous key before the
@@ -690,6 +810,8 @@ ShellRoot {
             parent: window.contentItem
             anchors.fill: parent
             color: appTheme.windowBackground
+            border.width: appTheme.borderWidth
+            border.color: appTheme.frameBorder
 
             Shortcut {
                 sequence: "Ctrl+F"
@@ -868,18 +990,69 @@ ShellRoot {
                 Rectangle {
                     id: workspaceRail
                     Layout.fillHeight: true
-                    Layout.preferredWidth: Math.min(208, Math.max(148, contentRoot.width * 0.24))
-                    Layout.minimumWidth: 148
-                    Layout.maximumWidth: 208
+                    Layout.preferredWidth: root.workspaceRailRequestedWidth > 0
+                        ? root.clampWorkspaceRailWidth(root.workspaceRailRequestedWidth)
+                        : root.clampWorkspaceRailWidth(contentRoot.width * 0.24)
+                    Layout.minimumWidth: root.workspaceRailMinimumWidth
+                    Layout.maximumWidth: root.workspaceRailMaximumWidth
                     color: appTheme.surfaceRaised
                     Accessible.role: Accessible.Grouping
                     Accessible.name: "Workspace navigation"
 
                     Rectangle {
                         anchors.right: parent.right
-                        width: 1
+                        width: appTheme.borderWidth
                         height: parent.height
-                        color: appTheme.border
+                        color: appTheme.frameBorder
+                    }
+
+                    Item {
+                        id: workspaceRailResizeHandle
+                        z: 2
+                        width: 12
+                        height: parent.height
+                        anchors.horizontalCenter: parent.right
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Slider
+                        Accessible.name: "Resize workspace panel"
+                        Accessible.description: "Drag left or right, or press Shift+Left or Shift+Right"
+
+                        property real dragStartWidth: 0
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: appTheme.borderWidth
+                            height: parent.height
+                            color: workspaceRailResizeHandle.activeFocus || workspaceRailDrag.active ? appTheme.focusRing : appTheme.border
+                        }
+
+                        HoverHandler {
+                            cursorShape: Qt.SplitHCursor
+                        }
+
+                        DragHandler {
+                            id: workspaceRailDrag
+                            target: null
+                            yAxis.enabled: false
+                            onActiveChanged: {
+                                if (active) {
+                                    workspaceRailResizeHandle.forceActiveFocus()
+                                    workspaceRailResizeHandle.dragStartWidth = workspaceRail.width
+                                }
+                            }
+                            onTranslationChanged: root.setWorkspaceRailWidth(workspaceRailResizeHandle.dragStartWidth + translation.x)
+                        }
+
+                        Keys.onPressed: event => {
+                            if (!(event.modifiers & Qt.ShiftModifier)) return
+                            if (event.key === Qt.Key_Left) {
+                                root.shiftWorkspaceRailWidth(-16)
+                                event.accepted = true
+                            } else if (event.key === Qt.Key_Right) {
+                                root.shiftWorkspaceRailWidth(16)
+                                event.accepted = true
+                            }
+                        }
                     }
 
                     ColumnLayout {
@@ -892,11 +1065,22 @@ ShellRoot {
                             spacing: 6
 
                             Label {
+                                text: "◆"
+                                textFormat: Text.PlainText
+                                color: appTheme.accentForeground
+                                font.family: appTheme.monospaceFamily
+                                font.pixelSize: appTheme.typeHeading
+                                Accessible.role: Accessible.Graphic
+                                Accessible.name: "Qt WebUI identity mark"
+                            }
+
+                            Label {
                                 Layout.fillWidth: true
                                 text: "Qt WebUI"
                                 textFormat: Text.PlainText
                                 color: appTheme.heading
-                                font.pixelSize: 16
+                                font.family: appTheme.monospaceFamily
+                                font.pixelSize: appTheme.typeHeading
                                 font.bold: true
                                 elide: Text.ElideRight
                                 Accessible.role: Accessible.Heading
@@ -904,10 +1088,10 @@ ShellRoot {
 
                             StatusBadge {
                                 theme: appTheme
-                                kind: bridge.statusKind
-                                text: bridge.statusText
+                                kind: root.hasActiveSession ? bridge.statusKind : "stopped"
+                                text: root.hasActiveSession ? bridge.statusText : "No session"
                                 fontSize: 10
-                                Accessible.name: "Status " + bridge.statusText
+                                Accessible.name: "Status " + (root.hasActiveSession ? bridge.statusText : "No session")
                             }
                         }
 
@@ -916,24 +1100,33 @@ ShellRoot {
                             text: "WORKSPACES"
                             textFormat: Text.PlainText
                             color: appTheme.muted
-                            font.pixelSize: 10
+                            font.family: appTheme.monospaceFamily
+                            font.pixelSize: appTheme.typeCaption
                             font.bold: true
+                            font.letterSpacing: appTheme.labelTracking
                         }
 
-                        // Tabs remain the canonical session navigation; the rail only changes mode.
-                        TabStrip {
+                        SessionList {
+                            id: sessionListItem
                             Layout.fillWidth: true
                             Layout.fillHeight: true
-                            orientation: "vertical"
                             theme: appTheme
+                            sessions: bridge.sessionCatalog
                             tabs: bridge.tabs
+                            pendingSettlements: bridge.sessionSettlementPending
+                            settleAllPending: bridge.sessionSettleAllPending
                             activeTabId: bridge.activeTabId
                             maxTabs: bridge.maxTabs
                             homeDirectory: bridge.homeDirectory
-                            onSelectRequested: tabId => bridge.selectTab(tabId)
+                            loading: bridge.sessionCatalogLoading
+                            errorText: bridge.sessionCatalogError
+                            onSessionRequested: session => root.openCatalogSession(session)
+                            onSettlementRequested: (sessionPath, settled) => bridge.setSessionSettled(sessionPath, settled)
+                            onSettleAllRequested: bridge.settleAllSessions()
                             onCloseRequested: tabId => root.closeTab(tabId)
                             onNewTabRequested: bridge.openTab("", "")
                             onOpenDirectoryRequested: root.openDirectoryPicker()
+                            onRefreshRequested: bridge.refreshSessionCatalog()
                         }
 
                         Flow {
@@ -1001,6 +1194,7 @@ ShellRoot {
                             }
 
                             AppButton {
+                                visible: root.hasActiveSession || !bridge.backendRunning
                                 theme: appTheme
                                 variant: bridge.backendRunning && bridge.ready ? "ghost" : "warning"
                                 text: bridge.restarting ? "Restarting…" : (bridge.backendRunning ? "Restart Pi" : "Start backend")
@@ -1030,6 +1224,8 @@ ShellRoot {
 
                         // Compact main header: active workspace, path, and transcript search.
                         RowLayout {
+                            id: workspaceHeader
+                            visible: root.hasActiveSession
                             Layout.fillWidth: true
                             spacing: 8
 
@@ -1042,7 +1238,8 @@ ShellRoot {
                                     text: bridge.sessionName
                                     textFormat: Text.PlainText
                                     color: appTheme.heading
-                                    font.pixelSize: 15
+                                    font.family: appTheme.monospaceFamily
+                                    font.pixelSize: appTheme.typeTitle
                                     font.bold: true
                                     elide: Text.ElideRight
                                     Accessible.role: Accessible.Heading
@@ -1054,7 +1251,8 @@ ShellRoot {
                                     textFormat: Text.PlainText
                                     color: appTheme.muted
                                     elide: Text.ElideMiddle
-                                    font.pixelSize: 11
+                                    font.family: appTheme.monospaceFamily
+                                    font.pixelSize: appTheme.typeSmall
                                     Accessible.role: Accessible.StaticText
                                     Accessible.name: "Workspace " + bridge.workspaceCwd
                                 }
@@ -1090,9 +1288,9 @@ ShellRoot {
                                     Layout.fillWidth: true
                                     visible: bridge.visibleError.length > 0
                                     implicitHeight: errorLabel.implicitHeight + 20
-                                    radius: 8
+                                    radius: appTheme.radiusMedium
                                     color: appTheme.errorPanelBackground
-                                    border.width: 1
+                                    border.width: appTheme.borderWidth
                                     border.color: appTheme.errorPanelBorder
                                     Accessible.role: Accessible.AlertMessage
                                     Accessible.name: "Error: " + bridge.visibleError
@@ -1112,7 +1310,7 @@ ShellRoot {
                                 SearchBar {
                                     id: searchBar
                                     Layout.fillWidth: true
-                                    visible: root.searchOpen
+                                    visible: root.hasActiveSession && root.searchOpen
                                     theme: appTheme
                                     matchCount: root.searchMatchCount
                                     currentIndex: root.searchIndex
@@ -1127,7 +1325,10 @@ ShellRoot {
 
                                 Item {
                                     Layout.fillWidth: true
-                                    Layout.fillHeight: true
+                                    Layout.fillHeight: !root.hasActiveSession || transcriptList.count > 0
+                                    Layout.preferredHeight: root.hasActiveSession && transcriptList.count === 0
+                                        ? Math.min(480, Math.max(260, contentRoot.height * 0.42))
+                                        : -1
                                     clip: true
 
                                     ListView {
@@ -1151,6 +1352,11 @@ ShellRoot {
                                             positioning = true
                                             positionViewAtEnd()
                                             positioning = false
+                                        }
+
+                                        function jumpToLatest() {
+                                            followOutput = true
+                                            followToEnd()
                                         }
 
                                         onContentYChanged: if (!positioning) followOutput = contentHeight - (contentY + height) < 48
@@ -1180,24 +1386,39 @@ ShellRoot {
 
                                     EmptyState {
                                         anchors.fill: parent
-                                        visible: transcriptList.count === 0
+                                        visible: !root.hasActiveSession || transcriptList.count === 0
                                         theme: appTheme
                                         ready: bridge.ready
                                         backendReady: bridge.backendReady
+                                        sessionOpen: root.hasActiveSession
                                         onRestartRequested: bridge.restartProcess()
-                                        onFocusComposerRequested: composer.focusEditor()
+                                        onNewSessionRequested: root.newSessionInTab()
                                         onResumeRequested: root.openSessionsPicker()
                                         onOpenDirectoryRequested: root.openDirectoryPicker()
+                                    }
+
+                                    AppButton {
+                                        id: latestButton
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        anchors.bottom: parent.bottom
+                                        anchors.bottomMargin: appTheme.spaceMd
+                                        z: 2
+                                        visible: root.hasActiveSession && transcriptList.count > 0 && !transcriptList.followOutput
+                                        theme: appTheme
+                                        text: "Latest ↓"
+                                        accessibleName: "Go to latest output"
+                                        accessibleDescription: "Move to the newest message and follow new output"
+                                        onClicked: transcriptList.jumpToLatest()
                                     }
                                 }
 
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    visible: bridge.steeringQueue.length > 0 || bridge.followUpQueue.length > 0
+                                    visible: root.hasActiveSession && (bridge.steeringQueue.length > 0 || bridge.followUpQueue.length > 0)
                                     implicitHeight: queueLabel.implicitHeight + 16
-                                    radius: 8
+                                    radius: appTheme.radiusMedium
                                     color: appTheme.surfaceRaised
-                                    border.width: 1
+                                    border.width: appTheme.borderWidth
                                     border.color: appTheme.border
                                     Accessible.role: Accessible.StaticText
                                     Accessible.name: queueLabel.text
@@ -1226,6 +1447,7 @@ ShellRoot {
 
                                 Composer {
                                     id: composer
+                                    visible: root.hasActiveSession
                                     Layout.fillWidth: true
                                     active: bridge.active
                                     ready: bridge.ready
@@ -1243,7 +1465,6 @@ ShellRoot {
                                     onAbortRequested: bridge.abortRun()
                                     onRestartRequested: bridge.restartProcess()
                                     onAttachRequested: fileDialog.open()
-                                    onSequencesRequested: root.openSequences()
                                     onAttachmentRemoveRequested: attachmentId => bridge.removeAttachment(attachmentId)
                                     onAttachmentEditRequested: attachmentId => root.editAttachment(attachmentId)
                                     onCompletionRequested: (kind, query) => root.requestCompletion(kind, query)
@@ -1254,6 +1475,7 @@ ShellRoot {
                                 // rather than occupying a second row beneath the workspace title.
                                 RowLayout {
                                     id: responseControls
+                                    visible: root.hasActiveSession
                                     Layout.fillWidth: true
                                     spacing: 4
                                     Accessible.role: Accessible.Grouping
@@ -1336,7 +1558,7 @@ ShellRoot {
                                         variant: "ghost"
                                         text: "☰"
                                         accessibleName: "More options"
-                                        accessibleDescription: "Resources, display settings, events, and diagnostics"
+                                        accessibleDescription: "Resources, saved prompt sequences, automatic settlement, display settings, events, and diagnostics"
                                         enabled: !bridge.active && !bridge.modelActionPending && !bridge.resourceActionPending && !bridge.resourceLoading
                                         padding: 4
                                         leftPadding: 8
@@ -1351,7 +1573,7 @@ ShellRoot {
                                 Flow {
                                     Layout.fillWidth: true
                                     Layout.preferredHeight: childrenRect.height
-                                    visible: root.statusGroups.length > 0
+                                    visible: root.hasActiveSession && root.statusGroups.length > 0
                                     spacing: 8
                                     Accessible.role: Accessible.Grouping
                                     Accessible.name: "Extension status"

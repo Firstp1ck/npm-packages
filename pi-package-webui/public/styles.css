@@ -4954,8 +4954,11 @@ button.subagent-gate-attempt:focus-visible {
   padding-top: 0.38rem;
   min-width: 0;
   max-width: 100%;
-  max-height: none;
-  overflow: visible;
+  max-height: min(32rem, calc(var(--visual-viewport-height, 100dvh) - 6rem));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .terminal-tab-group:hover .terminal-tab-group-menu,
 .terminal-tab-group:focus-within .terminal-tab-group-menu,

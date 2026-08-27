@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { LIMITS, PROTOCOL_VERSION, REQUEST_TYPES } from "../lib/backend/protocol.mjs";
+import { SEMANTIC_PALETTE_ROLES } from "../lib/backend/themes.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const qmlRoot = path.join(root, "qml");
@@ -32,17 +33,17 @@ const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, 
   readFile(path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs"), "utf8"),
 ]);
 
-const [workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, worktreeDialog, directoryDialog] = await Promise.all([
+const [workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog] = await Promise.all([
   readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("components", "DropUpPicker.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
   readQml(path.join("components", "CompletionPopup.qml")), readQml(path.join("dialogs", "SequencesDialog.qml")), readQml(path.join("dialogs", "TextEditDialog.qml")),
-  readQml(path.join("components", "TabStrip.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "WorktreeDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
+  readQml(path.join("components", "TabStrip.qml")), readQml(path.join("components", "SessionList.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "WorktreeDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
 ]);
 const [eventsDialog, diagnosticsDialog, resourceProfilesDialog] = await Promise.all([
   readQml(path.join("dialogs", "EventsDialog.qml")),
   readQml(path.join("dialogs", "DiagnosticsDialog.qml")),
   readQml(path.join("dialogs", "ResourceProfilesDialog.qml")),
 ]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -68,6 +69,18 @@ function objectBodyContaining(source, objectType, needle) {
   assert.fail(`${objectType} containing ${needle} should exist`);
 }
 
+function objectBodyWithId(source, objectType, id) {
+  const idIndex = source.indexOf(`id: ${id}`);
+  assert.notEqual(idIndex, -1, `${objectType} id ${id} should exist`);
+  let start = -1;
+  for (const match of source.matchAll(new RegExp(`\\b${objectType}\\s*\\{`, "g"))) {
+    if (match.index > idIndex) break;
+    start = match.index;
+  }
+  assert.notEqual(start, -1, `${objectType} id ${id} should have an opening body`);
+  return balancedBody(source, source.indexOf("{", start), `${objectType} id ${id}`);
+}
+
 test("shell composes one window from the shared bridge, theme, transcript, composer, search, and dialogs", () => {
   assert.equal((shell.match(/\bFloatingWindow\s*\{/g) ?? []).length, 1);
   assert.match(shell, /title:\s*bridge\.windowTitle/);
@@ -78,7 +91,7 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   assert.match(shell, /text:\s*bridge\.currentProvider \+ "\/" \+ bridge\.currentModelId/);
   assert.match(shell, /text:\s*"thinking " \+ bridge\.currentThinkingLevel/);
   assert.match(shell, /text:\s*bridge\.compacting \? "Compacting…" : "Compact context"/);
-  assert.match(shell, /StatusBadge\s*\{[\s\S]*kind:\s*bridge\.statusKind[\s\S]*text:\s*bridge\.statusText/);
+  assert.match(shell, /StatusBadge\s*\{[\s\S]*kind:\s*root\.hasActiveSession \? bridge\.statusKind : "stopped"[\s\S]*text:\s*root\.hasActiveSession \? bridge\.statusText : "No session"/);
   for (const component of ["BackendBridge", "Theme", "Composer", "SearchBar", "EmptyState", "NoticeBar", "TranscriptRow", "ExtensionDialog", "LinkDialog", "PickerDialog", "ResourceProfilesDialog"]) {
     assert.match(shell, new RegExp(`\\b${component}\\s*\\{`), `shell should use ${component}`);
   }
@@ -96,14 +109,40 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   assert.match(shell, /text:\s*bridge\.restarting \? "Restarting…"/);
 });
 
+test("transcript exposes an accessible Latest control while follow mode is paused", () => {
+  const transcript = objectBodyWithId(shell, "ListView", "transcriptList");
+  const latest = objectBodyWithId(shell, "AppButton", "latestButton");
+  assert.match(transcript, /property bool followOutput:\s*true/);
+  assert.match(functionBody(transcript, "jumpToLatest"), /followOutput = true[\s\S]*followToEnd\(\)/, "Latest resumes follow mode before moving to the end");
+  assert.match(latest, /visible:\s*root\.hasActiveSession && transcriptList\.count > 0 && !transcriptList\.followOutput/, "Latest appears only for a paused non-empty active transcript");
+  assert.match(latest, /text:\s*"Latest ↓"/);
+  assert.match(latest, /accessibleName:\s*"Go to latest output"/);
+  assert.match(latest, /onClicked:\s*transcriptList\.jumpToLatest\(\)/);
+});
+
 test("workspace shell keeps the approved rail, centered conversation, and small-window structure", () => {
   const rail = objectBodyContaining(shell, "Rectangle", "id: workspaceRail");
+  const resizeHandle = objectBodyContaining(rail, "Item", "id: workspaceRailResizeHandle");
   const reloadPiButton = objectBodyContaining(shell, "AppButton", "id: reloadPiButton");
   assert.match(shell, /minimumSize:\s*Qt\.size\(560, 520\)/);
-  assert.match(rail, /Layout\.minimumWidth:\s*148/);
-  assert.match(rail, /Layout\.maximumWidth:\s*208/);
+  assert.match(shell, /readonly property int workspaceRailMinimumWidth:\s*148/);
+  assert.match(shell, /readonly property int workspaceRailMaximumWidth:\s*Math\.max\(workspaceRailMinimumWidth, contentRoot\.width - workspaceRailMinimumWidth\)/, "Shift and drag resizing can use the available window width instead of stopping at 320 px");
+  assert.match(functionBody(shell, "clampWorkspaceRailWidth"), /Math\.min\(workspaceRailMaximumWidth, Math\.max\(workspaceRailMinimumWidth, width\)\)/);
+  assert.match(rail, /Layout\.preferredWidth:\s*root\.workspaceRailRequestedWidth > 0[\s\S]*root\.clampWorkspaceRailWidth\(contentRoot\.width \* 0\.24\)/);
+  assert.match(rail, /Layout\.minimumWidth:\s*root\.workspaceRailMinimumWidth/);
+  assert.match(rail, /Layout\.maximumWidth:\s*root\.workspaceRailMaximumWidth/);
   assert.match(rail, /Accessible\.name:\s*"Workspace navigation"/);
-  assert.match(rail, /TabStrip\s*\{[\s\S]*orientation:\s*"vertical"/);
+  assert.match(shell, /text:\s*"◆"[\s\S]*Accessible\.name:\s*"Qt WebUI identity mark"/);
+  assert.match(shell, /readonly property bool hasActiveSession:\s*bridge\.activeTabId\.length > 0/);
+  assert.match(shell, /text:\s*"WORKSPACES"[\s\S]*font\.letterSpacing:\s*appTheme\.labelTracking/);
+  assert.match(shell, /id:\s*contentRoot[\s\S]*border\.color:\s*appTheme\.frameBorder/);
+  assert.match(resizeHandle, /activeFocusOnTab:\s*true/);
+  assert.match(resizeHandle, /Accessible\.role:\s*Accessible\.Slider/);
+  assert.match(resizeHandle, /Accessible\.description:\s*"Drag left or right, or press Shift\+Left or Shift\+Right"/);
+  assert.match(resizeHandle, /cursorShape:\s*Qt\.SplitHCursor/);
+  assert.match(resizeHandle, /DragHandler\s*\{[\s\S]*target:\s*null[\s\S]*yAxis\.enabled:\s*false[\s\S]*translation\.x/);
+  assert.match(resizeHandle, /Keys\.onPressed:[\s\S]*Qt\.ShiftModifier[\s\S]*Qt\.Key_Left[\s\S]*shiftWorkspaceRailWidth\(-16\)[\s\S]*Qt\.Key_Right[\s\S]*shiftWorkspaceRailWidth\(16\)/);
+  assert.match(rail, /SessionList\s*\{[\s\S]*sessions:\s*bridge\.sessionCatalog/);
   assert.match(reloadPiButton, /visible:\s*bridge\.ready/);
   assert.match(reloadPiButton, /text:\s*"Reload Pi"/);
   assert.match(reloadPiButton, /enabled:\s*!bridge\.active/);
@@ -111,12 +150,165 @@ test("workspace shell keeps the approved rail, centered conversation, and small-
   assert.match(shell, /width:\s*Math\.min\(parent\.width, 820\)/);
   assert.match(shell, /Accessible\.name:\s*"Conversation transcript"/);
   assert.match(emptyState, /Flickable\s*\{[\s\S]*boundsBehavior:\s*Flickable\.StopAtBounds/);
-  assert.match(emptyState, /accessibleName:\s*"Focus the prompt"/);
+  assert.match(emptyState, /RowLayout\s*\{[\s\S]*Accessible\.name:\s*"Prompt landmark"[\s\S]*text:\s*">"[\s\S]*Layout\.preferredWidth:\s*empty\.theme\.spaceXl[\s\S]*Layout\.preferredHeight:\s*empty\.theme\.borderWidth \* 2/);
+  assert.match(emptyState, /property bool sessionOpen:\s*true[\s\S]*signal newSessionRequested\(\)/);
+  assert.match(emptyState, /text:\s*!empty\.sessionOpen \? "NO SESSION OPEN" : empty\.ready \? "SESSION READY"[\s\S]*font\.family:\s*empty\.theme\.monospaceFamily[\s\S]*font\.letterSpacing:\s*empty\.theme\.labelTracking/);
+  assert.match(shell, /Layout\.fillHeight:\s*!root\.hasActiveSession \|\| transcriptList\.count > 0[\s\S]*Layout\.preferredHeight:\s*root\.hasActiveSession && transcriptList\.count === 0[\s\S]*Math\.min\(480, Math\.max\(260, contentRoot\.height \* 0\.42\)\)/);
+  assert.match(emptyState, /AppButton\s*\{[\s\S]*visible:\s*!empty\.sessionOpen[\s\S]*variant:\s*"primary"[\s\S]*text:\s*"New session"[\s\S]*accessibleName:\s*"Start a new session"[\s\S]*onClicked:\s*empty\.newSessionRequested\(\)/);
+  assert.doesNotMatch(emptyState, /Focus prompt|Focus the prompt|focusComposerRequested/);
+  assert.match(shell, /EmptyState\s*\{[\s\S]*sessionOpen:\s*root\.hasActiveSession[\s\S]*onNewSessionRequested:\s*root\.newSessionInTab\(\)/);
+  assert.doesNotMatch(shell, /onFocusComposerRequested/);
+  assert.match(shell, /id:\s*workspaceHeader[\s\S]*visible:\s*root\.hasActiveSession/);
+  assert.match(functionBody(shell, "newSessionInTab"), /root\.hasActiveSession \? bridge\.newSession\(\) : bridge\.openTab\("", ""\)/);
   assert.equal((shell.match(/\bComposer\s*\{/g) ?? []).length, 1);
+  assert.match(shell, /id:\s*composer[\s\S]*visible:\s*root\.hasActiveSession/);
   const composerIndex = shell.indexOf("id: composer");
   const responseControlsIndex = shell.indexOf("id: responseControls");
   assert(responseControlsIndex > composerIndex, "response controls should sit beneath the composer instead of beneath the workspace title");
   assert.match(shell, /id:\s*responseControls[\s\S]*Accessible\.name:\s*"Response and transcript controls for workspace "/);
+});
+
+test("global sessions page safely into accessible Working and default-expanded Settled navigation", () => {
+  const refresh = functionBody(bridge, "refreshSessionCatalog");
+  const page = functionBody(bridge, "loadSessionCatalogPage");
+  const settle = functionBody(bridge, "setSessionSettled");
+  const settleAll = functionBody(bridge, "settleAllSessions");
+  const settleBatch = functionBody(bridge, "settleSessionBatch");
+  const finishSettleAll = functionBody(bridge, "finishSettleAll");
+  const open = functionBody(bridge, "openCatalogSession");
+  assert.match(refresh, /const generation = \+\+sessionCatalogGeneration[\s\S]*loadSessionCatalogPage\(generation, 0, \[\], \(\{\}\)\)/);
+  assert.match(page, /request\("sessions_list", \{ "scope": "all", "offset": offset \}/);
+  assert.match(page, /generation !== sessionCatalogGeneration\) return/);
+  assert.match(page, /seen\[path\] === true[\s\S]*seen\[path\] = true[\s\S]*merged\.push\(session\)/, "concurrent-page duplicates are removed by path");
+  assert.match(page, /nextOffset <= offset[\s\S]*loadSessionCatalogPage\(generation, nextOffset, merged, seen\)/, "paging must make progress and remain sequential");
+  assert.match(page, /sessionCatalog = merged[\s\S]*sessionCatalogLoading = false[\s\S]*sessionCatalogLoaded\(merged\)/);
+  assert.match(page, /\}, false\)/, "global pages are not dropped after a tab switch");
+  assert.match(bridge, /Timer\s*\{[\s\S]*id:\s*sessionCatalogRefreshTimer[\s\S]*interval:\s*500[\s\S]*bridge\.refreshSessionCatalog\(\)/, "catalog refresh events are coalesced");
+  assert.match(functionBody(bridge, "listSessions"), /request\("sessions_list", \{\}/, "the legacy picker remains workspace-scoped");
+
+  assert.match(settle, /sessionSettlementIsPending\(path\)/);
+  assert.match(settle, /sessionTab\(catalogSession\(path\)\)[\s\S]*nextSettled && matchingTab && matchingTab\.active/, "the local idle guard uses backend-provided canonical tab association");
+  assert.match(settle, /request\("session_settled", \{ "sessionPath": path, "settled": nextSettled \}/);
+  assert.match(settle, /if \(!response\.ok\)[\s\S]*else updateCatalogSettlement/, "the visible group changes only after backend confirmation");
+  assert.match(bridge, /property bool sessionSettleAllPending:\s*false/);
+  assert.match(settleAll, /sessionSettleAllPending \|\| !backendReady \|\| quitting/);
+  assert.match(settleAll, /session\.settled === true[\s\S]*matchingTab && matchingTab\.active[\s\S]*!sessionSettlementIsPending\(path\)[\s\S]*settleSessionBatch\(paths, 0, 0, 0, skippedActive, callback\)/, "bulk settlement snapshots only unsettled idle saved-session paths");
+  assert.match(settleBatch, /setSessionSettled\(paths\[index\], true, response =>[\s\S]*settleSessionBatch\(paths, index \+ 1/, "bulk settlement is sequential instead of exceeding the backend pending-request limit");
+  assert.match(finishSettleAll, /sessionSettleAllPending = false[\s\S]*postNotice\([\s\S]*settled: settledCount, failed: failedCount, skippedActive: skippedActive/, "bulk settlement clears pending state and summarizes partial results");
+  assert.match(bridge, /bridge\.sessionSettlementPending = \(\{\}\)[\s\S]*bridge\.sessionSettleAllPending = false/, "backend exit cancels the client-side batch");
+  assert.match(open, /const matchingTab = sessionTab\(session\)[\s\S]*return selectTab\(String\(matchingTab\.id\), callback\)/, "an already-open canonical alias reuses its associated tab");
+  assert.match(functionBody(bridge, "sessionTab"), /openTabId[\s\S]*tabById\(openTabId\)/, "canonical identities stay hidden behind backend-provided tab ids");
+  const settledNotificationGuard = functionBody(bridge, "tabSessionIsSettled");
+  assert.match(settledNotificationGuard, /session\.settled !== true[\s\S]*sessionTab\(session\)[\s\S]*String\(tab\.id \|\| ""\) === id/, "notification suppression follows the canonical catalog-to-tab association");
+  assert.match(functionBody(bridge, "notifyDesktop"), /sourceTabId === undefined \? activeTabId[\s\S]*tabSessionIsSettled\(tabId\)/, "every desktop notification checks the originating session's settled state");
+  assert.equal((functionBody(bridge, "handleInactiveTabEvent").match(/notifyDesktop\([^\n]*event\.tab\)/g) ?? []).length, 2, "background input and run-completion notifications identify their originating tab");
+  assert.match(open, /tabs\.length >= maxTabs[\s\S]*return openTab\(String\(session\.cwd \|\| ""\), path, callback\)/, "another saved session opens in a new cwd-aware tab without bypassing the tab limit");
+  assert.match(functionBody(shell, "openCatalogSession"), /openTabId\.length > 0[\s\S]*bridge\.selectTab\(openTabId\)[\s\S]*bridge\.openCatalogSession\(session\)/, "temporary unsaved tab rows remain selectable");
+
+  assert.match(sessionList, /property bool settledExpanded:\s*true/);
+  assert.match(sessionList, /property alias searchQuery:\s*workspaceSearchField\.text/);
+  assert.match(sessionList, /property var orderedSessions:\s*\[\][\s\S]*property var committedSortModifiedByKey:\s*\(\{\}\)/);
+  assert.match(sessionList, /readonly property int activitySortGraceMs:\s*5 \* 60 \* 1000/);
+  assert.match(sessionList, /readonly property string normalizedSearchQuery:\s*searchQuery\.trim\(\)\.toLowerCase\(\)/);
+  assert.match(sessionList, /readonly property var workingSessions:\s*filterSessions\(buildWorkingSessions\(\)\)/);
+  assert.match(sessionList, /readonly property var settledSessions:\s*filterSessions\(buildSettledSessions\(\)\)/);
+  assert.match(functionBody(sessionList, "titleFor"), /session\.name[\s\S]*session\.firstMessage[\s\S]*session\.id/, "saved title precedence is name, first user message, then id");
+  const sessionAgeLabel = functionBody(sessionList, "sessionAgeLabel");
+  assert.match(sessionAgeLabel, /ageMs > 30 \* dayMs[\s\S]*new Date\(modified\)[\s\S]*getDate\(\)[\s\S]*getMonth\(\) \+ 1[\s\S]*getFullYear\(\)/, "sessions older than 30 elapsed days use a zero-padded local calendar date");
+  assert.match(sessionAgeLabel, /ageMs >= dayMs[\s\S]*Math\.floor\(ageMs \/ dayMs\) \+ "d"[\s\S]*ageMs >= hourMs[\s\S]*Math\.floor\(ageMs \/ hourMs\) \+ "h"/, "recent sessions use compact whole-day and whole-hour labels");
+  assert.match(sessionAgeLabel, /!Number\.isFinite\(ageMs\)[\s\S]*return ""/, "temporary sessions without activity timestamps do not gain a misleading age");
+  const deferredSessionOrder = functionBody(sessionList, "deferredSessionOrder");
+  assert.match(deferredSessionOrder, /hasPrevious && ageMs < activitySortGraceMs[\s\S]*Number\(previous\[key\]\)[\s\S]*sortable\.sort\([\s\S]*right\.committed - left\.committed/, "existing rows keep their committed ordering timestamp until five minutes after their latest activity");
+  assert.match(deferredSessionOrder, /nextCommitted = \(\{\}\)[\s\S]*nextCommitted\[key\][\s\S]*"committedByKey": nextCommitted/, "each reconciliation prunes ordering state for sessions no longer in the catalog");
+  assert.match(functionBody(sessionList, "reconcileSessionOrder"), /deferredSessionOrder\(sessions, committedSortModifiedByKey, nowMs\)[\s\S]*orderedSessions = result\.sessions/);
+  assert.match(sessionList, /onSessionsChanged:\s*reconcileSessionOrder\(Date\.now\(\)\)[\s\S]*Timer\s*\{[\s\S]*interval:\s*60 \* 1000[\s\S]*sessionList\.ageClockMs = now[\s\S]*sessionList\.reconcileSessionOrder\(now\)/, "catalog changes and the minute clock both reconcile deferred activity ordering");
+  assert.match(functionBody(sessionList, "searchText"), /session\.title[\s\S]*session\.id[\s\S]*session\.cwd[\s\S]*toLowerCase\(\)/, "workspace search covers titles, identifiers, and folders case-insensitively");
+  assert.match(functionBody(sessionList, "filterSessions"), /!searchActive[\s\S]*searchText\(session\)\.indexOf\(normalizedSearchQuery\) !== -1/, "empty queries preserve the source arrays and non-empty queries filter locally");
+  const workspaceSearchField = objectBodyWithId(sessionList, "TextField", "workspaceSearchField");
+  assert.match(workspaceSearchField, /maximumLength:\s*256/);
+  assert.match(workspaceSearchField, /placeholderText:\s*"Search workspaces"/);
+  assert.match(workspaceSearchField, /Accessible\.role:\s*Accessible\.EditableText[\s\S]*Accessible\.name:\s*"Search workspaces"/);
+  assert.match(workspaceSearchField, /Qt\.Key_Escape[\s\S]*clear\(\)[\s\S]*Qt\.Key_Down[\s\S]*forceActiveFocus\(\)/, "Escape clears and Down enters the filtered results");
+  const clearWorkspaceSearch = objectBodyContaining(sessionList, "AppButton", 'accessibleName: "Clear workspace search"');
+  assert.match(clearWorkspaceSearch, /visible:\s*workspaceSearchField\.text\.length > 0[\s\S]*workspaceSearchField\.clear\(\)[\s\S]*workspaceSearchField\.forceActiveFocus\(\)/);
+  assert.match(sessionList, /visible:\s*sessionList\.searchActive && sessionList\.workingSessions\.length === 0 && sessionList\.settledSessions\.length === 0[\s\S]*text:\s*"No matching workspaces"/);
+  assert.match(functionBody(sessionList, "enriched"), /tabForId\(session\.openTabId\)/, "catalog enrichment uses canonical backend association instead of path spelling");
+  assert.match(functionBody(sessionList, "buildWorkingSessions"), /for \(const session of orderedSessions\)[\s\S]*catalogTabIds\[openTabId\] = true[\s\S]*catalogTabIds\[String\(tab\.id \|\| ""\)\] === true[\s\S]*openOnly: true/, "working rows use deferred activity order without duplicating canonically associated open tabs");
+  assert.match(functionBody(sessionList, "buildSettledSessions"), /for \(const session of orderedSessions\)[\s\S]*session\.settled === true/);
+  assert.match(functionBody(sessionList, "countUnsettledSavedSessions"), /for \(const session of sessions\)[\s\S]*session\.settled !== true[\s\S]*count \+= 1/, "the threshold counts saved catalog rows, not temporary open-only rows");
+  assert.match(sessionList, /readonly property int unsettledSavedSessionCount:\s*countUnsettledSavedSessions\(\)/);
+  const settleAllButton = objectBodyWithId(sessionList, "AppButton", "settleAllButton");
+  assert.match(settleAllButton, /anchors\.right:\s*parent\.right[\s\S]*anchors\.bottom:\s*parent\.bottom[\s\S]*z:\s*2/, "Settle All floats over the lower-right session list without replacing list content");
+  assert.match(settleAllButton, /visible:\s*sessionList\.unsettledSavedSessionCount > 100/, "Settle All is hidden at exactly 100 unsettled sessions");
+  assert.match(settleAllButton, /variant:\s*"primary"[\s\S]*text:\s*sessionList\.settleAllPending \? "Settling…" : "Settle All"[\s\S]*enabled:\s*!sessionList\.settleAllPending[\s\S]*sessionList\.settleAllRequested\(\)/);
+  assert.match(shell, /settleAllPending:\s*bridge\.sessionSettleAllPending[\s\S]*onSettleAllRequested:\s*bridge\.settleAllSessions\(\)/, "the floating action is wired to the bridge batch");
+  const catalogStatus = objectBodyContaining(sessionList, "Label", 'text: sessionList.loading ? "Loading saved sessions…" : sessionList.errorText');
+  assert.match(catalogStatus, /visible:\s*\(sessionList\.loading && sessionList\.sessions\.length === 0\) \|\| sessionList\.errorText\.length > 0/, "background refreshes do not show a loading placeholder over an existing settled session");
+  assert.match(sessionList, /id:\s*workingList[\s\S]*model:\s*sessionList\.workingSessions[\s\S]*activeFocusOnTab:\s*count > 0[\s\S]*Accessible\.name:\s*"Working sessions"/);
+  assert.match(sessionList, /id:\s*settledToggle[\s\S]*accessibleName:\s*\(sessionList\.settledExpanded \? "Collapse" : "Expand"\) \+ " settled sessions"/);
+  assert.match(sessionList, /id:\s*settledList[\s\S]*model:\s*sessionList\.settledSessions[\s\S]*Accessible\.name:\s*"Settled sessions"/);
+  assert.match(sessionList, /color:\s*sessionList\.errorText\.length > 0 \? sessionList\.theme\.errorForeground : sessionList\.theme\.muted/, "catalog errors use a defined semantic foreground token");
+  const workingRow = objectBodyWithId(sessionList, "Rectangle", "workingRow");
+  assert.match(workingRow, /readonly property string ageText:\s*sessionList\.sessionAgeLabel\(modelData\)/);
+  assert.match(workingRow, /visible:\s*workingRow\.ageText\.length > 0[\s\S]*text:\s*workingRow\.ageText/);
+  assert.match(workingRow, /text:\s*sessionList\.statusFor\(workingRow\.modelData\)/);
+  assert.match(workingRow, /width:\s*4[\s\S]*height:\s*12[\s\S]*radius:\s*0/, "working status uses rectangular punctuation rather than a round dot");
+  const workingRowMouseArea = objectBodyWithId(workingRow, "MouseArea", "workingRowMouseArea");
+  assert.match(workingRowMouseArea, /anchors\.fill:\s*parent[\s\S]*acceptedButtons:\s*Qt\.LeftButton[\s\S]*hoverEnabled:\s*true[\s\S]*cursorShape:\s*Qt\.PointingHandCursor/);
+  assert.match(workingRowMouseArea, /onClicked:[\s\S]*workingList\.currentIndex = workingRow\.index[\s\S]*sessionList\.openRow\(workingRow\.modelData\)/, "the complete working-session card activates its session");
+  assert(workingRow.indexOf("id: workingRowMouseArea") < workingRow.indexOf("ColumnLayout {"), "the card click area stays behind Settle and Close so their controls keep pointer priority");
+  assert.doesNotMatch(workingRow, /id:\s*working(?:Title|Status)Tap\b/, "labels no longer split card navigation into partial hit areas");
+  assert.match(workingRow, /Layout\.preferredWidth:\s*78[\s\S]*implicitWidth:\s*78[\s\S]*"Settle"/, "Settle reserves enough width for its full label");
+  assert.match(workingRow, /enabled:\s*!workingRow\.modelData\.active/);
+  assert.match(workingRow, /accessibleName:\s*"Close tab " \+ workingRow\.modelData\.title/);
+  const settledRow = objectBodyWithId(sessionList, "Rectangle", "settledRow");
+  assert.match(settledRow, /readonly property string ageText:\s*sessionList\.sessionAgeLabel\(modelData\)/);
+  assert.match(settledRow, /text:\s*settledRow\.modelData\.title[\s\S]*visible:\s*settledRow\.ageText\.length > 0[\s\S]*text:\s*settledRow\.ageText/);
+  const settledRowMouseArea = objectBodyWithId(settledRow, "MouseArea", "settledRowMouseArea");
+  assert.match(settledRowMouseArea, /anchors\.fill:\s*parent[\s\S]*acceptedButtons:\s*Qt\.LeftButton[\s\S]*hoverEnabled:\s*true[\s\S]*cursorShape:\s*Qt\.PointingHandCursor/);
+  assert.match(settledRowMouseArea, /onClicked:[\s\S]*settledList\.currentIndex = settledRow\.index[\s\S]*sessionList\.openRow\(settledRow\.modelData\)/, "the complete settled-session card activates its session");
+  assert(settledRow.indexOf("id: settledRowMouseArea") < settledRow.indexOf("RowLayout {"), "the card click area stays behind Restore so the control keeps pointer priority");
+  assert.doesNotMatch(settledRow, /id:\s*settledTitleTap\b/, "the title no longer owns the only settled-session hit area");
+  assert.match(settledRow, /Layout\.preferredWidth:\s*86[\s\S]*implicitWidth:\s*86[\s\S]*"Restore"/, "Restore reserves enough width for its full label");
+  assert.doesNotMatch(settledRow, /statusFor|shortPath|messageCount|statusKind|\.cwd\b/, "settled rows do not repeat status details or folder paths");
+  for (const signal of ["settleAllRequested()", "closeRequested(string tabId)", "newTabRequested()", "openDirectoryRequested()"] ) {
+    assert(sessionList.includes(`signal ${signal}`), `session list should expose ${signal}`);
+  }
+});
+
+test("automatic session settlement setting is confirmed, bounded, cancellable, and refreshes after save", () => {
+  assert.match(bridge, /property int sessionSettleDays:\s*30/);
+  assert.match(bridge, /property bool sessionSettleDaysPending:\s*false/);
+  const apply = functionBody(bridge, "applySettings");
+  assert.match(apply, /Number\.isInteger\(settings\.sessionSettleDays\)[\s\S]*settings\.sessionSettleDays >= 1[\s\S]*settings\.sessionSettleDays <= 3650[\s\S]*sessionSettleDays = settings\.sessionSettleDays/);
+
+  const save = functionBody(bridge, "setSessionSettleDays");
+  assert.match(save, /const days = Number\(value\)/);
+  assert.match(save, /sessionSettleDaysPending \|\| !Number\.isInteger\(days\) \|\| days < 1 \|\| days > 3650/);
+  assert.match(save, /request\("settings_set", \{ "values": \{ "sessionSettleDays": days \} \}/);
+  assert.match(save, /if \(!response\.ok\)[\s\S]*Could not save automatic settlement/);
+  assert.match(save, /response\.data\.settings\.sessionSettleDays < 1[\s\S]*response\.data\.settings\.sessionSettleDays > 3650/);
+  assert.match(save, /applySettings\(response\.data\.settings\)[\s\S]*refreshSessionCatalog\(\)/, "the catalog refresh follows the confirmed settings application");
+  assert(save.indexOf("applySettings(response.data.settings)") > save.indexOf("if (!response.ok)"), "a failed response must not change the confirmed setting");
+  assert(save.indexOf("refreshSessionCatalog()") > save.indexOf("applySettings(response.data.settings)"), "refresh must happen only after backend confirmation is applied");
+
+  const validate = functionBody(shell, "sessionSettleDaysProblem");
+  assert.match(validate, /value\.length === 0/);
+  assert.match(validate, /\^\[0-9\]\+\$/);
+  assert.match(validate, /!Number\.isInteger\(days\) \|\| days < 1 \|\| days > 3650/);
+  const openSetting = functionBody(shell, "openSessionSettleDays");
+  assert.match(openSetting, /bridge\.sessionSettleDaysPending \|\| inputDialogItem\.opened/);
+  assert.match(openSetting, /title: "Automatic session settlement"/);
+  assert.match(openSetting, /Lowering the value may settle closed inactive sessions/);
+  assert.match(openSetting, /prefill: String\(bridge\.sessionSettleDays\)/);
+  assert.match(openSetting, /maxCharacters: 4[\s\S]*validate: text => root\.sessionSettleDaysProblem\(text\)/);
+  assert.match(openSetting, /previousDays: bridge\.sessionSettleDays/);
+  assert.match(functionBody(shell, "inputSubmitted"), /context\.action === "session-settle-days"\) bridge\.setSessionSettleDays\(text\)/);
+  assert.match(functionBody(shell, "runPaletteAction"), /case "session-settle-days": return root\.openSessionSettleDays\(\)/);
+  assert.match(functionBody(shell, "composerMenuItems"), /value: "session-settle-days"[\s\S]*detail: bridge\.sessionSettleDays \+ " days"/);
+  assert.match(functionBody(shell, "paletteActions"), /"Automatic settlement: " \+ bridge\.sessionSettleDays \+ " days"/);
+  assert.match(inputDialog, /onClosed:\s*if \(!answered\) cancelled\(context\)/, "closing or cancelling the input must not submit a setting change");
+  assert.match(functionBody(inputDialog, "submit"), /if \(answered \|\| !valid\) return false[\s\S]*submitted\(field\.text\.trim\(\), context\)/, "invalid input remains in the dialog without submission");
 });
 
 test("composer burger menu exposes secondary actions without duplicating visible controls", () => {
@@ -125,11 +317,13 @@ test("composer burger menu exposes secondary actions without duplicating visible
   const menuItems = functionBody(shell, "composerMenuItems");
   assert.match(responseControls, /Flow\s*\{[\s\S]*id:\s*primaryResponseControls[\s\S]*Layout\.fillWidth:\s*true/);
   assert.match(composerMenuButton, /text:\s*"☰"[\s\S]*accessibleName:\s*"More options"/);
+  assert.match(composerMenuButton, /accessibleDescription:\s*"Resources, saved prompt sequences, automatic settlement, display settings, events, and diagnostics"/);
   assert.match(composerMenuButton, /Layout\.alignment:\s*Qt\.AlignRight \| Qt\.AlignTop/);
   assert.doesNotMatch(responseControls, /Layout\.rightMargin/, "the burger button should align with the prompt's full right edge");
   assert(responseControls.indexOf("id: composerMenuButton") > responseControls.indexOf('text: bridge.compactTranscript ? "Compact" : "Detailed"'), "the burger menu should be the rightmost response control");
   assert.doesNotMatch(responseControls, /id:\s*resourceProfilesButton|text:\s*bridge\.resourceLoading \? "Resources…" : "Resources"/, "Resources should live in the menu instead of a standalone control");
-  for (const action of ["resource-profiles", "toggle-thinking", "toggle-highlighting", "toggle-notifications", "cycle-appearance", "toggle-reduced-motion", "events", "diagnostics"]) {
+  assert.doesNotMatch(composer, /id:\s*sequencesButton|signal\s+sequencesRequested/, "Sequences should live in the menu instead of a standalone composer control");
+  for (const action of ["resource-profiles", "sequences", "toggle-thinking", "toggle-highlighting", "toggle-notifications", "cycle-appearance", "toggle-reduced-motion", "events", "diagnostics"]) {
     assert.match(menuItems, new RegExp(`value: "${action}"`), `secondary action ${action}`);
   }
   for (const duplicate of ["compact-context", "toggle-compact", "choose-model", "choose-thinking", "search", "resume-session", "worktree", "restart"]) {
@@ -151,13 +345,23 @@ test("theme owns every palette color and follows the portal-first desktop color 
   assert.match(shell, /reducedMotion:\s*bridge\.reducedMotion/);
   assert.match(shell, /desktopCornerRadius:\s*bridge\.desktopCornerRadius/);
   assert.match(shell, /desktopEdgeGap:\s*bridge\.desktopEdgeGap/);
-  for (const token of ["mainSurface", "sidebarSurface", "sidebarBorder", "panelSurface", "windowBackground", "foreground", "accent", "link", "focusRing", "controlSurface", "controlHover", "controlPressed", "controlActive", "controlSelected", "composerSurface", "composerBorder", "composerShadow", "codeBackground", "codeForeground", "quoteBorder", "tableBorder", "thinkingForeground", "dialogOverlay", "searchHighlight", "selection", "selectionForeground", "urgentBackground", "urgentBorder", "urgentForeground", "primaryButtonForeground", "destructiveButtonForeground", "warningButtonForeground"]) {
+  for (const token of ["mainSurface", "sidebarSurface", "sidebarBorder", "panelSurface", "windowBackground", "foreground", "frameBorder", "accent", "link", "focusRing", "success", "controlSurface", "controlHover", "controlPressed", "controlActive", "controlSelected", "composerSurface", "composerBorder", "codeBackground", "codeForeground", "quoteBorder", "tableBorder", "thinkingForeground", "dialogOverlay", "searchHighlight", "selection", "selectionForeground", "urgentBackground", "urgentBorder", "urgentForeground", "primaryButtonForeground", "destructiveButtonForeground", "warningButtonForeground"]) {
     assert.match(theme, new RegExp(`readonly property color ${token}\\b`), `theme token ${token}`);
   }
-  for (const token of ["spaceXxs", "spaceXs", "spaceSm", "spaceMd", "spaceLg", "spaceXl", "space2Xl", "space3Xl", "space4Xl", "typeCaption", "typeSmall", "typeBody", "typeSubtitle", "typeTitle", "typeDisplay", "radiusSmall", "radiusMedium", "radiusLarge", "radiusPill", "borderWidth", "focusBorderWidth", "controlHeight", "motionFast", "motionNormal", "motionSlow", "animationDuration"]) {
+  for (const token of ["spaceXxs", "spaceXs", "spaceSm", "spaceMd", "spaceLg", "spaceXl", "space2Xl", "space3Xl", "space4Xl", "typeCaption", "typeSmall", "typeBody", "typeSubtitle", "typeTitle", "typeHeading", "typeDisplay", "typeDisplayLarge", "radiusSmall", "radiusMedium", "radiusLarge", "radiusPill", "borderWidth", "focusBorderWidth", "controlHeight", "motionFast", "motionNormal", "motionSlow", "animationDuration"]) {
     assert.match(theme, new RegExp(`readonly property int ${token}\\b`), `theme scale token ${token}`);
   }
   assert.match(theme, /motionNormal:\s*reducedMotion \? 0 : 120/);
+  assert.match(theme, /property int desktopCornerRadius:\s*0/);
+  assert.match(theme, /radiusSmall:\s*Math\.min\(2, desktopCornerRadius\)/);
+  assert.match(theme, /focusBorderWidth:\s*borderWidth/);
+  assert.match(theme, /controlHeight:\s*36/);
+  assert.match(theme, /readonly property real labelTracking:\s*1\.1/);
+  assert.match(theme, /mainSurface:\s*themedColor\("mainSurface", dark \? "#100e18" : "#f4f1fa"\)/);
+  assert.match(theme, /accent:\s*themedColor\("accent", dark \? "#afa2ee" : "#5f529b"\)/);
+  assert.match(theme, /readyForeground:\s*themedColor\("readyForeground", success\)/);
+  assert.doesNotMatch(theme, /syntaxString:[^\n]*#(?:86efac|bbf7d0)/, "green remains success punctuation rather than a general syntax accent");
+  assert.match(bridge, /validatedDesktopMetric\(Quickshell\.env\("QT_WEBUI_DESKTOP_CORNER_RADIUS"\), 0\)/);
   assert.match(theme, /function filledButtonBackground\(variant, state\)/);
   assert.match(theme, /function filledButtonForeground\(variant, state\)/);
   for (const stateToken of ["primaryButtonBackground", "primaryButtonHover", "primaryButtonPressed", "primaryButtonHoverForeground", "primaryButtonPressedForeground", "destructiveButtonBackground", "destructiveButtonHover", "destructiveButtonPressed", "destructiveButtonHoverForeground", "destructiveButtonPressedForeground", "warningButtonBackground", "warningButtonHover", "warningButtonPressed"]) {
@@ -167,6 +371,37 @@ test("theme owns every palette color and follows the portal-first desktop color 
   for (const [name, source] of Object.entries(components)) {
     assert.doesNotMatch(source, /#[0-9a-fA-F]{6}\b/, `${name} should use semantic theme roles`);
   }
+});
+
+test("external theme state is bounded, atomic, generation-ordered, and wired through the picker", () => {
+  assert.match(bridge, /readonly property int maxThemeInventory:\s*131/);
+  assert.match(bridge, /readonly property int maxThemeDiagnostics:\s*64/);
+  assert.match(bridge, /property var themeState:/);
+  const apply = functionBody(bridge, "applyThemeState");
+  assert.match(apply, /data\.generation < themeState\.generation\) return false/, "older list responses cannot replace newer theme events");
+  assert.match(apply, /data\.inventory\.length > maxThemeInventory/);
+  assert.match(apply, /data\.diagnostics\.length > maxThemeDiagnostics/);
+  assert.match(apply, /themeState = \{[\s\S]*requested:[\s\S]*effective:[\s\S]*fallbackReason:[\s\S]*inventory:[\s\S]*diagnostics:[\s\S]*palette:/, "theme state changes in one assignment");
+  assert.match(functionBody(bridge, "listThemes"), /request\("themes_list", \{\},[\s\S]*applyThemeState\(response\.data\)[\s\S]*\}, false\)/);
+  assert.match(functionBody(bridge, "selectTheme"), /validThemeIdentity\(identity\)[\s\S]*request\("theme_select", \{ "selection": \{ "kind": identity\.kind, "name": identity\.name \} \}/);
+  assert.match(bridge, /applyThemeState\(response\.data\.themeState\)/);
+  assert.match(functionBody(bridge, "handleEvent"), /case "themes\.changed":[\s\S]*applyThemeState\(event\.state\)/);
+  assert.match(functionBody(bridge, "resetThemeGeneration"), /generation: 0/, "a restarted backend begins a new generation sequence");
+
+  assert.match(shell, /themeState:\s*bridge\.themeState/);
+  assert.match(functionBody(shell, "themeItems"), /JSON\.stringify\(\{ kind: identity\.kind, name: identity\.name \}\)/, "built-in and external names cannot collide");
+  assert.match(functionBody(shell, "themeItems"), /current: themeIdentityMatches\(identity, bridge\.themeState\.requested\)/);
+  assert.match(functionBody(shell, "openThemePicker"), /bridge\.listThemes\([\s\S]*title: "Choose a theme"[\s\S]*message: root\.themeStatusMessage\(\)/);
+  assert.match(functionBody(shell, "themeStatusMessage"), /Requested theme[\s\S]*unavailable[\s\S]*Using[\s\S]*retry the saved choice/);
+  assert.match(functionBody(shell, "pickerPicked"), /kind === "theme"[\s\S]*JSON\.parse\(value\)[\s\S]*bridge\.selectTheme\(identity\)/);
+  assert.match(functionBody(shell, "runPaletteAction"), /case "choose-theme": return root\.openThemePicker\(\)/);
+  assert.match(functionBody(shell, "composerMenuItems"), /value: "choose-theme"[\s\S]*detail: root\.themeSelectionLabel\(\)/);
+
+  for (const role of SEMANTIC_PALETTE_ROLES) {
+    assert(theme.includes(`"${role}"`), `complete-palette guard should include ${role}`);
+    assert.match(theme, new RegExp(`readonly property color ${role}: themedColor\\("${role}",`), `${role} should switch atomically through Theme.qml`);
+  }
+  assert.match(functionBody(theme, "completeExternalPalette"), /state\.effective\.kind !== "external"[\s\S]*for \(const role of paletteRoleNames\)[\s\S]*return state\.palette/);
 });
 
 test("QML limits match the backend protocol budget", () => {
@@ -195,7 +430,7 @@ test("bridge talks only to the backend over strict LF JSONL with correlated, bou
   assert.match(request, /pendingRequestCount >= maxPendingRequests/);
   assert.match(request, /deadline: Date\.now\(\) \+ timeoutFor\(type\)/);
   assert.match(request, /originTab: activeTabId/);
-  assert.match(request, /sessionScoped: sessionScopedRequestTypes\[type\] === true/);
+  assert.match(request, /sessionScoped:\s*sessionScopedOverride === undefined \? sessionScopedRequestTypes\[type\] === true : sessionScopedOverride === true/);
   const settle = functionBody(bridge, "settlePending");
   assert.match(settle, /entry\.sessionScoped && entry\.originTab\.length > 0 && entry\.originTab !== activeTabId/);
   assert.match(settle, /staleResponses\+\+[\s\S]*return true/);
@@ -219,7 +454,7 @@ test("bridge handles every backend event type and keeps failure paths explicit",
     "backend.ready", "backend.fatal", "pi.status", "pi.error", "pi.runtime", "pi.exit", "message.user", "part.begin",
     "part.render", "part.remove", "message.end", "tool.start", "tool.update", "tool.end", "run.start", "run.end",
     "extension.request", "extension.cancelled", "extension.notify", "extension.status", "composer.setText",
-    "window.title", "queue.update", "notice", "events.dropped", "settings.changed", "appearance.changed", "tabs.update", "transcript.reset", "transcript.row",
+    "window.title", "queue.update", "notice", "events.dropped", "settings.changed", "appearance.changed", "themes.changed", "tabs.update", "sessions.changed", "transcript.reset", "transcript.row",
   ]) assert.match(handler, new RegExp(`case "${eventType.replace(".", "\\.")}"`), `event ${eventType}`);
   assert.match(handler, /default:\s*\n\s*break/);
   assert.match(bridge, /event\.partKind/);
@@ -359,10 +594,16 @@ test("explicit scoped-model ordering is exact, bounded, filter-safe, persistent,
   assert.match(reorderKey, /Qt\.ControlModifier[\s\S]*Qt\.ShiftModifier/);
   assert.match(reorderKey, /Qt\.Key_Up[\s\S]*Qt\.Key_Down/);
   assert.match(dropUpPicker, /DragHandler\s*\{[\s\S]*id:\s*reorderDrag[\s\S]*target:\s*null[\s\S]*popup\.finishDrag\(\)/);
-  assert.match(dropUpPicker, /onTranslationChanged:[^\n]*optionRow\.y \+ optionRow\.height \/ 2 \+ translation\.y/);
+  assert.match(dropUpPicker, /onTranslationChanged:[^\n]*optionRow\.y \+ optionRow\.height \/ 2 \+ translation\.y \+ optionList\.contentY - popup\.dragStartContentY/);
   const dragTarget = functionBody(dropUpPicker, "updateDragTarget");
   assert.match(dragTarget, /centerY <= optionList\.contentY/);
   assert.match(dragTarget, /centerY >= optionList\.contentY \+ optionList\.height/);
+  const dragScrollStep = functionBody(dropUpPicker, "dragScrollStep");
+  assert.match(dragScrollStep, /centerY - optionList\.contentY/);
+  assert.match(dragScrollStep, /optionList\.contentHeight - optionList\.height/);
+  assert.match(dropUpPicker, /Timer\s*\{[\s\S]*id:\s*dragAutoScrollTimer[\s\S]*interval:\s*16[\s\S]*running:\s*popup\.dragScrollStep\(popup\.dragCenterY\) !== 0[\s\S]*popup\.scrollDraggedItem\(\)/);
+  assert.match(dropUpPicker, /onContentYChanged:\s*popup\.handleDragContentYChanged\(\)/, "wheel and edge scrolling must keep the dragged row under the pointer");
+  assert.match(dropUpPicker, /y:\s*reorderDrag\.active \? reorderDrag\.translation\.y \+ optionList\.contentY - popup\.dragStartContentY : 0/);
   assert.match(dropUpPicker, /text:\s*"≡"/);
   assert.match(dropUpPicker, /Accessible\.description:[^\n]*Ctrl\+Shift\+Up or Ctrl\+Shift\+Down/);
 
@@ -439,9 +680,11 @@ test("resource profiles expose explicit scopes, inheritance, enabled names, supp
 
 test("untrusted content renders as plain or whitelisted styled text and links open only after confirmation", () => {
   for (const [name, source] of Object.entries(components)) {
-    assert.doesNotMatch(source, /Text\.RichText|TextEdit\.RichText|Text\.MarkdownText|TextEdit\.MarkdownText|Text\.AutoText/, `${name} must not use rich text formats`);
+    assert.doesNotMatch(source, /Text\.MarkdownText|TextEdit\.MarkdownText|Text\.AutoText|TextEdit\.AutoText/, `${name} must not auto-parse untrusted text`);
+    if (name !== "blocks") assert.doesNotMatch(source, /Text\.RichText|TextEdit\.RichText/, `${name} must not use rich text formats`);
   }
-  assert.match(blocks, /textFormat:\s*Text\.StyledText/);
+  assert.equal((blocks.match(/textFormat:\s*TextEdit\.RichText/g) ?? []).length, 6, "only the six backend-sanitized styled editors use RichText");
+  assert.doesNotMatch(blocks, /textFormat:\s*TextEdit\.StyledText/, "TextEdit has no StyledText enum value");
   assert.match(blocks, /TextEdit\s*\{[\s\S]*textFormat:\s*TextEdit\.PlainText[\s\S]*readOnly:\s*true/);
   assert.match(blocks, /onLinkActivated:\s*link\s*=>\s*root\.linkActivated\(link\)/);
   assert.doesNotMatch(blocks, /Qt\.openUrlExternally/);
@@ -449,8 +692,28 @@ test("untrusted content renders as plain or whitelisted styled text and links op
   assert.match(functionBody(blocks, "parseBlocks"), /catch \(error\)/);
   assert.match(linkDialog, /function accept\(\)[\s\S]*bridge\.openLink\(target/);
   assert.match(linkDialog, /initialFocusItem:\s*cancelButton/);
-  const userLabel = objectBodyContaining(row, "Label", "visible: row.kind === \"user\" || row.kind === \"thinking\"");
-  assert.match(userLabel, /textFormat:\s*Text\.PlainText/);
+  const userOutput = objectBodyWithId(row, "TextEdit", "userMessageLabel");
+  assert.match(userOutput, /visible:\s*row\.kind === "user"/);
+  assert.match(userOutput, /textFormat:\s*TextEdit\.PlainText/);
+  const selectableEditors = [
+    [row, "userMessageLabel"],
+    [blocks, "paragraphLabel"], [blocks, "headingLabel"], [blocks, "highlightedCodeLabel"],
+    [blocks, "plainCodeEdit"], [blocks, "itemLabel"], [blocks, "cellLabel"],
+    [blocks, "droppedLabel"], [blocks, "noticeLabel"],
+    [toolCard, "toolErrorLabel"], [toolCard, "outputEdit"],
+  ];
+  for (const [source, id] of selectableEditors) {
+    const editor = objectBodyWithId(source, "TextEdit", id);
+    assert.match(editor, /readOnly:\s*true/, `${id} should stay read-only`);
+    assert.match(editor, /selectByMouse:\s*true/, `${id} should support pointer selection`);
+    assert.match(editor, /selectByKeyboard:\s*true/, `${id} should support keyboard selection`);
+    assert.match(editor, /selectionColor:\s*\w+\.theme\.selection/, `${id} should use the theme selection color`);
+    assert.match(editor, /selectedTextColor:\s*\w+\.theme\.selectionForeground/, `${id} should keep selected text readable`);
+  }
+  const transcriptMarkdown = objectBodyContaining(row, "MarkdownBlocks", "visible: row.kind === \"text\" || row.kind === \"thinking\"");
+  assert.match(transcriptMarkdown, /blocksJson:\s*row\.kind === "text" \|\| row\.kind === "thinking" \? row\.blocksJson : "\[\]"/);
+  assert.match(transcriptMarkdown, /foregroundColor:\s*row\.kind === "thinking" \? row\.theme\.thinkingForeground : row\.theme\.foreground/);
+  assert.match(transcriptMarkdown, /italic:\s*row\.kind === "thinking"/);
   for (const roleName of ["rowId", "messageId", "role", "kind", "text", "blocksJson", "truncated", "streaming", "modeLabel", "attachments", "toolName", "toolSummary", "toolStatus", "toolDurationMs", "toolOutput", "toolError"]) {
     assert.match(row, new RegExp(`required property \\w+ ${roleName}\\b`), `TranscriptRow should require ${roleName}`);
   }
@@ -467,8 +730,10 @@ test("untrusted content renders as plain or whitelisted styled text and links op
 
 test("composer exposes send, a steer/follow-up toggle, abort, and restart with keyboard paths", () => {
   assert.match(composer, /color:\s*theme\.composerSurface/);
+  assert.match(composer, /border\.width:\s*theme\.borderWidth/);
+  assert.match(composer, /id:\s*prompt[\s\S]*font\.family:\s*composer\.theme\.monospaceFamily/);
   assert.match(composer, /border\.color:\s*prompt\.activeFocus \? theme\.focusRing : theme\.composerBorder/);
-  assert.match(composer, /layer\.effect:\s*MultiEffect\s*\{[\s\S]*shadowColor:\s*composer\.theme\.composerShadow/);
+  assert.doesNotMatch(composer, /MultiEffect|shadowEnabled|shadowColor/, "the composer stays flat and shadow-free");
   assert.match(composer, /id:\s*chip[\s\S]*width:\s*Math\.min\(implicitWidth, parent \? parent\.width : implicitWidth\)/);
   assert.match(composer, /id:\s*chipRow[\s\S]*anchors\.left:\s*parent\.left[\s\S]*anchors\.right:\s*parent\.right/);
   assert.match(composer, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*Layout\.maximumWidth:\s*240/);
@@ -486,6 +751,11 @@ test("composer exposes send, a steer/follow-up toggle, abort, and restart with k
   assert.match(modeAction, /visible:\s*composer\.active && composer\.ready/);
   assert.match(modeAction, /text:\s*composer\.busyPromptMode === "steer" \? "Steer" : "Queue"/);
   assert.match(modeAction, /onClicked:\s*composer\.trySend\(composer\.busyPromptMode\)/);
+  const attachButton = objectBodyContaining(composer, "AppButton", "id: attachButton");
+  assert.match(attachButton, /text:\s*"📎"/);
+  assert.match(attachButton, /accessibleName:\s*"Attach files"/);
+  assert.match(attachButton, /Layout\.preferredWidth:\s*composer\.theme\.controlHeight/);
+  assert.match(composer, /id:\s*attachButton[\s\S]*?onClicked:\s*composer\.attachRequested\(\)[\s\S]*?}\n\n\s*AppButton\s*{\s*id:\s*primaryButton/, "Attach should sit immediately before the primary Send control");
   assert.match(composer, /event\.modifiers & Qt\.ShiftModifier\) return/, "Shift+Enter must insert a new line");
   assert.match(composer, /Enter to send · Shift\+Enter for a new line/);
   assert.match(composer, /text:\s*composer\.active \? "Abort" : \(composer\.ready \? "Send" : "Restart"\)/);
@@ -497,13 +767,13 @@ test("composer exposes send, a steer/follow-up toggle, abort, and restart with k
 });
 
 test("composer completion, attachments, drafts, and sequences never send by accident and stay bounded", () => {
-  // Highlighted code: theme-owned colors, <pre> for whitespace, plain editor for selection, copy of the original text.
+  // Highlighted code keeps theme-owned syntax colors while remaining directly selectable.
   assert.match(blocks, /property bool highlight:\s*true/);
   assert.match(functionBody(blocks, "styledCode"), /"<pre>"/);
   assert.match(functionBody(blocks, "styledCode"), /theme\.syntaxColor\(kind\)/);
   assert.doesNotMatch(functionBody(blocks, "styledCode"), /#[0-9a-fA-F]{3,8}\b/);
-  assert.match(blocks, /readonly property bool highlighted:\s*root\.highlight && hasTokens && !selectable/);
-  assert.match(blocks, /text:\s*codeBlock\.selectable \? "Highlight" : "Select text"/);
+  assert.match(blocks, /readonly property bool highlighted:\s*root\.highlight && hasTokens/);
+  assert.doesNotMatch(blocks, /"Select text"|property bool selectable/);
   assert.match(blocks, /onClicked:\s*root\.copyRequested\(block\.text \|\| ""\)/);
   assert.match(theme, /function syntaxColor\(kind\)/);
   for (const token of ["syntaxKeyword", "syntaxString", "syntaxComment", "syntaxNumber", "syntaxType", "syntaxFunction", "diffAdded", "diffRemoved"]) {
@@ -595,7 +865,7 @@ test("tabs isolate session state, replay from the backend, confirm busy closes, 
   assert.match(functionBody(shell, "pickerPicked"), /kind === "session"[\s\S]*bridge\.switchSession\(value\)/);
   assert.match(functionBody(shell, "openSessionsPicker"), /if \(!bridge\.ready \|\| bridge\.active \|\| pickerDialogItem\.opened\) return false/);
   assert.match(functionBody(shell, "handleDraftKeyChanged"), /bridge\.saveDraftFor\(draftKeyInUse, composer\.text\)/, "the previous tab's draft is saved before switching");
-  assert.match(shell, /TabStrip\s*\{[\s\S]*onSelectRequested:\s*tabId => bridge\.selectTab\(tabId\)[\s\S]*onCloseRequested:\s*tabId => root\.closeTab\(tabId\)/);
+  assert.match(shell, /SessionList\s*\{[\s\S]*onSessionRequested:\s*session => root\.openCatalogSession\(session\)[\s\S]*onCloseRequested:\s*tabId => root\.closeTab\(tabId\)/);
   assert.match(shell, /DirectoryDialog\s*\{[\s\S]*onChosen:\s*path => bridge\.openTab\(path, ""\)/);
   assert.match(shell, /Instantiator\s*\{[\s\S]*model:\s*8[\s\S]*sequence:\s*"Ctrl\+" \+ \(index \+ 1\)/);
   assert.match(emptyState, /signal resumeRequested\(\)/);
@@ -654,6 +924,11 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(appButton, /Accessible\.name:\s*accessibleName/);
   assert.match(appButton, /focusPolicy:\s*Qt\.StrongFocus/);
   assert.match(appButton, /border\.width:\s*control\.activeFocus \? control\.theme\.focusBorderWidth : control\.theme\.borderWidth/, "buttons reserve a stable semantic frame");
+  assert.match(appButton, /font\.family:\s*control\.theme\.monospaceFamily/);
+  assert.match(statusBadge, /font\.family:\s*badge\.theme\.monospaceFamily/);
+  assert.match(statusSegment, /font\.family:\s*segment\.theme\.monospaceFamily/);
+  assert.match(tabStrip, /font\.family:\s*strip\.theme\.monospaceFamily/);
+  assert.match(row, /font\.family:\s*row\.theme\.monospaceFamily/);
   assert.match(appButton, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/);
   assert.match(appButton, /hoverEnabled:\s*true/);
   assert.match(appButton, /Accessible\.checked:\s*active/);
@@ -663,8 +938,16 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.doesNotMatch(appButton, /Qt\.(lighter|darker)/, "component state colors stay theme-owned");
   assert.match(appButton, /active \? theme\.controlActive/);
   assert.match(appButton, /implicitHeight:\s*control\.theme\.controlHeight/);
+  assert.match(statusBadge, /radius:\s*theme\.radiusSmall/);
+  assert.match(statusBadge, /font\.capitalization:\s*Font\.AllUppercase/);
+  assert.match(statusBadge, /font\.letterSpacing:\s*badge\.theme\.labelTracking/);
   assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, availableWidth\)/);
+  assert.match(statusSegment, /border\.color:\s*theme\.frameBorder/);
+  assert.match(tabStrip, /border\.color:\s*theme\.frameBorder/);
   assert.match(statusSegment, /Flow\s*\{[\s\S]*id:\s*statusFlow/);
+  assert.match(statusSegment, /readonly property real contentImplicitWidth:\s*\{[\s\S]*statusRepeater\.count[\s\S]*statusRepeater\.itemAt\(index\)[\s\S]*item\.implicitWidth/, "status segments derive their natural width from instantiated entries instead of collapsing to padding");
+  assert.match(statusSegment, /readonly property real contentImplicitHeight:\s*childrenRect\.height/, "status flow derives its natural height from positioned entries");
+  assert.match(statusSegment, /implicitWidth:\s*statusFlow\.contentImplicitWidth \+ theme\.spaceXl[\s\S]*implicitHeight:\s*statusFlow\.contentImplicitHeight \+ theme\.spaceMd/, "the frame consumes the flow's content dimensions instead of the read-only zero defaults");
   assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, statusFlow\.width\)/);
   assert.match(statusSegment, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*elide:\s*Text\.ElideRight/);
   const responseControls = objectBodyContaining(shell, "RowLayout", "id: responseControls");
@@ -682,6 +965,9 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(row, /Accessible\.name:\s*roleLabel/);
   assert.match(row, /!row\.fromUser && row\.kind !== "thinking" && !row\.searchCurrent\) \? row\.theme\.transparent/);
   assert.match(row, /row\.fromUser \|\| row\.kind === "thinking" \? 1 : 0/);
+  assert.match(row, /font\.capitalization:\s*Font\.AllUppercase[\s\S]*font\.letterSpacing:\s*row\.theme\.labelTracking/);
+  assert.match(composer, /text:\s*"PROMPT"[\s\S]*font\.letterSpacing:\s*composer\.theme\.labelTracking/);
+  assert.match(composer, /composer\.active \? \(composer\.busyPromptMode === "steer" \? "STEER" : "FOLLOW-UP"\) : "READY"/);
   for (const [name, source] of [["drop-up", dropUpPicker], ["completion", completionPopup], ["tabs", tabStrip], ["picker", pickerDialog], ["extension", extensionDialog], ["directory", directoryDialog], ["sequences", sequencesDialog], ["events", eventsDialog]]) {
     assert.match(source, /interactiveFill\(/, `${name} rows should expose semantic hover, pressed, and selected fills`);
     assert.match(source, /interactiveBorder\(/, `${name} rows should expose a semantic keyboard focus border`);
@@ -700,7 +986,7 @@ test("smoke driver and fixture cover every recorded protocol edge", () => {
     "QT_WEBUI_SMOKE_TRANSCRIPT_BOUNDED", "QT_WEBUI_SMOKE_SETTINGS_PERSISTED", "QT_WEBUI_SMOKE_CODE_HIGHLIGHTED", "QT_WEBUI_SMOKE_COMMANDS_LOADED",
     "QT_WEBUI_SMOKE_COMMAND_COMPLETED", "QT_WEBUI_SMOKE_PATH_COMPLETED", "QT_WEBUI_SMOKE_ATTACHMENT_ADDED", "QT_WEBUI_SMOKE_ATTACHMENT_SENT",
     "QT_WEBUI_SMOKE_DRAFT_PERSISTED", "QT_WEBUI_SMOKE_SEQUENCE_RUN", "QT_WEBUI_SMOKE_SEQUENCE_DELETED", "QT_WEBUI_SMOKE_ACTIVE_PICKER_INVALIDATED", "QT_WEBUI_SMOKE_STALE_PICKER_RESULT_REFUSED", "QT_WEBUI_SMOKE_PICKER_LOADING_RECOVERED", "QT_WEBUI_SMOKE_REAL_LIST_ARROW_SELECTION", "QT_WEBUI_SMOKE_MODEL_DROPUP_BOUNDED", "QT_WEBUI_SMOKE_MODEL_DROPUP_FOCUS_RETURNED", "QT_WEBUI_SMOKE_MODEL_PICKER", "QT_WEBUI_SMOKE_MODEL_SELECTED",
-    "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_TAB_PICKER_INVALIDATED", "QT_WEBUI_SMOKE_TAB_PICKER_LOADING_RECOVERED", "QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED", "QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
+    "QT_WEBUI_SMOKE_WORKSPACE_SEARCH_FILTERED", "QT_WEBUI_SMOKE_EMPTY_SESSION_STATE", "QT_WEBUI_SMOKE_TAB_OPENED", "QT_WEBUI_SMOKE_TAB_PICKER_INVALIDATED", "QT_WEBUI_SMOKE_TAB_PICKER_LOADING_RECOVERED", "QT_WEBUI_SMOKE_STALE_RESOURCE_READ_IGNORED", "QT_WEBUI_SMOKE_STALE_RESOURCE_MUTATION_IGNORED", "QT_WEBUI_SMOKE_TAB_SWITCHED", "QT_WEBUI_SMOKE_SESSION_RESUMED", "QT_WEBUI_SMOKE_SESSION_NEW", "QT_WEBUI_SMOKE_DIRECTORY_PICKED",
     "QT_WEBUI_SMOKE_WORKTREE_CREATED", "QT_WEBUI_SMOKE_TAB_CLOSED", "QT_WEBUI_SMOKE_USAGE_LOADED", "QT_WEBUI_SMOKE_PALETTE_ACTION",
     "QT_WEBUI_SMOKE_EVENTS_LISTED", "QT_WEBUI_SMOKE_DIAGNOSTICS_SHOWN",
     "QT_WEBUI_SMOKE_THINKING_DROPUP_BOUNDED", "QT_WEBUI_SMOKE_THINKING_DROPUP_FOCUS_RETURNED", "QT_WEBUI_SMOKE_THINKING_PICKER", "QT_WEBUI_SMOKE_MODEL_CYCLED", "QT_WEBUI_SMOKE_THINKING_CYCLED", "QT_WEBUI_SMOKE_CONTEXT_COMPACTED",

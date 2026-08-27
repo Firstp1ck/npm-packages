@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
-// Semantic status pill. `kind` selects the palette role; text is always plain.
+// Compact rectangular status punctuation. `kind` selects the palette role; text is always plain.
 Rectangle {
     id: badge
 
@@ -14,7 +14,7 @@ Rectangle {
 
     implicitWidth: label.implicitWidth + 2 * horizontalPadding
     implicitHeight: label.implicitHeight + 2 * verticalPadding
-    radius: height / 2
+    radius: theme.radiusSmall
     color: theme.statusBackground(kind)
     border.width: theme.borderWidth
     border.color: theme.statusBorder(kind)
@@ -29,8 +29,11 @@ Rectangle {
         text: badge.text
         textFormat: Text.PlainText
         color: badge.theme.statusForeground(badge.kind)
+        font.family: badge.theme.monospaceFamily
         font.pixelSize: badge.fontSize
         font.bold: true
+        font.capitalization: Font.AllUppercase
+        font.letterSpacing: badge.theme.labelTracking
         elide: Text.ElideRight
         maximumLineCount: 1
     }

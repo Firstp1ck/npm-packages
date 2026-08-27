@@ -219,9 +219,9 @@ AppDialog {
         selectionColor: dialog.theme.selection
         font.family: dialog.theme.monospaceFamily
         background: Rectangle {
-            radius: 6
+            radius: dialog.theme.radiusSmall
             color: dialog.theme.surfaceRaised
-            border.width: pathField.activeFocus ? 2 : 1
+            border.width: dialog.theme.borderWidth
             border.color: pathField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
         }
         Accessible.role: Accessible.EditableText
@@ -240,9 +240,9 @@ AppDialog {
         placeholderTextColor: dialog.theme.muted
         selectionColor: dialog.theme.selection
         background: Rectangle {
-            radius: 6
+            radius: dialog.theme.radiusSmall
             color: dialog.theme.surfaceRaised
-            border.width: newFolderField.activeFocus ? 2 : 1
+            border.width: dialog.theme.borderWidth
             border.color: newFolderField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
         }
         Accessible.role: Accessible.EditableText
@@ -299,9 +299,9 @@ AppDialog {
         placeholderTextColor: dialog.theme.muted
         selectionColor: dialog.theme.selection
         background: Rectangle {
-            radius: 6
+            radius: dialog.theme.radiusSmall
             color: dialog.theme.surfaceRaised
-            border.width: filterField.activeFocus ? 2 : 1
+            border.width: dialog.theme.borderWidth
             border.color: filterField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
         }
         Accessible.role: Accessible.EditableText

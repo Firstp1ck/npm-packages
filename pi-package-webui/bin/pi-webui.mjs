@@ -3157,6 +3157,7 @@ async function resolveGuidedGitNativeCommand(tab, kind) {
 }
 
 const GUIDED_GIT_PROVIDER_FAILURE_MARKER = "FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE";
+const GUIDED_GIT_NATIVE_COMMAND_ERROR_GRACE_MS = 500;
 
 function boundedGitWorkflowGenerationError(message, fallback = "Guided Git generation failed") {
   const text = typeof message === "string" ? message : fallback;
@@ -3165,6 +3166,14 @@ function boundedGitWorkflowGenerationError(message, fallback = "Guided Git gener
 
 function isGuidedGitProviderGenerationFailure(error) {
   return String(error?.message || error || "").includes(GUIDED_GIT_PROVIDER_FAILURE_MARKER);
+}
+
+function guidedGitNativeCommandErrorFromEvent(record, event) {
+  const commandName = String(record?.nativeCommandName || "");
+  if (event?.type !== "extension_error" || event.event !== "command" || !commandName || event.extensionPath !== `command:${commandName}`) return null;
+  const error = new Error(String(event.error || `/${commandName} failed`));
+  error.guidedGitProviderGenerationFailure = isGuidedGitProviderGenerationFailure(error);
+  return error;
 }
 
 function gitWorkflowGenerationCancellationError() {
@@ -3331,6 +3340,7 @@ async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attemp
   record.attemptRunStarted = false;
   record.promptAccepted = false;
   record.pendingSettlement = null;
+  record.nativeCommandError = null;
   if (record.currentModelKey !== `${profile.provider}/${profile.modelId}`) {
     const modelResponse = await tab.rpc.send({ type: "set_model", provider: profile.provider, modelId: profile.modelId });
     assertGitWorkflowGenerationOwnership(tab, record);
@@ -3350,6 +3360,7 @@ async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attemp
     error.guidedGitProviderGenerationFailure = isGuidedGitProviderGenerationFailure(response.error);
     throw error;
   }
+  if (record.nativeCommandError) throw record.nativeCommandError;
   record.promptAccepted = true;
   const pendingSettlement = record.pendingSettlement;
   if (pendingSettlement?.attempt === attempt) {
@@ -3366,7 +3377,13 @@ async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attemp
     primaryGeneration: publicGitWorkflowGenerationProfile(record.primary),
   };
   if (record.nativeGeneration) {
-    await assertGuidedGitNativeArtifactUpdated(tab, record);
+    try {
+      await assertGuidedGitNativeArtifactUpdated(tab, record);
+    } catch (artifactError) {
+      if (!record.nativeCommandError) await delay(GUIDED_GIT_NATIVE_COMMAND_ERROR_GRACE_MS);
+      if (record.nativeCommandError) throw record.nativeCommandError;
+      throw artifactError;
+    }
     assertGitWorkflowGenerationOwnership(tab, record);
     await finishGitWorkflowGeneration(tab, record, { successful: true });
   }
@@ -3414,6 +3431,11 @@ async function settleGitWorkflowGeneration(tab, record, { failed, cancelled }) {
 function consumeGitWorkflowGenerationEvent(tab, event, { finalError = false } = {}) {
   const record = tab.gitWorkflowGeneration;
   if (!record || record.finishing) return;
+  const nativeCommandError = guidedGitNativeCommandErrorFromEvent(record, event);
+  if (nativeCommandError) {
+    record.nativeCommandError = nativeCommandError;
+    return;
+  }
   if ((event?.type === "agent_end" || event?.type === "agent_settled") && event.aborted === true) record.cancelled = true;
   if (event?.type === "agent_start") {
     record.attemptRunStarted = true;
@@ -3454,6 +3476,8 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     promptAccepted: false,
     pendingSettlement: null,
     currentModelKey: "",
+    nativeCommandName: "",
+    nativeCommandError: null,
     nativeGeneration: true,
   };
   tab.gitWorkflowGeneration = record;
@@ -3469,6 +3493,7 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
     const nativeCommandName = await resolveGuidedGitNativeCommand(tab, kind);
     assertGitWorkflowGenerationOwnership(tab, record);
+    record.nativeCommandName = nativeCommandName;
     record.message = gitWorkflowGenerationPrompt(kind, preferences, nativeCommandName);
 
     const state = await currentSessionState(tab);

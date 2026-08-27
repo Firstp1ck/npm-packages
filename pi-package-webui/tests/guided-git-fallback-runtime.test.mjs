@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,6 +33,17 @@ function writeBranchArtifact() {
   const directory = join(artifactRoot, "dev", "COMMIT");
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "staged-branch-name.txt"), "feat/native-root-artifacts\\n");
+}
+function failNativeCommand(command, error, notificationError = error) {
+  const commandName = String(command.message || "").split(/\\s+/u, 1)[0].replace(/^\\//u, "");
+  send({
+    type: "extension_ui_request",
+    id: "notify-" + command.id,
+    method: "notify",
+    message: "/" + commandName + " failed: " + notificationError + ". No stale success was reported.",
+    notifyType: "error",
+  });
+  send({ type: "extension_error", extensionPath: "command:" + commandName, event: "command", error });
 }
 const models = [
   { provider: "fake", id: "original", name: "Original", reasoning: true },
@@ -74,19 +85,33 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       if (scenario === "process-loss") process.exit(12);
       if (scenario === "concurrent" || scenario === "cancellation") await new Promise((resolve) => setTimeout(resolve, 150));
       if (scenario === "provider-failure" && activeModel.id === "primary") {
-        send({ ...response, success: false, error: "FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE: active model generation failed" });
+        failNativeCommand(command, "FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE: active model generation failed", "The active model provider failed");
+        send(response);
         break;
       }
       if (scenario === "invalid-output") {
-        send({ ...response, success: false, error: "Generated commit output did not match the closed format" });
+        failNativeCommand(command, "Generated output must not be empty");
+        send(response);
+        break;
+      }
+      if (scenario === "delayed-native-command-error") {
+        send(response);
+        setTimeout(() => failNativeCommand(command, "Generated chunk summary is empty"), 25);
         break;
       }
       if (scenario === "missing-base") {
-        send({ ...response, success: false, error: "No configured upstream base, remote default, main, or master branch is available" });
+        failNativeCommand(command, "No configured upstream base, remote default, main, or master branch is available");
+        send(response);
         break;
       }
       if (scenario === "git-failure") {
-        send({ ...response, success: false, error: "Git command failed while reading staged changes" });
+        failNativeCommand(command, "Git command failed while reading staged changes");
+        send(response);
+        break;
+      }
+      if (scenario === "above-capture-input") {
+        failNativeCommand(command, "The complete staged diff exceeds the 16777216-byte generation cap; use a manual message");
+        send(response);
         break;
       }
       if (!["unsafe-stale-artifact", "cancellation"].includes(scenario)) {
@@ -145,7 +170,10 @@ async function runScenario(scenario, verify) {
   await writeFile(path.join(cwd, "tracked.txt"), "base\n");
   git(cwd, "add", "--", "tracked.txt");
   git(cwd, "commit", "-m", "test: initial");
-  await writeFile(path.join(cwd, "tracked.txt"), "staged native change\n");
+  const stagedContent = scenario === "oversized-success"
+    ? `${"x".repeat(1_430_698)}\n`
+    : "staged native change\n";
+  await writeFile(path.join(cwd, "tracked.txt"), stagedContent);
   git(cwd, "add", "--", "tracked.txt");
   if (scenario === "unsafe-stale-artifact") {
     const artifactDirectory = path.join(cwd, "dev", "COMMIT");
@@ -223,6 +251,21 @@ try {
     assert.ok(primary >= 0 && restore > primary, "the active model must be restored after native artifact verification");
   });
 
+  await runScenario("oversized-success", async ({ request, readLog, cwd }) => {
+    assert.ok((await stat(path.join(cwd, "tracked.txt"))).size > 1024 * 1024);
+    const result = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.fallbackUsed, false);
+    assert.equal(await readFile(path.join(cwd, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat: primary native generation\n");
+    const correlated = await request(`/api/git-workflow/message?generationId=${encodeURIComponent(result.body.data.generationId)}`);
+    assert.equal(correlated.status, 200);
+    assert.equal(correlated.body.data.ready, true);
+    const log = await readLog();
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary"]);
+    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 0);
+    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "original").length, 1);
+  });
+
   await runScenario("nested-cwd", async ({ request, cwd, tabCwd }) => {
     const commit = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
     assert.equal(commit.status, 200);
@@ -256,15 +299,18 @@ try {
   });
 
   for (const [scenario, kind, expectedError] of [
-    ["invalid-output", "commit", /did not match the closed format/iu],
+    ["invalid-output", "commit", /Generated output must not be empty/iu],
+    ["delayed-native-command-error", "commit", /Generated chunk summary is empty/iu],
     ["missing-base", "pr", /No configured upstream base/iu],
     ["git-failure", "commit", /Git command failed while reading staged changes/iu],
+    ["above-capture-input", "commit", /complete staged diff exceeds the 16777216-byte generation cap/iu],
     ["unsafe-stale-artifact", "commit", /message files? to be refreshed/iu],
   ]) {
     await runScenario(scenario, async ({ request, readLog }) => {
       const result = await request("/api/git-workflow/generate", { method: "POST", body: { kind } });
       assert.notEqual(result.status, 200, `${scenario} must remain terminal without fallback`);
       assert.match(result.body.error, expectedError);
+      if (scenario === "above-capture-input") assert.doesNotMatch(result.body.error, /message files? to be refreshed/iu);
       const log = await readLog();
       assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary"]);
       assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 0);

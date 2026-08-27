@@ -679,7 +679,7 @@ assert.match(css, /body\.mobile-tabs-expanded \.terminal-tabs \{[\s\S]*?position
 assert.match(css, /\.terminal-tab-activity-indicator/, "terminal tabs should expose per-tab agent activity indicators");
 assert.match(css, /\.terminal-tab-app-runner-indicator \{[\s\S]*?terminal-tab-app-runner-pulse/, "terminal tabs should expose animated app-runner indicators");
 assert.match(css, /\.terminal-tab\.app-runner-running,\n\.terminal-tab-group-item\.app-runner-running/, "terminal tabs and grouped items should mark running app runners");
-assert.match(css, /\.terminal-tab-group-menu \{[^}]*max-height:\s*none;[^}]*overflow:\s*visible;/, "grouped terminal tab menus should grow to show every open tab without an internal scrollbar");
+assert.match(css, /\.terminal-tab-group-menu \{[^}]*max-height:\s*min\(32rem, calc\(var\(--visual-viewport-height, 100dvh\) - 6rem\)\);[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;[^}]*scrollbar-gutter:\s*stable;/, "large grouped terminal tab menus should stay inside the viewport and scroll without dropping entries");
 assert.match(css, /\.terminal-tab-group-item \{[\s\S]*?flex:\s*0 0 auto[\s\S]*?background:\s*var\(--ctp-crust\)/, "grouped terminal tab items should keep readable height and use opaque backgrounds");
 assert.match(css, /\.terminal-tab-group-add \{[\s\S]*?flex:\s*0 0 auto/, "grouped terminal tab menus should keep the add-tab action at its natural height");
 assert.match(css, /\.terminal-tab-group\.active \{[\s\S]*?background:[\s\S]*?var\(--ctp-crust\)/, "active terminal tab groups should keep opaque backgrounds");

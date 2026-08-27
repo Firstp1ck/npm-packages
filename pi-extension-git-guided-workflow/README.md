@@ -4,7 +4,7 @@ Use native Pi commands to generate Git text safely, or start a careful commit-an
 
 ## What you can do
 
-- Generate validated Conventional Commit files from the complete staged diff with `/git-staged-msg`, including one bounded correction request when the first model response is invalid.
+- Generate validated Conventional Commit files from staged diffs up to 16 MiB with `/git-staged-msg`; large diffs are analyzed completely in bounded sequential requests before one final synthesis.
 - Generate a safe branch-name file with `/git-branch-name`.
 - Generate a reviewer-focused pull-request description with `/pr`.
 - Review staged changes, commit, and push through the existing `/git-guided-workflow` TUI flow.
@@ -51,7 +51,9 @@ This extension runs Git with your user permissions. Review staged changes and di
 
 Manual message entry never needs a model. Model generation sends the required complete, bounded Git or repository context directly to the active model provider only after you select generation or invoke a generation command. That content may contain private code, commit text, filenames, or a pull-request template. Do not generate unless sharing that content with the active provider is acceptable.
 
-Generation commands use the active model directly. They do not expand prompt templates or ask a parent agent to run Git or file tools. `/git-staged-msg` reuses the staged-only language, scope, type, length, and body guidance from the standalone prompt as native model instructions. Those are quality guidelines, not reasons to discard a safe generated message. If the response cannot be safely parsed from the closed format, the command sends the same bounded staged context, bounded failed response, and validation feedback to the same model once more. A second unsafe or structurally invalid response is terminal. Repository drift, cancellation, or an unsafe artifact path produces no stale success.
+Generation commands use the active model directly. They do not expand prompt templates or ask a parent agent to run Git or file tools. `/git-staged-msg` uses one request for a staged diff at or below 1 MiB. Above 1 MiB, it sends every byte of the staged diff to the provider in bounded sequential chunks, then asks once for a final message using the retained summaries. This takes several requests, can cost more, and may take longer. The command reports the request count before analysis starts.
+
+`/git-staged-msg` applies staged-only language, scope, type, length, and body guidance. Those are quality guidelines, not reasons to discard safe generated text. Chunk summaries accept any non-empty bounded safe plain text; presentation and delimiters are not enforced. If the final commit response cannot be safely parsed into message artifacts, the command can send one final correction request. Large-diff final correction reuses the retained summaries and does not analyze the chunks again. A provider failure, empty or unsafe chunk summary, repository drift, cancellation, or unsafe artifact path writes no new artifact and produces no stale success.
 
 Requesting the browser workflow sends no repository path, diff, preferences, or Git data in the activation signal. The WebUI then owns its browser workflow and generation-profile privacy behavior.
 

@@ -9,7 +9,7 @@ async function readyBackend(t, options = {}) {
   const backend = await startBackend({ startupTimeoutMs: 1_000, ...options });
   t.after(async () => {
     if (backend.exit) return;
-    backend.child.kill("SIGKILL");
+    backend.kill("SIGKILL");
     await backend.exitPromise;
   });
   await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");
@@ -34,7 +34,10 @@ test("startup translates Pi noise into bounded events and reports runtime metada
   const hello = await backend.send("hello");
   assert.equal(hello.ok, true);
   assert.equal(hello.data.session.ready, true);
-  assert.deepEqual(hello.data.settings, { compactTranscript: false, showThinking: true, desktopNotifications: true, syntaxHighlighting: true, appearanceMode: "automatic", reducedMotion: false, modelOrder: [] });
+  assert.deepEqual(hello.data.settings, { compactTranscript: false, showThinking: true, desktopNotifications: true, syntaxHighlighting: true, appearanceMode: "automatic", selectedThemeName: "", reducedMotion: false, sessionSettleDays: 30, modelOrder: [] });
+  assert.deepEqual(hello.data.themeState.requested, { kind: "builtin", name: "automatic" });
+  assert.deepEqual(hello.data.themeState.effective, { kind: "builtin", name: "automatic" });
+  assert.equal(hello.data.themeState.palette, null);
   const commands = await backend.readCapture();
   assert.equal(commands.filter((command) => command.type === "get_state").length, 1, "the stale fixture response must not trigger a second state read");
 });
@@ -54,7 +57,12 @@ test("stream scenario produces message parts, tool lifecycle, thinking, and reco
   const begins = backend.events.filter((event) => event.type === "part.begin");
   assert.deepEqual(begins.map((event) => event.partKind), ["thinking", "text"]);
   const finals = backend.events.filter((event) => event.type === "part.render" && event.final);
-  assert.equal(finals.find((event) => event.partKind === "thinking").text, "thinking about it");
+  const thinking = finals.filter((event) => event.partKind === "thinking");
+  assert.equal(thinking.length, 1, "sequential thinking content becomes one final part");
+  assert.equal(thinking[0].text, "**Planning user notification strategy**\n\n**Deciding on partial validation response**");
+  assert.deepEqual(thinking[0].blocks.map((block) => block.type), ["paragraph", "paragraph"]);
+  assert.deepEqual(thinking[0].blocks.map((block) => block.styled), ["<b>Planning user notification strategy</b>", "<b>Deciding on partial validation response</b>"]);
+  assert(!finals.some((event) => event.partKind === "thinking" && event.text.trim().length === 0), "empty thinking parts are omitted");
   const text = finals.find((event) => event.partKind === "text");
   assert.equal(text.text, "authoritative final");
   assert.deepEqual(text.blocks.map((block) => block.type), ["paragraph"]);
@@ -301,7 +309,9 @@ test("settings, notifications, and links go through the backend with smoke-mode 
     desktopNotifications: true,
     syntaxHighlighting: true,
     appearanceMode: "dark",
+    selectedThemeName: "",
     reducedMotion: true,
+    sessionSettleDays: 30,
     modelOrder: expectedModelOrder,
   });
   await backend.waitForEvent("settings.changed", (event) => event.settings.compactTranscript === true);
@@ -316,6 +326,41 @@ test("settings, notifications, and links go through the backend with smoke-mode 
   assert.equal(link.data.suppressed, "smoke-mode");
   const badLink = await backend.send("open_link", { url: "javascript:alert(1)" });
   assert.equal(badLink.data.suppressed, "smoke-mode", "smoke mode reports without opening; scheme policy is enforced in desktop.mjs and covered by unit tests");
+});
+
+test("theme list and selection round-trip typed built-ins without changing independent settings", async (t) => {
+  const backend = await readyBackend(t);
+  const listed = await backend.send("themes_list");
+  assert.equal(listed.ok, true);
+  assert.deepEqual(listed.data.inventory.slice(0, 3).map((entry) => entry.identity), [
+    { kind: "builtin", name: "automatic" },
+    { kind: "builtin", name: "light" },
+    { kind: "builtin", name: "dark" },
+  ]);
+  const eventOffset = backend.events.length;
+  const selected = await backend.send("theme_select", { selection: { kind: "builtin", name: "dark" } });
+  assert.equal(selected.ok, true);
+  assert.deepEqual(
+    backend.events.slice(eventOffset).filter((entry) => entry.type === "settings.changed" || entry.type === "themes.changed").map((entry) => entry.type),
+    ["settings.changed", "themes.changed"],
+    "the confirmed appearance setting is published before the matching complete theme state",
+  );
+  assert.deepEqual(selected.data.requested, { kind: "builtin", name: "dark" });
+  assert.deepEqual(selected.data.effective, { kind: "builtin", name: "dark" });
+  assert.equal(selected.data.palette, null);
+  const event = await backend.waitForEvent("themes.changed", (entry) => entry.state.requested.name === "dark");
+  assert.deepEqual(event.state, selected.data);
+  const settingsEvent = await backend.waitForEvent("settings.changed", (entry) => entry.settings.appearanceMode === "dark");
+  assert.equal(settingsEvent.settings.selectedThemeName, "");
+  const settings = (await backend.send("settings_get")).data.settings;
+  assert.equal(settings.appearanceMode, "dark");
+  assert.equal(settings.selectedThemeName, "");
+  assert.equal(settings.sessionSettleDays, 30);
+  assert.deepEqual(settings.modelOrder, []);
+  const stale = await backend.send("theme_select", { selection: { kind: "external", name: "not-installed" } });
+  assert.equal(stale.error.code, "stale_request");
+  const malformed = await backend.send("theme_select", { selection: { kind: "builtin", name: "sepia" } });
+  assert.equal(malformed.error.code, "invalid_request");
 });
 
 test("models and thinking levels can be listed, selected, and cycled with bounded, validated results", async (t) => {

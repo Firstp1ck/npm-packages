@@ -301,7 +301,7 @@ async function readyBackend(t, options = {}) {
   const backend = await startBackend({ startupTimeoutMs: 1_000, ...options });
   t.after(async () => {
     if (backend.exit) return;
-    backend.child.kill("SIGKILL");
+    backend.kill("SIGKILL");
     await backend.exitPromise;
   });
   await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");

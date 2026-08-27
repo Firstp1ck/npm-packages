@@ -10,7 +10,7 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 `src/core.ts` owns shell-free bounded Git execution, repository preflight, status parsing, staged fingerprints and snapshots, commit-message validation, and commit/push plans.
 
-`src/native-generation.ts` owns strict command argument parsing, staged/branch/PR generation contexts, base resolution, untrusted model requests, closed-output parsers, artifact naming, snapshot revalidation, and secure transactional writes.
+`src/native-generation.ts` owns strict command argument parsing, staged/branch/PR generation contexts, commit capture and chunk bounds, UTF-8-safe partitioning, untrusted analysis/synthesis/correction requests, closed-output parsers, base resolution, artifact naming, snapshot revalidation, and secure transactional writes.
 
 The registered commands are:
 
@@ -28,12 +28,14 @@ The three generation handlers parse arguments before repository or model work, r
 A generation handler captures one immutable context, builds the corresponding `NativeModelRequest`, and calls:
 
 ```text
-ctx.modelRegistry.complete(ctx.model, request, { signal })
+ctx.modelRegistry.complete(ctx.model, request, { signal, maxTokens })
 ```
 
-It concatenates text response parts only, rejects aborted/error responses, parses the exact closed output, then passes the parsed value and the original context to the matching write helper. It never calls `pi.sendUserMessage`, expands prompt templates, registers an LLM-callable helper tool, or asks an agent loop to inspect the repository.
+It passes a request-specific provider output-token ceiling, concatenates text response parts only, rejects aborted/error responses, applies the relevant byte and safety checks, then passes the parsed value and the original context to the matching write helper. Chunk summaries use 4,096 output tokens, commit candidates and correction use 8,192, branch names use 128, and PR bodies use 32,768. The byte parsers remain authoritative because token-to-byte ratios vary by provider. It never calls `pi.sendUserMessage`, expands prompt templates, registers an LLM-callable helper tool, or asks an agent loop to inspect the repository.
 
-Commit generation may make one additional direct completion only when `parseNativeCommitOutput` rejects the first response for unsafe content or invalid closed framing. `buildCommitCorrectionModelRequest` reuses the original immutable staged snapshot and the standalone prompt's staged-only language, scope, type, length, body, and format guidance as native instructions. It adds the bounded first response and validation code/message as untrusted JSON. A first response above the 32 KiB output cap or containing unsafe control or bidirectional characters is omitted rather than copied into the correction request. The corrected response passes through the same parser, with no third call. Quality deviations bypass correction and remain in the artifacts. Provider, cancellation, Git, context, and transaction failures also bypass correction. Branch and PR commands remain single-completion operations.
+Commit context acquisition passes `COMMIT_GENERATION_CAPTURE_MAX_BYTES` explicitly. At or below `COMMIT_GENERATION_DIRECT_MAX_BYTES`, the handler preserves the existing one-request `buildCommitModelRequest` path. Above that threshold it calls `partitionStagedDiff`, then loops over the returned chunks with `await` so only one `buildCommitChunkAnalysisModelRequest` completion is active at a time. `parseCommitChunkSummaryOutput` trims each response and accepts any non-empty bounded safe text; delimiter and layout guidance is not enforced. After all summaries are retained in order, one `buildCommitSynthesisModelRequest` completion produces the candidate commit output. No chunk-analysis result is persisted.
+
+Final commit generation may make one additional completion when `parseNativeCommitOutput` rejects the direct response or final synthesis for unsafe content or invalid artifact separation. `buildCommitCorrectionModelRequest` receives the original staged context on the direct path. On the chunked path it receives `{ kind: "summaries", context, summaries }`, so final correction reuses the same validated summary array without a second partition or analysis loop. The builder adds the bounded first response and validation code/message as untrusted JSON. A first response above the 32 KiB output cap or containing unsafe control or bidirectional characters is omitted rather than copied into final correction. The corrected response passes through the same parser, with no further call. The 16 MiB ceiling therefore permits at most 35 requests. Quality-independent provider failures, cancellation, Git/context drift, and transaction failures bypass correction. Branch and PR commands remain single-completion operations and retain their existing input limits.
 
 The command API returns `Promise<void>` and has no nested-completion usage return channel. Provider usage remains present on each model response, but Pi's current extension-command API exposes no supported accounting sink for attaching it to the parent session. Do not invent transcript entries or agent turns as an accounting workaround. The user receives a warning before the one correction call so its extra provider work is visible.
 
@@ -43,11 +45,11 @@ The user receives a provider/privacy notice before context acquisition and a com
 
 ## Generation contexts and output contracts
 
-Commit generation binds canonical root, attached branch, HEAD, stable staged fingerprint, and the complete `--cached --binary` diff. Branch generation adds an optional validated pair of generated commit artifacts. PR generation binds current branch, HEAD, resolved base ref/OID, merge base, complete commit list and binary diff, plus an optional safe PR template.
+Commit generation binds canonical root, attached branch, HEAD, stable staged fingerprint, and the complete `--cached --binary` diff, with a 16 MiB capture ceiling. The direct threshold remains 1 MiB. Larger commit diffs are partitioned into complete contiguous UTF-8-safe ranges of at most 512 KiB with explicit byte offsets and SHA-256 digests. Summary output is limited to 16 KiB, provider requests carry finite output-token ceilings, and complete ordered coverage is revalidated before synthesis or correction. Branch generation retains its 1 MiB staged-input limit and adds an optional validated pair of generated commit artifacts. PR generation retains its combined 1 MiB context limit and binds current branch, HEAD, resolved base ref/OID, merge base, complete commit list and binary diff, plus an optional safe PR template.
 
-Model-facing repository data is JSON-serialized inside named untrusted blocks. System instructions define language, commit quality guidance, closed delimiters, and safety constraints. Repository data never becomes trusted instructions or shell text.
+Model-facing repository data and generated summaries are JSON-serialized inside named untrusted blocks. System instructions define language, commit quality guidance, preferred commit presentation, required branch/PR delimiters, and safety constraints. Repository data and summaries never become trusted instructions or shell text. Chunk summaries and commit messages are plain text with no required response shape.
 
-Accepted closed response shapes are:
+The preferred commit presentation is:
 
 ```text
 <<<SHORT>>>
@@ -56,6 +58,8 @@ Accepted closed response shapes are:
 <long commit message>
 <<<END>>>
 ```
+
+When the preferred commit presentation is absent, the first content line becomes the short artifact and the complete trimmed text becomes the long artifact. Branch and PR outputs retain these required shapes:
 
 ```text
 <<<BRANCH>>>
@@ -69,7 +73,7 @@ Accepted closed response shapes are:
 <<<END_PR_BODY>>>
 ```
 
-Commit prompts intentionally ask for stricter quality than commit parsers enforce. Parsers keep only the closed framing, non-empty content, byte bounds, and unsafe-character checks as blockers. Branch and PR parsers retain their documented validation contracts.
+Commit prompts intentionally ask for stricter quality than commit parsers enforce. Final commit parsers keep only the closed framing, non-empty content, byte bounds, and unsafe-character checks as blockers. Chunk summaries additionally require their exact closed framing and are rejected before synthesis when empty, padded, unsafe, or oversized. Branch and PR parsers retain their documented validation contracts.
 
 ## Artifact transaction contract
 
@@ -130,7 +134,7 @@ Git commands are argv arrays, never shell strings. Normal hooks and signing rema
 - `src/native-generation.ts` — native generation contexts, parsers, and artifact transactions
 - `tests/core.test.mjs` — temporary-repository Git and commit/push coverage
 - `tests/native-generation.test.mjs` — context, parser, drift, path, and rollback coverage
-- `tests/tui.test.mjs` — command registration, direct model calls, RPC behavior, shutdown, TUI transitions, and documentation contract
+- `tests/tui.test.mjs` — command registration, direct and chunked request orchestration, provider failure, cancellation, drift, correction reuse, RPC behavior, shutdown, TUI transitions, and documentation contract
 - `tests/package.test.mjs` — manifest dependency, registration, allowlist, and bundle contract
 
 ## Validation

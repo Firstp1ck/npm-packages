@@ -25,6 +25,7 @@ import { normalizeModel, normalizeModels, normalizeModelScope, normalizeThinking
 import { createResourceStore, resolveEffective, updateProfile, validateResources } from "../lib/backend/resources.mjs";
 import { applySamplingToPayload, samplingCapabilities, validateSamplingParams } from "../lib/backend/sampling.mjs";
 import { createSettingsStore, defaultSettings } from "../lib/backend/settings.mjs";
+import { createStateStore, sessionSettlementKey, validateState } from "../lib/backend/state.mjs";
 import qtWebUiHelper, { RESPONSE_PREFIX } from "../lib/pi-extension/qt-webui-helper.mjs";
 
 const STYLED_TAG = /<\/?([a-z]+)(?:\s+href="[^"]*")?>/g;
@@ -80,15 +81,36 @@ test("validateRequest bounds prompt, dialog answers, settings, links, and notifi
   assert.throws(() => answer({ value: "x".repeat(LIMITS.maxDialogValueCharacters + 1) }), /exceeds/);
 
   const settings = (values) => validateRequest({ v: 1, id: "s", type: "settings_set", values });
-  assert.deepEqual(settings({ compactTranscript: true, appearanceMode: "dark", reducedMotion: true }).values, { compactTranscript: true, appearanceMode: "dark", reducedMotion: true });
+  assert.deepEqual(settings({ compactTranscript: true, appearanceMode: "dark", selectedThemeName: "bundle-theme", reducedMotion: true }).values, { compactTranscript: true, appearanceMode: "dark", selectedThemeName: "bundle-theme", reducedMotion: true });
   assert.throws(() => settings({ unknown: true }), /unknown setting/);
   assert.throws(() => settings({ compactTranscript: "yes" }), /must be boolean/);
   assert.throws(() => settings({ appearanceMode: "sepia" }), /must be one of automatic, light, dark/);
+  assert.equal(settings({ selectedThemeName: "" }).values.selectedThemeName, "");
+  assert.throws(() => settings({ selectedThemeName: "bad/name" }), /no slash/);
+  assert.throws(() => settings({ selectedThemeName: "x".repeat(LIMITS.maxThemeNameCharacters + 1) }), /1-64/);
+  assert.equal(settings({ sessionSettleDays: 1 }).values.sessionSettleDays, 1);
+  assert.equal(settings({ sessionSettleDays: 3650 }).values.sessionSettleDays, 3650);
+  for (const value of [0, 3651, 1.5, "30", null]) {
+    assert.throws(() => settings({ sessionSettleDays: value }), /whole number|between 1 and 3650/);
+  }
   assert.throws(() => settings([]), /values object/);
 
   assert.throws(() => validateRequest({ v: 1, id: "l", type: "open_link", url: "x".repeat(LIMITS.maxLinkUrlCharacters + 1) }), /exceeds/);
   assert.throws(() => validateRequest({ v: 1, id: "n", type: "notify", title: "x".repeat(LIMITS.maxNotificationCharacters + 1) }), /exceeds/);
   assert.equal(validateRequest({ v: 1, id: "n", type: "notify", title: "done" }).body, "");
+});
+
+test("theme requests require typed, bounded identities", () => {
+  assert.deepEqual(validateRequest({ v: 1, id: "t", type: "themes_list" }), { id: "t", type: "themes_list" });
+  assert.deepEqual(validateRequest({ v: 1, id: "t", type: "theme_select", selection: { kind: "external", name: "light" } }), {
+    id: "t", type: "theme_select", selection: { kind: "external", name: "light" },
+  });
+  assert.deepEqual(validateRequest({ v: 1, id: "t", type: "theme_select", selection: { kind: "builtin", name: "automatic" } }).selection, { kind: "builtin", name: "automatic" });
+  for (const selection of [null, "dark", {}, { kind: "other", name: "dark" }, { kind: "builtin", name: "sepia" }, { kind: "external", name: "bad/name" }]) {
+    assert.throws(() => validateRequest({ v: 1, id: "t", type: "theme_select", selection }), (error) => error.code === "invalid_request");
+  }
+  assert(REQUEST_TYPES.includes("themes_list"));
+  assert(REQUEST_TYPES.includes("theme_select"));
 });
 
 test("validateRequest normalizes bounded modelOrder setting writes", () => {
@@ -163,19 +185,89 @@ test("resource profiles resolve session then exact model then global without col
 
   const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resources-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const store = createResourceStore({ directory });
-  store.update("global", {}, "sampling", { temperature: 0.7, top_k: 99 });
-  store.update("model", { provider: "p", modelId: "m" }, "tools", []);
-  assert.deepEqual(store.profileFor("global").sampling, { temperature: 0.7, top_k: 99 }, "unsupported values stay persisted");
-  assert.deepEqual(store.profileFor("model", "p", "m").tools, []);
-  store.update("model", { provider: "p", modelId: "m" }, "tools", null);
-  assert.equal(Object.hasOwn(store.read().value.models, "p/m"), false, "an all-inherit model profile is removed");
+  const sharedPath = path.join(directory, "webui-settings.json");
+  const store = createResourceStore({ directory, sharedPath });
+  await store.update("global", {}, "sampling", { temperature: 0.7, top_k: 99 });
+  await store.update("model", { provider: "p", modelId: "m" }, "tools", []);
+  assert.deepEqual((await store.profileFor("global")).sampling, { temperature: 0.7, top_k: 99 }, "unsupported values stay persisted locally");
+  assert.deepEqual((await store.profileFor("model", "p", "m")).tools, []);
+  await store.update("model", { provider: "p", modelId: "m" }, "tools", null);
+  assert.equal(Object.hasOwn((await store.read()).value.models, "p/m"), false, "an all-inherit canonical model profile is removed");
   const mode = (await stat(store.path)).mode & 0o777;
   assert.equal(mode, 0o600);
+  assert.equal(store.sharedPath, sharedPath);
   const invalid = validateResources({ global: { tools: "bad", sampling: { temperature: 3, top_k: 50 } }, models: {} });
   assert.deepEqual(invalid.value.global.sampling, { top_k: 50 });
+  assert.equal(invalid.value.migrations.webuiToolSkillState, false);
   assert(invalid.problems.length >= 2);
   assert.deepEqual(updateProfile(global, "sampling", { temperature: null, seed: 4 }).sampling, { top_p: 0.9, seed: 4 });
+});
+
+test("resource store migrates legacy tool and skill profiles once without overriding canonical values or resurrecting clears", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-migration-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const localPath = path.join(directory, "resources.json");
+  const sharedPath = path.join(directory, "webui-settings.json");
+  await writeFile(localPath, JSON.stringify({
+    version: 1,
+    global: { tools: ["legacy-global-tool"], skills: ["legacy-global-skill"], sampling: { temperature: 0.7 } },
+    models: {
+      "provider/model": { tools: ["legacy-model-tool"], skills: ["legacy-model-skill"], sampling: { seed: 9 } },
+    },
+  }));
+  await writeFile(sharedPath, JSON.stringify({
+    version: 8,
+    retained: { owner: "pi-webui" },
+    resourceDefaults: {
+      tools: { enabledTools: ["canonical-global-tool"] },
+      skills: { enabledSkills: null },
+      modelProfiles: [{
+        provider: "provider",
+        modelId: "model",
+        tools: { enabledTools: ["canonical-model-tool"] },
+        skills: { enabledSkills: null },
+      }],
+    },
+  }));
+
+  const store = createResourceStore({ directory, sharedPath });
+  const migrated = await store.read();
+  assert.deepEqual(migrated.value.global, {
+    tools: ["canonical-global-tool"],
+    skills: ["legacy-global-skill"],
+    sampling: { temperature: 0.7 },
+  }, "canonical values win while null fields receive the legacy fallback once");
+  assert.deepEqual(migrated.value.models["provider/model"], {
+    tools: ["canonical-model-tool"],
+    skills: ["legacy-model-skill"],
+    sampling: { seed: 9 },
+  });
+  const canonicalAfterMigration = JSON.parse(await readFile(sharedPath, "utf8"));
+  assert.deepEqual(canonicalAfterMigration.retained, { owner: "pi-webui" }, "the canonical latest-snapshot merge preserves unrelated settings");
+  assert.equal(JSON.parse(await readFile(localPath, "utf8")).migrations.webuiToolSkillState, true);
+
+  const localAfterMigration = JSON.parse(await readFile(localPath, "utf8"));
+  localAfterMigration.global.skills = ["must-not-migrate-again"];
+  await writeFile(localPath, JSON.stringify(localAfterMigration));
+  assert.deepEqual((await store.read()).value.global.skills, ["legacy-global-skill"], "the bounded marker prevents repeated fallback migration");
+
+  await store.update("model", { provider: "provider", modelId: "model" }, "tools", null);
+  await store.update("model", { provider: "provider", modelId: "model" }, "skills", null);
+  const cleared = await store.read();
+  assert.equal(cleared.value.models["provider/model"].tools, null);
+  assert.equal(cleared.value.models["provider/model"].skills, null, "canonical inherit does not resurrect retained legacy selections");
+  assert.deepEqual(cleared.value.models["provider/model"].sampling, { seed: 9 });
+});
+
+test("canonical tool writes preserve configured names that are temporarily unavailable", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-unavailable-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sharedPath = path.join(directory, "webui-settings.json");
+  const store = createResourceStore({ directory, env: { PI_WEBUI_SETTINGS_FILE: sharedPath } });
+  assert.equal(store.sharedPath, sharedPath, "PI_WEBUI_SETTINGS_FILE selects the canonical shared store");
+  await store.update("global", {}, "tools", ["read", "temporarily-missing"]);
+  await store.update("global", {}, "tools", ["bash"], { visibleNames: ["read", "bash"] });
+  assert.deepEqual((await store.read()).value.global.tools, ["bash", "temporarily-missing"]);
 });
 
 test("sampling capabilities validate every parameter and serialize exact provider payload shapes", () => {
@@ -201,6 +293,7 @@ test("Pi helper persists enabled-name session overrides and translates effective
   let activeTools = ["read", "bash"];
   let appendFailure = false;
   let persisted = true;
+  let branchEntries = [];
   const allTools = [{ name: "read", description: "Read" }, { name: "bash", description: "Shell" }];
   const allSkills = [
     { name: "review", description: "Review", filePath: "/skills/review/SKILL.md" },
@@ -225,7 +318,7 @@ test("Pi helper persists enabled-name session overrides and translates effective
       { model: { provider: "scope", id: "first" } },
     ],
     thinkingLevel: "off",
-    sessionManager: { getBranch: () => [], isPersisted: () => persisted },
+    sessionManager: { getBranch: () => branchEntries, isPersisted: () => persisted },
     getSystemPromptOptions: () => ({ skills: allSkills }),
     ui: { notify: (message) => notifications.push(message) },
   };
@@ -235,7 +328,11 @@ test("Pi helper persists enabled-name session overrides and translates effective
     session: { tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 } },
     effective: { tools: [], skills: ["review"], sampling: { temperature: 0.3, top_k: 20 } },
   } }), ctx);
-  assert.deepEqual(entries.at(-1).data, { version: 1, tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 } }, "stored session values remain distinct from effective values");
+  assert.deepEqual(entries.slice(-3), [
+    { type: "webui-tools-config", data: { version: 2, mode: "explicit", enabledTools: [] } },
+    { type: "webui-skills-config", data: { version: 2, mode: "explicit", enabledSkills: [] } },
+    { type: "qt-webui-resources", data: { version: 1, tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 } } },
+  ], "tool and skill overrides use Pi Web UI entries while sampling retains the Qt entry");
   assert.deepEqual(activeTools, []);
   const answer = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
   assert.deepEqual(answer.data.session, { tools: [], skills: [], sampling: { temperature: 0.3, top_k: 20 }, durability: { durable: true, reason: "" } });
@@ -257,6 +354,10 @@ test("Pi helper persists enabled-name session overrides and translates effective
   const reset = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
   assert.equal(reset.data.session.tools, null);
   assert.equal(reset.data.session.skills, null);
+  assert.deepEqual(entries.slice(-3, -1), [
+    { type: "webui-tools-config", data: { version: 2, mode: "inherit" } },
+    { type: "webui-skills-config", data: { version: 2, mode: "inherit" } },
+  ], "null session selections persist Pi Web UI's explicit inherit mode");
   assert.deepEqual(reset.data.skills.enabled, [], "an intentional empty effective selection is not treated as inherit");
   assert.deepEqual(activeTools, ["read", "bash"], "null effective tools restore Pi defaults");
 
@@ -281,6 +382,20 @@ test("Pi helper persists enabled-name session overrides and translates effective
     reason: "This Pi session is ephemeral; resource overrides apply only until it ends.",
   });
   assert.deepEqual(activeTools, [], "an explicitly non-durable override still applies in memory");
+
+  appendFailure = false;
+  persisted = true;
+  branchEntries = [
+    { type: "custom", customType: "qt-webui-resources", data: { version: 1, tools: ["bash"], skills: ["search"], sampling: { temperature: 0.4 } } },
+    { type: "custom", customType: "webui-tools-config", data: { version: 2, mode: "inherit" } },
+    { type: "custom", customType: "webui-skills-config", data: { disabledSkills: ["search"] } },
+  ];
+  await handlers.get("session_start")({}, ctx);
+  await apply(JSON.stringify({ requestId: "restore", action: "state" }), ctx);
+  const restored = JSON.parse(notifications.at(-1).slice(RESPONSE_PREFIX.length));
+  assert.equal(restored.data.session.tools, null, "a shared inherit entry suppresses the legacy Qt tool fallback");
+  assert.deepEqual(restored.data.session.skills, ["review"], "legacy Pi Web UI disabledSkills entries translate to enabled names");
+  assert.deepEqual(restored.data.session.sampling, { temperature: 0.4 }, "Qt sampling still restores from its legacy entry");
 
   ctx.scopedModels = Array.from({ length: 514 }, (_, index) => ({
     model: { provider: "scope", id: `model-${index}` },
@@ -503,32 +618,41 @@ test("settings store uses XDG config, private permissions, atomic writes, and va
   const store = createSettingsStore({ env: { XDG_CONFIG_HOME: home } });
   assert.equal(store.path, path.join(home, "qt-webui", "settings.json"));
   assert.deepEqual(store.read(), { settings: defaultSettings(), problems: [], path: store.path });
+  assert.equal(defaultSettings().selectedThemeName, "");
+  assert.equal(defaultSettings().sessionSettleDays, 30);
   assert.deepEqual(defaultSettings().modelOrder, []);
 
   const modelOrder = ["anthropic/claude-sonnet", "openrouter/anthropic/claude-sonnet"];
-  const written = store.write({ compactTranscript: true, appearanceMode: "dark", reducedMotion: true, modelOrder: [...modelOrder, modelOrder[0]] });
+  const written = store.write({ compactTranscript: true, appearanceMode: "dark", selectedThemeName: "bundle-theme", reducedMotion: true, sessionSettleDays: 45, modelOrder: [...modelOrder, modelOrder[0]] });
   assert.equal(written.settings.compactTranscript, true);
   assert.equal(written.settings.appearanceMode, "dark");
+  assert.equal(written.settings.selectedThemeName, "bundle-theme");
   assert.equal(written.settings.reducedMotion, true);
+  assert.equal(written.settings.sessionSettleDays, 45);
   assert.deepEqual(written.settings.modelOrder, modelOrder);
   assert.equal((await stat(store.directory)).mode & 0o777, 0o700);
   assert.equal((await stat(store.path)).mode & 0o777, 0o600);
-  assert.deepEqual(JSON.parse(await readFile(store.path, "utf8")), { ...defaultSettings(), compactTranscript: true, appearanceMode: "dark", reducedMotion: true, modelOrder });
+  assert.deepEqual(JSON.parse(await readFile(store.path, "utf8")), { ...defaultSettings(), compactTranscript: true, appearanceMode: "dark", selectedThemeName: "bundle-theme", reducedMotion: true, sessionSettleDays: 45, modelOrder });
+  assert.equal(store.read().settings.sessionSettleDays, 45);
   assert.deepEqual(store.read().settings.modelOrder, modelOrder);
   assert.throws(() => store.write({ unknown: 1 }), /unknown setting/);
   assert.throws(() => store.write({ showThinking: "no" }), /expected boolean/);
   assert.throws(() => store.write({ appearanceMode: "sepia" }), /expected one of automatic, light, dark/);
+  assert.throws(() => store.write({ selectedThemeName: "bad/name" }), /no slash/);
+  assert.throws(() => store.write({ sessionSettleDays: 0 }), /expected between 1 and 3650/);
+  assert.throws(() => store.write({ sessionSettleDays: 30.5 }), /expected a whole number/);
   assert.throws(() => store.write({ modelOrder: ["not-an-identity"] }), /provider\/model-id/);
 
   await writeFile(store.path, "{not json");
   assert.match(store.read().problems[0], /not valid JSON/);
   assert.deepEqual(store.read().settings, defaultSettings());
-  await writeFile(store.path, JSON.stringify({ compactTranscript: true, appearanceMode: "light", extra: 1, showThinking: 3 }));
+  await writeFile(store.path, JSON.stringify({ compactTranscript: true, appearanceMode: "light", sessionSettleDays: 3651, extra: 1, showThinking: 3 }));
   const partial = store.read();
   assert.equal(partial.settings.compactTranscript, true);
   assert.equal(partial.settings.appearanceMode, "light");
+  assert.equal(partial.settings.sessionSettleDays, 30);
   assert.equal(partial.settings.showThinking, true);
-  assert.equal(partial.problems.length, 2);
+  assert.equal(partial.problems.length, 3);
   await writeFile(store.path, `{"compactTranscript":true,"pad":"${"x".repeat(LIMITS.maxSettingsFileBytes)}"}`);
   assert.match(store.read().problems[0], /exceeds/);
   assert.equal(store.read().settings.compactTranscript, false);
@@ -558,6 +682,115 @@ test("settings reads ignore malformed persisted modelOrder values and report eac
   const deduplicated = store.read();
   assert.deepEqual(deduplicated.settings.modelOrder, ["provider/model", "provider/other"]);
   assert.deepEqual(deduplicated.problems, []);
+});
+
+test("automatic settlement state uses exact elapsed thresholds, persistent restore grace, and hashed bounded metadata", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-auto-settlement-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const dayMs = 24 * 60 * 60 * 1000;
+  let clock = 2_000_000_000_000;
+  const exactIdentity = "/private/sessions/exact.jsonl";
+  const belowIdentity = "/private/sessions/below.jsonl";
+  const newerIdentity = "/private/sessions/newer.jsonl";
+  const rows = [
+    { identity: exactIdentity, modified: clock - 30 * dayMs },
+    { identity: belowIdentity, modified: clock - 30 * dayMs + 1 },
+    { identity: newerIdentity, modified: clock - dayMs },
+  ];
+  const store = createStateStore({ directory, now: () => clock });
+
+  let settled = store.reconcileAutomaticSessionSettlement(rows, { thresholdMs: 30 * dayMs, nowMs: clock });
+  assert.equal(settled.has(sessionSettlementKey(exactIdentity)), true, "a session settles at the exact threshold");
+  assert.equal(settled.has(sessionSettlementKey(belowIdentity)), false, "one millisecond below the threshold remains working");
+  assert.equal(settled.has(sessionSettlementKey(newerIdentity)), false, "newer activity remains working");
+
+  assert.equal(store.setSessionSettled(exactIdentity, false), false);
+  const exactKey = sessionSettlementKey(exactIdentity);
+  assert.equal(store.read().value.sessionRestoreGrace[exactKey], clock);
+  const stateText = await readFile(store.path, "utf8");
+  assert.equal(stateText.includes(exactIdentity), false, "settlement and restore-grace metadata never persist a session path");
+  assert.match(exactKey, /^[0-9a-f]{64}$/);
+
+  const restarted = createStateStore({ directory, now: () => clock });
+  clock += 10 * dayMs - 1;
+  settled = restarted.reconcileAutomaticSessionSettlement([rows[0]], { thresholdMs: 10 * dayMs, nowMs: clock });
+  assert.equal(settled.has(exactKey), false, "restore grace survives restart until the current threshold");
+  clock += 1;
+  settled = restarted.reconcileAutomaticSessionSettlement([rows[0]], { thresholdMs: 10 * dayMs, nowMs: clock });
+  assert.equal(settled.has(exactKey), true, "lowering the threshold changes existing grace and expires it exactly");
+  assert.equal(restarted.read().value.sessionRestoreGrace[exactKey], undefined, "automatic settlement clears expired grace");
+
+  restarted.setSessionSettled(exactIdentity, false);
+  const restoredAt = clock;
+  settled = restarted.reconcileAutomaticSessionSettlement([rows[0]], { thresholdMs: 30 * dayMs, nowMs: restoredAt - dayMs });
+  assert.equal(settled.has(exactKey), false, "a backward wall-clock movement clamps elapsed grace to zero");
+  assert.equal(restarted.read().value.sessionRestoreGrace[exactKey], restoredAt, "rollback protection keeps the original restoration timestamp");
+  settled = restarted.reconcileAutomaticSessionSettlement([rows[0]], { thresholdMs: 30 * dayMs, nowMs: restoredAt + 30 * dayMs - 1 });
+  assert.equal(settled.has(exactKey), false);
+  settled = restarted.reconcileAutomaticSessionSettlement([rows[0]], { thresholdMs: 30 * dayMs, nowMs: restoredAt + 30 * dayMs });
+  assert.equal(settled.has(exactKey), true, "grace expires at the exact threshold");
+  restarted.setSessionSettled(exactIdentity, false);
+  restarted.setSessionSettled(exactIdentity, true);
+  assert.equal(restarted.read().value.sessionRestoreGrace[exactKey], undefined, "manual settlement clears grace");
+
+  const malformed = validateState({ automaticSettledSessions: {}, sessionRestoreGrace: { bad: 1, [exactKey]: -1 } });
+  assert.deepEqual(malformed.value.automaticSettledSessions, []);
+  assert.deepEqual(malformed.value.sessionRestoreGrace, {});
+  assert(malformed.problems.some((problem) => problem.includes("automaticSettledSessions must be an array")));
+  assert(malformed.problems.some((problem) => problem.includes("invalid identity or timestamp")));
+  const tooMany = Object.fromEntries(Array.from({ length: LIMITS.maxSessionRestoreGraceEntries + 2 }, (_, index) => [sessionSettlementKey(`/session/${index}`), index + 1]));
+  assert.equal(Object.keys(validateState({ sessionRestoreGrace: tooMany }).value.sessionRestoreGrace).length, LIMITS.maxSessionRestoreGraceEntries);
+  const tooManyAutomatic = Array.from({ length: LIMITS.maxAutomaticSettledSessions + 2 }, (_, index) => sessionSettlementKey(`/automatic/${index}`));
+  assert.equal(validateState({ automaticSettledSessions: tooManyAutomatic }).value.automaticSettledSessions.length, LIMITS.maxAutomaticSettledSessions);
+  assert.equal(validateState({ activeTab: -1 }).value.activeTab, -1, "the empty workspace selection is persisted");
+  assert.equal(validateState({ activeTab: -2 }).value.activeTab, 0, "unknown negative selections retain legacy startup behavior");
+});
+
+test("automatic settlement has an independent bounded capacity and Restore clears both collections", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-auto-settlement-cap-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const nowMs = 2_000_000_000_000;
+  const store = createStateStore({ directory, now: () => nowMs });
+  const manualKeys = Array.from({ length: LIMITS.maxSettledSessions }, (_, index) => sessionSettlementKey(`/manual/${index}.jsonl`));
+  store.update((state) => {
+    state.settledSessions = manualKeys;
+    return state;
+  });
+
+  const automaticIdentity = "/automatic/eligible.jsonl";
+  let settled = store.reconcileAutomaticSessionSettlement([{ identity: automaticIdentity, modified: 0 }], { thresholdMs: 1, nowMs });
+  const automaticKey = sessionSettlementKey(automaticIdentity);
+  assert.equal(settled.has(automaticKey), true, "automatic aging still works when manual settlement is at capacity");
+  assert.equal(store.read().value.settledSessions.length, LIMITS.maxSettledSessions, "automatic aging does not consume manual capacity");
+  assert.deepEqual(store.read().value.automaticSettledSessions, [automaticKey]);
+
+  store.update((state) => {
+    state.settledSessions[0] = automaticKey;
+    state.automaticSettledSessions = Array.from({ length: LIMITS.maxAutomaticSettledSessions }, (_, index) => sessionSettlementKey(`/automatic/cap-${index}.jsonl`));
+    state.automaticSettledSessions[0] = automaticKey;
+    return state;
+  });
+  assert.equal(store.setSessionSettled(automaticIdentity, false), false);
+  let state = store.read().value;
+  assert.equal(state.settledSessions.includes(automaticKey), false, "Restore removes the manual identity");
+  assert.equal(state.automaticSettledSessions.includes(automaticKey), false, "Restore removes the automatic identity");
+  assert.equal(state.sessionRestoreGrace[automaticKey], nowMs);
+
+  const manualIdentity = "/manual/after-automatic-cap.jsonl";
+  assert.equal(store.setSessionSettled(manualIdentity, true), true, "manual Settle can use its remaining slot while automatic metadata is at capacity");
+  state = store.read().value;
+  assert.equal(state.settledSessions.length, LIMITS.maxSettledSessions);
+  assert.equal(state.automaticSettledSessions.length, LIMITS.maxAutomaticSettledSessions - 1);
+  assert.throws(() => store.setSessionSettled("/manual/over-cap.jsonl", true), /at most 2048 sessions can be settled/);
+
+  store.update((value) => {
+    value.automaticSettledSessions.push(sessionSettlementKey("/automatic/refill.jsonl"));
+    return value;
+  });
+  settled = store.reconcileAutomaticSessionSettlement([{ identity: "/automatic/over-cap.jsonl", modified: 0 }], { thresholdMs: 1, nowMs });
+  assert.equal(settled.has(sessionSettlementKey("/automatic/over-cap.jsonl")), false, "automatic settlement remains bounded at its independent cap");
+  const metadata = JSON.stringify(store.read().value);
+  for (const sessionPath of [automaticIdentity, manualIdentity, "/automatic/over-cap.jsonl"]) assert.equal(metadata.includes(sessionPath), false);
 });
 
 test("settings directory falls back to ~/.config when XDG_CONFIG_HOME is relative or unset", async () => {

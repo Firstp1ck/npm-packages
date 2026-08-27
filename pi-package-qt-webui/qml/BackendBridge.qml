@@ -34,6 +34,14 @@ Scope {
     readonly property string homeDirectory: String(Quickshell.env("HOME") || "")
     readonly property int maxTabs: 8
     readonly property int maxResourceNames: 512
+    // The saved-session catalog is global across Pi projects. It is loaded one bounded backend
+    // page at a time and replaced only after a complete successful pass.
+    property var sessionCatalog: []
+    property bool sessionCatalogLoading: false
+    property string sessionCatalogError: ""
+    property int sessionCatalogGeneration: 0
+    property var sessionSettlementPending: ({})
+    property bool sessionSettleAllPending: false
     // Tabs: one Pi session per tab. Only the active tab is materialized here; the backend keeps a
     // bounded mirror of every tab and replays it when the active tab changes.
     property var tabs: []
@@ -88,9 +96,27 @@ Scope {
     property bool desktopNotifications: true
     property string appearanceMode: "automatic"
     property bool reducedMotion: false
+    readonly property int maxThemeInventory: 131
+    readonly property int maxThemeDiagnostics: 64
+    property var themeState: ({
+        generation: 0,
+        requested: { kind: "builtin", name: "automatic" },
+        effective: { kind: "builtin", name: "automatic" },
+        fallbackReason: "",
+        inventory: [
+            { identity: { kind: "builtin", name: "automatic" }, label: "Automatic" },
+            { identity: { kind: "builtin", name: "light" }, label: "Light" },
+            { identity: { kind: "builtin", name: "dark" }, label: "Dark" }
+        ],
+        diagnostics: [],
+        palette: null,
+        projectTrusted: false
+    })
+    property int sessionSettleDays: 30
+    property bool sessionSettleDaysPending: false
     property var modelOrder: []
     property string portalColorScheme: normalizedPortalColorScheme(Quickshell.env("QT_WEBUI_SYSTEM_COLOR_SCHEME"))
-    readonly property int desktopCornerRadius: validatedDesktopMetric(Quickshell.env("QT_WEBUI_DESKTOP_CORNER_RADIUS"), 8)
+    readonly property int desktopCornerRadius: validatedDesktopMetric(Quickshell.env("QT_WEBUI_DESKTOP_CORNER_RADIUS"), 0)
     readonly property int desktopEdgeGap: validatedDesktopMetric(Quickshell.env("QT_WEBUI_DESKTOP_EDGE_GAP"), 8)
     property bool windowActive: true
     property int requestSerial: 0
@@ -122,6 +148,7 @@ Scope {
     signal sequenceRan(string sequenceId)
     signal tabSwitched(string tabId)
     signal sessionsLoaded(var data)
+    signal sessionCatalogLoaded(var sessions)
 
     ListModel {
         id: transcript
@@ -264,7 +291,7 @@ Scope {
         return configured > 0 ? configured : defaultRequestTimeoutMs
     }
 
-    function request(type, fields, callback) {
+    function request(type, fields, callback, sessionScopedOverride) {
         if (!backendProcess.running) {
             if (callback) callback({ ok: false, error: { code: "not_running", message: "Backend is not running" } })
             return ""
@@ -283,7 +310,7 @@ Scope {
             callback: callback || null,
             deadline: Date.now() + timeoutFor(type),
             originTab: activeTabId,
-            sessionScoped: sessionScopedRequestTypes[type] === true
+            sessionScoped: sessionScopedOverride === undefined ? sessionScopedRequestTypes[type] === true : sessionScopedOverride === true
         }
         pendingRequests = pending
         pendingRequestCount++
@@ -490,6 +517,69 @@ Scope {
         return request("state", {}, () => {})
     }
 
+    function validThemeIdentity(identity) {
+        if (!identity || typeof identity !== "object") return false
+        if (identity.kind !== "builtin" && identity.kind !== "external") return false
+        const name = String(identity.name || "")
+        if (name.length < 1 || name.length > 64 || name.indexOf("/") !== -1 || name.trim() !== name) return false
+        if (identity.kind === "builtin" && ["automatic", "light", "dark"].indexOf(name) === -1) return false
+        return true
+    }
+
+    function resetThemeGeneration() {
+        themeState = Object.assign({}, themeState, { generation: 0 })
+    }
+
+    function applyThemeState(data) {
+        if (!data || typeof data !== "object" || !Number.isInteger(data.generation) || data.generation < 0) return false
+        if (themeState && Number.isInteger(themeState.generation) && data.generation < themeState.generation) return false
+        if (!validThemeIdentity(data.requested) || !validThemeIdentity(data.effective)) return false
+        if (!Array.isArray(data.inventory) || data.inventory.length > maxThemeInventory
+                || !Array.isArray(data.diagnostics) || data.diagnostics.length > maxThemeDiagnostics) return false
+        if (data.palette !== null && (!data.palette || typeof data.palette !== "object" || Array.isArray(data.palette))) return false
+        for (const entry of data.inventory) {
+            if (!entry || typeof entry !== "object" || !validThemeIdentity(entry.identity)
+                    || typeof entry.label !== "string" || entry.label.length > 64) return false
+        }
+        themeState = {
+            generation: data.generation,
+            requested: { kind: data.requested.kind, name: data.requested.name },
+            effective: { kind: data.effective.kind, name: data.effective.name },
+            fallbackReason: typeof data.fallbackReason === "string" ? boundedText(data.fallbackReason, 64) : "",
+            inventory: data.inventory.slice(0, maxThemeInventory),
+            diagnostics: data.diagnostics.slice(0, maxThemeDiagnostics),
+            palette: data.palette,
+            projectTrusted: data.projectTrusted === true
+        }
+        return true
+    }
+
+    function listThemes(callback) {
+        return request("themes_list", {}, response => {
+            if (response.ok && !applyThemeState(response.data)) {
+                response = { ok: false, error: { code: "invalid_response", message: "The backend returned invalid theme state" } }
+            }
+            if (!response.ok) postNotice("error", "Could not refresh themes: " + response.error.message)
+            if (callback) callback(response)
+        }, false)
+    }
+
+    function selectTheme(identity, callback) {
+        if (!validThemeIdentity(identity)) {
+            const response = { ok: false, error: { code: "invalid_request", message: "Choose a valid theme" } }
+            if (callback) callback(response)
+            return false
+        }
+        request("theme_select", { "selection": { "kind": identity.kind, "name": identity.name } }, response => {
+            if (response.ok && !applyThemeState(response.data)) {
+                response = { ok: false, error: { code: "invalid_response", message: "The backend returned invalid theme state" } }
+            }
+            if (!response.ok) postNotice("error", "Could not select theme: " + response.error.message)
+            if (callback) callback(response)
+        }, false)
+        return true
+    }
+
     function updateSetting(name, value) {
         const values = {}
         values[name] = value
@@ -497,6 +587,33 @@ Scope {
             if (!response.ok) postNotice("error", "Could not save setting: " + response.error.message)
             else applySettings(response.data.settings)
         })
+    }
+
+    function setSessionSettleDays(value, callback) {
+        const days = Number(value)
+        if (sessionSettleDaysPending || !Number.isInteger(days) || days < 1 || days > 3650) {
+            if (callback) callback({ ok: false, error: { code: "invalid_request", message: "Enter a whole number from 1 to 3,650" } })
+            return false
+        }
+        sessionSettleDaysPending = true
+        request("settings_set", { "values": { "sessionSettleDays": days } }, response => {
+            sessionSettleDaysPending = false
+            if (!response.ok) {
+                postNotice("error", "Could not save automatic settlement: " + response.error.message)
+            } else if (!response.data || !response.data.settings
+                    || !Number.isInteger(response.data.settings.sessionSettleDays)
+                    || response.data.settings.sessionSettleDays < 1
+                    || response.data.settings.sessionSettleDays > 3650) {
+                response = { ok: false, error: { code: "invalid_response", message: "The backend returned an invalid settlement setting" } }
+                postNotice("error", response.error.message)
+            } else {
+                applySettings(response.data.settings)
+                refreshSessionCatalog()
+                postNotice("info", "Automatic settlement: " + sessionSettleDays + " days")
+            }
+            if (callback) callback(response)
+        })
+        return true
     }
 
     function applySettings(settings) {
@@ -507,6 +624,7 @@ Scope {
         if (typeof settings.syntaxHighlighting === "boolean") syntaxHighlighting = settings.syntaxHighlighting
         if (["automatic", "light", "dark"].indexOf(settings.appearanceMode) !== -1) appearanceMode = settings.appearanceMode
         if (typeof settings.reducedMotion === "boolean") reducedMotion = settings.reducedMotion
+        if (Number.isInteger(settings.sessionSettleDays) && settings.sessionSettleDays >= 1 && settings.sessionSettleDays <= 3650) sessionSettleDays = settings.sessionSettleDays
         if (Array.isArray(settings.modelOrder)) modelOrder = settings.modelOrder.slice(0, maxModels)
     }
 
@@ -518,8 +636,20 @@ Scope {
         })
     }
 
-    function notifyDesktop(title, body) {
-        if (!desktopNotifications || windowActive) return false
+    function tabSessionIsSettled(tabId) {
+        const id = String(tabId || "")
+        if (id.length === 0) return false
+        for (const session of sessionCatalog) {
+            if (!session || session.settled !== true) continue
+            const tab = sessionTab(session)
+            if (tab && String(tab.id || "") === id) return true
+        }
+        return false
+    }
+
+    function notifyDesktop(title, body, sourceTabId) {
+        const tabId = sourceTabId === undefined ? activeTabId : String(sourceTabId || "")
+        if (!desktopNotifications || windowActive || tabSessionIsSettled(tabId)) return false
         request("notify", { "title": boundedText(title, 256), "body": boundedText(body || "", 256) }, response => {
             if (smokeMode && response.ok) console.log("QT_WEBUI_SMOKE_NOTIFICATION_REQUESTED")
         })
@@ -927,6 +1057,7 @@ Scope {
         })
     }
 
+    // Legacy workspace-only listing used by the existing resume picker and command palette.
     function listSessions(callback) {
         if (!ready) return false
         request("sessions_list", {}, response => {
@@ -935,6 +1066,167 @@ Scope {
             if (callback) callback(response)
         })
         return true
+    }
+
+    function scheduleSessionCatalogRefresh() {
+        if (!backendReady || quitting) return false
+        sessionCatalogRefreshTimer.restart()
+        return true
+    }
+
+    function refreshSessionCatalog() {
+        if (!backendReady || quitting) return false
+        sessionCatalogRefreshTimer.stop()
+        const generation = ++sessionCatalogGeneration
+        sessionCatalogLoading = true
+        sessionCatalogError = ""
+        loadSessionCatalogPage(generation, 0, [], ({}))
+        return true
+    }
+
+    function loadSessionCatalogPage(generation, offset, merged, seen) {
+        request("sessions_list", { "scope": "all", "offset": offset }, response => {
+            if (generation !== sessionCatalogGeneration) return
+            if (!response.ok) {
+                sessionCatalogLoading = false
+                sessionCatalogError = boundedError(response.error.message)
+                postNotice("error", "Could not refresh sessions: " + sessionCatalogError)
+                return
+            }
+            const rows = response.data && Array.isArray(response.data.sessions) ? response.data.sessions : []
+            for (const session of rows) {
+                const path = String(session.path || "")
+                if (path.length === 0 || seen[path] === true) continue
+                seen[path] = true
+                merged.push(session)
+            }
+            const nextOffset = response.data ? response.data.nextOffset : null
+            if (nextOffset !== null) {
+                if (!Number.isInteger(nextOffset) || nextOffset <= offset) {
+                    sessionCatalogLoading = false
+                    sessionCatalogError = "The session catalog returned an invalid next page"
+                    postNotice("error", sessionCatalogError)
+                    return
+                }
+                loadSessionCatalogPage(generation, nextOffset, merged, seen)
+                return
+            }
+            sessionCatalog = merged
+            sessionCatalogLoading = false
+            sessionCatalogError = ""
+            sessionCatalogLoaded(merged)
+        }, false)
+    }
+
+    function sessionTab(session) {
+        if (!session || typeof session !== "object") return null
+        const openTabId = String(session.openTabId || "")
+        if (openTabId.length > 0) return tabById(openTabId)
+        const path = String(session.path || "")
+        if (path.length === 0) return null
+        for (const tab of tabs) if (String(tab.sessionFile || "") === path) return tab
+        return null
+    }
+
+    function catalogSession(sessionPath) {
+        const path = String(sessionPath || "")
+        for (const session of sessionCatalog) if (String(session.path || "") === path) return session
+        return null
+    }
+
+    function sessionSettlementIsPending(sessionPath) {
+        return sessionSettlementPending[String(sessionPath || "")] === true
+    }
+
+    function updateCatalogSettlement(sessionPath, settled) {
+        const path = String(sessionPath || "")
+        sessionCatalog = sessionCatalog.map(session => String(session.path || "") === path
+            ? Object.assign({}, session, { "settled": settled === true }) : session)
+    }
+
+    function setSessionSettled(sessionPath, settled, callback) {
+        const path = String(sessionPath || "")
+        const nextSettled = settled === true
+        if (path.length === 0 || sessionSettlementIsPending(path)) return false
+        const matchingTab = sessionTab(catalogSession(path))
+        if (nextSettled && matchingTab && matchingTab.active) {
+            postNotice("warning", "Wait for this session to become idle before settling it")
+            return false
+        }
+        const pending = Object.assign({}, sessionSettlementPending)
+        pending[path] = true
+        sessionSettlementPending = pending
+        request("session_settled", { "sessionPath": path, "settled": nextSettled }, response => {
+            const remaining = Object.assign({}, sessionSettlementPending)
+            delete remaining[path]
+            sessionSettlementPending = remaining
+            if (!response.ok) postNotice(response.error.code === "busy" ? "warning" : "error", "Could not update session: " + response.error.message)
+            else updateCatalogSettlement(String(response.data.path || path), response.data.settled === true)
+            if (callback) callback(response)
+        }, false)
+        return true
+    }
+
+    function finishSettleAll(settledCount, failedCount, skippedActive, callback) {
+        sessionSettleAllPending = false
+        const skippedCount = failedCount + skippedActive
+        const summary = "Settled " + settledCount + " session" + (settledCount === 1 ? "" : "s")
+            + (skippedCount > 0 ? "; skipped " + skippedCount : "")
+        postNotice(skippedCount > 0 ? "warning" : "info", summary)
+        if (callback) callback({
+            ok: failedCount === 0,
+            data: { settled: settledCount, failed: failedCount, skippedActive: skippedActive }
+        })
+    }
+
+    function settleSessionBatch(paths, index, settledCount, failedCount, skippedActive, callback) {
+        if (!sessionSettleAllPending) return
+        if (index >= paths.length) {
+            finishSettleAll(settledCount, failedCount, skippedActive, callback)
+            return
+        }
+        const started = setSessionSettled(paths[index], true, response => {
+            settleSessionBatch(paths, index + 1, settledCount + (response.ok ? 1 : 0), failedCount + (response.ok ? 0 : 1), skippedActive, callback)
+        })
+        if (!started) settleSessionBatch(paths, index + 1, settledCount, failedCount + 1, skippedActive, callback)
+    }
+
+    function settleAllSessions(callback) {
+        if (sessionSettleAllPending || !backendReady || quitting) return false
+        const paths = []
+        let skippedActive = 0
+        for (const session of sessionCatalog) {
+            if (!session || session.settled === true) continue
+            const path = String(session.path || "")
+            const matchingTab = sessionTab(session)
+            if (matchingTab && matchingTab.active) {
+                skippedActive += 1
+                continue
+            }
+            if (path.length > 0 && !sessionSettlementIsPending(path)) paths.push(path)
+        }
+        if (paths.length === 0) return false
+        sessionSettleAllPending = true
+        settleSessionBatch(paths, 0, 0, 0, skippedActive, callback)
+        return true
+    }
+
+    function openCatalogSession(session, callback) {
+        if (!session || typeof session !== "object") return false
+        const path = String(session.path || "")
+        const matchingTab = sessionTab(session)
+        if (matchingTab) {
+            if (matchingTab.id === activeTabId) {
+                if (callback) callback({ ok: true, data: { tab: matchingTab, reused: true } })
+                return true
+            }
+            return selectTab(String(matchingTab.id), callback)
+        }
+        if (tabs.length >= maxTabs) {
+            postNotice("warning", "At most " + maxTabs + " tabs can be open")
+            return false
+        }
+        return openTab(String(session.cwd || ""), path, callback)
     }
 
     function switchSession(sessionPath, callback) {
@@ -1004,11 +1296,11 @@ Scope {
         switch (event.type) {
         case "extension.request":
             postNotice("warning", label + " needs your input", label)
-            notifyDesktop("Pi needs your input", label)
+            notifyDesktop("Pi needs your input", label, event.tab)
             break
         case "run.end":
             postNotice(event.ok ? "info" : "error", label + (event.aborted ? " stopped" : event.ok ? " finished" : " failed"), label)
-            notifyDesktop(event.aborted ? "Pi stopped" : event.ok ? "Pi finished" : "Pi failed", label)
+            notifyDesktop(event.aborted ? "Pi stopped" : event.ok ? "Pi finished" : "Pi failed", label, event.tab)
             break
         case "pi.error":
             if (typeof event.message === "string" && event.message.length > 0) postNotice("error", label + ": " + event.message, label)
@@ -1135,6 +1427,7 @@ Scope {
     }
 
     function handleRuntime(event) {
+        const previousSessionFile = sessionFile
         currentProvider = boundedText(event.provider || "", maxRuntimeInfoCharacters)
         currentModelId = boundedText(event.modelId || "", maxRuntimeInfoCharacters)
         currentModelName = boundedText(event.modelName || "", maxRuntimeInfoCharacters)
@@ -1142,6 +1435,7 @@ Scope {
         currentThinkingLevel = boundedText(event.thinkingLevel || "", maxRuntimeInfoCharacters)
         sessionName = boundedText(event.sessionName || "", maxRuntimeInfoCharacters)
         sessionFile = typeof event.sessionFile === "string" ? event.sessionFile : ""
+        if (sessionFile !== previousSessionFile && sessionFile.length > 0) scheduleSessionCatalogRefresh()
         if (smokeMode && runtimeInfoText.length > 0) console.log("QT_WEBUI_SMOKE_RUNTIME_INFO")
     }
 
@@ -1171,6 +1465,7 @@ Scope {
         switch (event.type) {
         case "backend.ready":
             backendReady = true
+            resetThemeGeneration()
             requestTimeouts = event.limits && event.limits.requestTimeoutMs ? event.limits.requestTimeoutMs : {}
             applyAppearance(event.appearance)
             backendStartupTimer.stop()
@@ -1178,18 +1473,23 @@ Scope {
                 if (!response.ok) return
                 applySettings(response.data.settings)
                 applyAppearance(response.data.appearance)
+                applyThemeState(response.data.themeState)
                 if (Array.isArray(response.data.recentActions)) recentActions = response.data.recentActions
                 if (response.data.tabs) {
                     tabs = response.data.tabs.tabs
                     if (typeof response.data.tabs.activeTab === "string" && response.data.tabs.activeTab !== activeTabId) beginTabSwitch(response.data.tabs.activeTab)
                 }
                 applySnapshot({ tab: tabById(activeTabId), session: response.data.session, attachments: response.data.attachments })
+                refreshSessionCatalog()
             })
             backendBecameReady()
             break
         case "tabs.update":
             tabs = Array.isArray(event.tabs) ? event.tabs : []
             if (typeof event.activeTab === "string" && event.activeTab !== activeTabId) beginTabSwitch(event.activeTab)
+            break
+        case "sessions.changed":
+            scheduleSessionCatalogRefresh()
             break
         case "transcript.reset":
             transcript.clear()
@@ -1283,6 +1583,7 @@ Scope {
         case "run.end":
             runEnded(event.ok === true, event.aborted === true)
             usageTimer.restart()
+            scheduleSessionCatalogRefresh()
             if (event.aborted) notifyDesktop("Pi stopped", "The run was aborted")
             else if (event.ok) notifyDesktop("Pi finished", sessionName.length > 0 ? sessionName : workspaceCwd)
             else notifyDesktop("Pi failed", visibleError)
@@ -1326,6 +1627,9 @@ Scope {
             break
         case "appearance.changed":
             applyAppearance(event)
+            break
+        case "themes.changed":
+            applyThemeState(event.state)
             break
         case "resources.changed":
             applyResourceState(event.state)
@@ -1384,6 +1688,14 @@ Scope {
         interval: 250
         repeat: false
         onTriggered: bridge.loadSessionStats()
+    }
+
+    // Coalesce session-file, run, and settlement events so a burst produces one paged pass.
+    Timer {
+        id: sessionCatalogRefreshTimer
+        interval: 500
+        repeat: false
+        onTriggered: bridge.refreshSessionCatalog()
     }
 
     Timer {
@@ -1465,6 +1777,13 @@ Scope {
             bridge.tabs = []
             bridge.activeTabId = ""
             bridge.usage = null
+            bridge.sessionCatalogGeneration++
+            bridge.sessionCatalog = []
+            bridge.sessionCatalogLoading = false
+            bridge.sessionCatalogError = ""
+            bridge.sessionSettlementPending = ({})
+            bridge.sessionSettleAllPending = false
+            bridge.sessionSettleDaysPending = false
             bridge.failAllPending("not_running", "Backend exited")
             bridge.clearDialogs(bridge.activeDialog || bridge.dialogQueue.length > 0 ? "Pending extension dialogs were cancelled because the backend exited" : "")
             if (bridge.quitting) {

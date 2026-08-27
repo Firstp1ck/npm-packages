@@ -26,6 +26,8 @@ export const LIMITS = Object.freeze({
     extension_response: 5_000,
     settings_get: 5_000,
     settings_set: 5_000,
+    themes_list: 15_000,
+    theme_select: 15_000,
     open_link: 5_000,
     notify: 5_000,
     shutdown: 5_000,
@@ -56,6 +58,7 @@ export const LIMITS = Object.freeze({
     tab_rename: 10_000,
     tab_move: 5_000,
     sessions_list: 20_000,
+    session_settled: 5_000,
     session_switch: 30_000,
     session_new: 30_000,
     directory_list: 10_000,
@@ -105,8 +108,9 @@ export const LIMITS = Object.freeze({
   // Notifications and links
   maxNotificationCharacters: 256,
   maxLinkUrlCharacters: 2048,
-  // Settings
+  // Settings and themes
   maxSettingsFileBytes: 64 * 1024,
+  maxThemeNameCharacters: 64,
   // Extension status chips (structured footer payloads)
   maxStatusChips: 18,
   maxStatusChipCharacters: 64,
@@ -129,7 +133,7 @@ export const LIMITS = Object.freeze({
   maxDraftCharacters: 8192,
   maxDrafts: 64,
   maxStateKeyCharacters: 4096,
-  maxStateFileBytes: 256 * 1024,
+  maxStateFileBytes: 512 * 1024,
   maxRecentEntries: 20,
   // Saved prompt sequences (XDG config directory)
   maxSequences: 32,
@@ -161,6 +165,9 @@ export const LIMITS = Object.freeze({
   maxTabIdCharacters: 32,
   maxTabNameCharacters: 64,
   maxSessionListEntries: 200,
+  maxSettledSessions: 2048,
+  maxAutomaticSettledSessions: 2048,
+  maxSessionRestoreGraceEntries: 2048,
   maxSessionScanBytes: 1024 * 1024,
   maxSessionPreviewCharacters: 160,
   maxDirectoryEntries: 500,
@@ -195,7 +202,9 @@ export const SETTINGS_SCHEMA = Object.freeze({
   desktopNotifications: { type: "boolean", default: true },
   syntaxHighlighting: { type: "boolean", default: true },
   appearanceMode: { type: "string", values: Object.freeze(["automatic", "light", "dark"]), default: "automatic" },
+  selectedThemeName: { type: "themeName", default: "" },
   reducedMotion: { type: "boolean", default: false },
+  sessionSettleDays: { type: "boundedInteger", minimum: 1, maximum: 3650, default: 30 },
   modelOrder: { type: "modelIdentityList", default: Object.freeze([]) },
 });
 
@@ -238,6 +247,39 @@ export function validateModelOrder(value) {
     }
   }
   return result;
+}
+
+export function validateThemeIdentity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProtocolError("invalid_request", "theme selection must be an object");
+  if (value.kind !== "builtin" && value.kind !== "external") throw new ProtocolError("invalid_request", "theme selection kind must be builtin or external");
+  if (typeof value.name !== "string" || value.name.length === 0 || value.name.length > LIMITS.maxThemeNameCharacters
+      || value.name !== value.name.trim() || value.name.includes("/") || /[\u0000-\u001f\u007f]/.test(value.name)) {
+    throw new ProtocolError("invalid_request", `theme selection name must be 1-${LIMITS.maxThemeNameCharacters} characters with no slash or control character`);
+  }
+  if (value.kind === "builtin" && !["automatic", "light", "dark"].includes(value.name)) throw new ProtocolError("invalid_request", "unknown built-in theme");
+  return { kind: value.kind, name: value.name };
+}
+
+export function validateSettingValue(key, value) {
+  const schema = SETTINGS_SCHEMA[key];
+  if (!schema) throw new ProtocolError("invalid_request", `unknown setting ${key}`);
+  if (schema.type === "modelIdentityList") return validateModelOrder(value);
+  if (schema.type === "themeName") {
+    if (value === "") return value;
+    return validateThemeIdentity({ kind: "external", name: value }).name;
+  }
+  if (schema.type === "boundedInteger") {
+    if (!Number.isInteger(value)) throw new ProtocolError("invalid_request", `setting ${key} must be a whole number`);
+    if (value < schema.minimum || value > schema.maximum) {
+      throw new ProtocolError("invalid_request", `setting ${key} must be between ${schema.minimum} and ${schema.maximum}`);
+    }
+    return value;
+  }
+  if (typeof value !== schema.type) throw new ProtocolError("invalid_request", `setting ${key} must be ${schema.type}`);
+  if (schema.values && !schema.values.includes(value)) {
+    throw new ProtocolError("invalid_request", `setting ${key} must be one of ${schema.values.join(", ")}`);
+  }
+  return value;
 }
 
 export function boundedString(value, limit, fallback = "") {
@@ -393,9 +435,21 @@ export function validateRequest(frame) {
       request.delta = frame.delta;
       break;
     }
+    case "sessions_list": {
+      request.scope = frame.scope === undefined ? "workspace" : frame.scope;
+      if (request.scope !== "workspace" && request.scope !== "all") throw new ProtocolError("invalid_request", "sessions_list scope must be workspace or all");
+      request.offset = frame.offset === undefined ? 0 : frame.offset;
+      if (!Number.isSafeInteger(request.offset) || request.offset < 0) throw new ProtocolError("invalid_request", "sessions_list offset must be a non-negative safe integer");
+      break;
+    }
+    case "session_settled":
     case "session_switch": {
       request.sessionPath = requireString(frame, "sessionPath", LIMITS.maxPathCharacters);
       if (!request.sessionPath.startsWith("/") || !request.sessionPath.endsWith(".jsonl")) throw new ProtocolError("invalid_request", "sessionPath must be an absolute .jsonl path");
+      if (type === "session_settled") {
+        if (typeof frame.settled !== "boolean") throw new ProtocolError("invalid_request", "session_settled requires a boolean settled value");
+        request.settled = frame.settled;
+      }
       break;
     }
     case "directory_list": {
@@ -477,24 +531,16 @@ export function validateRequest(frame) {
       }
       break;
     }
+    case "theme_select": {
+      request.selection = validateThemeIdentity(frame.selection);
+      break;
+    }
     case "settings_set": {
       if (!frame.values || typeof frame.values !== "object" || Array.isArray(frame.values)) {
         throw new ProtocolError("invalid_request", "settings_set requires a values object");
       }
       request.values = {};
-      for (const [key, value] of Object.entries(frame.values)) {
-        const schema = SETTINGS_SCHEMA[key];
-        if (!schema) throw new ProtocolError("invalid_request", `unknown setting ${key}`);
-        if (schema.type === "modelIdentityList") {
-          request.values[key] = validateModelOrder(value);
-          continue;
-        }
-        if (typeof value !== schema.type) throw new ProtocolError("invalid_request", `setting ${key} must be ${schema.type}`);
-        if (schema.values && !schema.values.includes(value)) {
-          throw new ProtocolError("invalid_request", `setting ${key} must be one of ${schema.values.join(", ")}`);
-        }
-        request.values[key] = value;
-      }
+      for (const [key, value] of Object.entries(frame.values)) request.values[key] = validateSettingValue(key, value);
       break;
     }
     case "open_link": {

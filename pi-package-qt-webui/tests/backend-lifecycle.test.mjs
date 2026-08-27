@@ -1,15 +1,44 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { LIMITS } from "../lib/backend/protocol.mjs";
 import { processAlive, startBackend, waitUntil } from "./helpers/backend-client.mjs";
 
 const REAP_BOUND_MS = LIMITS.shutdownGraceMs + 2_000;
 
+async function isolatedDesktopCommands(t) {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "qt-webui-desktop-fixture-"));
+  const bin = path.join(temporary, "bin");
+  const markers = path.join(temporary, "markers");
+  await Promise.all([mkdir(bin), mkdir(markers)]);
+  const fixture = `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+import path from "node:path";
+const command = path.basename(process.argv[1]);
+writeFileSync(path.join(process.env.QT_WEBUI_TEST_DESKTOP_MARKERS, command), JSON.stringify({ pid: process.pid, args: process.argv.slice(2) }));
+if (command === "gdbus") setInterval(() => {}, 60_000);
+`;
+  await Promise.all(["busctl", "gdbus"].map((command) => writeFile(path.join(bin, command), fixture, { mode: 0o700 })));
+  t.after(() => rm(temporary, { recursive: true, force: true }));
+  return {
+    markers,
+    env: {
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(temporary, "isolated-bus")}`,
+      QT_WEBUI_TEST_DESKTOP_MARKERS: markers,
+    },
+  };
+}
+
 async function backendWithGrandchild(t) {
   const backend = await startBackend({ startupTimeoutMs: 1_000 });
   t.after(async () => {
     if (!backend.exit) {
-      backend.child.kill("SIGKILL");
+      backend.kill("SIGKILL");
       await backend.exitPromise;
     }
   });
@@ -22,6 +51,58 @@ async function backendWithGrandchild(t) {
   assert(processAlive(grandchildPid), "grandchild should be running");
   return { backend, piPid: started.pid, grandchildPid };
 }
+
+test("smoke backend tests do not invoke desktop portal commands", { timeout: 20_000 }, async (t) => {
+  const desktop = await isolatedDesktopCommands(t);
+  const backend = await startBackend({ env: desktop.env, startupTimeoutMs: 1_000 });
+  t.after(async () => {
+    if (backend.exit) return;
+    backend.kill("SIGKILL");
+    await backend.exitPromise;
+  });
+
+  await backend.waitForEvent("backend.ready");
+  await delay(100);
+  assert.deepEqual(await readdir(desktop.markers), []);
+  backend.closeStdin();
+  assert.deepEqual(await backend.exitPromise, { code: 0, signal: null });
+});
+
+test("an abruptly killed backend cannot orphan its isolated portal monitor", { timeout: 20_000 }, async (t) => {
+  const desktop = await isolatedDesktopCommands(t);
+  const backend = await startBackend({ smoke: false, env: desktop.env, startupTimeoutMs: 1_000 });
+  let monitorPid = null;
+  t.after(async () => {
+    if (!backend.exit) {
+      backend.kill("SIGKILL");
+      await backend.exitPromise;
+    }
+    if (monitorPid && processAlive(monitorPid)) process.kill(monitorPid, "SIGKILL");
+  });
+
+  const started = await backend.waitForEvent("pi.started");
+  await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");
+  const marker = path.join(desktop.markers, "gdbus");
+  await waitUntil(() => existsSync(marker), { timeoutMs: 2_000, description: "isolated gdbus monitor start" });
+  const captured = JSON.parse(await readFile(marker, "utf8"));
+  monitorPid = captured.pid;
+  assert.deepEqual(captured.args, [
+    "monitor",
+    "--session",
+    "--dest",
+    "org.freedesktop.portal.Desktop",
+    "--object-path",
+    "/org/freedesktop/portal/desktop",
+  ]);
+  assert(processAlive(monitorPid));
+
+  // Kill only the backend PID, not its process group. The monitor must still receive the
+  // parent-death signal and exit instead of being reparented to PID 1.
+  backend.child.kill("SIGKILL");
+  assert.equal((await backend.exitPromise).signal, "SIGKILL");
+  await waitUntil(() => !processAlive(monitorPid), { timeoutMs: REAP_BOUND_MS, description: "isolated gdbus monitor reaped after direct parent death" });
+  await waitUntil(() => !processAlive(started.pid), { timeoutMs: REAP_BOUND_MS, description: "Pi exits on backend EOF" });
+});
 
 test("closing stdin (Quickshell exit) terminates and reaps Pi and its children within the shutdown bound", { timeout: 20_000 }, async (t) => {
   const { backend, piPid, grandchildPid } = await backendWithGrandchild(t);
@@ -64,10 +145,11 @@ test("a fatal backend error reports itself, kills the Pi tree, and exits non-zer
 });
 
 test("debug_crash is refused outside smoke mode and a missing Pi entry fails fast", { timeout: 20_000 }, async (t) => {
-  const backend = await startBackend({ smoke: false, startupTimeoutMs: 1_000 });
+  const desktop = await isolatedDesktopCommands(t);
+  const backend = await startBackend({ smoke: false, env: desktop.env, startupTimeoutMs: 1_000 });
   t.after(async () => {
     if (!backend.exit) {
-      backend.child.kill("SIGKILL");
+      backend.kill("SIGKILL");
       await backend.exitPromise;
     }
   });

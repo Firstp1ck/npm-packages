@@ -18,7 +18,7 @@ The skill starts with the target project's existing theme contract. Useful input
 | Theme changes | file watches, toolkit notifications, a theme service, or an application reload hook |
 | Visual reference | screenshots and existing first-party components |
 
-These reads are non-destructive. The skill must identify which source owns each value before changing UI code.
+These reads are non-destructive. The skill must identify which source owns each value before changing UI code. When screenshots are supplied, it records observable relationships and marks exact colors, unseen states, and unseen color-scheme branches as unknown rather than guessing them.
 
 ## Compatibility
 
@@ -26,13 +26,17 @@ These reads are non-destructive. The skill must identify which source owns each 
 - Hyprland settings can provide optional corner radius and gap values through `hyprctl`.
 - Other compositors and desktop environments are supported when the project exposes equivalent settings or visual references.
 - The bundled token profile is a fallback and starting point. Existing project tokens take priority.
-- With no project-owned visual contract, the fallback is Omarchy-inspired: monospace UI text, flat opaque surfaces, square or minimally rounded geometry, solid 1px borders, one cool accent family, sparse decoration, and no positional hover motion.
+- With no project-owned visual contract, the fallback is Omarchy-inspired: monospace UI text, flat opaque surfaces, square or minimally rounded geometry, solid 1px borders, one cool structural accent family, sparse functional landmarks, selective display scale, and no positional hover motion.
 
 ## Configuration
 
 A portable app may accept an explicit theme directory or file path from its own configuration. Keep that path app-owned and user-configurable instead of assuming a distribution-specific location.
 
-The Omarchy-inspired fallback is a design relationship, not a copied palette or a forced dark theme. Automatic mode still follows the authoritative desktop preference. In either color scheme, the theme owner provides the base, surface, foreground, muted, accent, and urgent values while components consume only those semantic roles.
+The Omarchy-inspired fallback is a design relationship, not a copied palette or a forced dark theme. Its dark branch relates a violet-charcoal base, separated opaque surfaces, pale foreground, muted metadata, and a periwinkle-like structural accent. Its light branch keeps the same hierarchy with a softly tinted light base, separated opaque surfaces, dark foreground, muted metadata, and a deeper related accent. Automatic mode still follows the authoritative desktop preference. In either color scheme, the theme owner provides the base, surface, foreground, muted, accent, success when needed, and urgent values while components consume only those semantic roles. Success color is status punctuation, not a general navigation or selection accent.
+
+## Screenshot comparison
+
+The skill compares a current capture with each reference at a representative scale. It records pass, difference, or not observable for palette relationships, hierarchy, density and composition, outer and module framing, typography scale and short-label tracking, sparse functional landmark iconography, and state language. The comparison judges relative emphasis and meaning rather than pixel equality. Both light and dark branches still require direct verification; an unseen branch is not inferred from a screenshot.
 
 For live retheming, watch only the authoritative theme inputs. Debounce file reloads, validate parsed values, and retain the last valid theme when a read fails. Toolkit color-scheme signals should update semantic tokens directly.
 
@@ -41,6 +45,6 @@ Automatic mode is the default for a standalone desktop app. The app must read th
 ## Limitations
 
 - There is no universal Linux desktop theme-file format. The skill must adapt to the target project's actual theme source.
-- Screenshots can establish visual intent, but they cannot reliably reveal exact token values. Prefer source tokens when available.
+- Screenshots can establish visual intent, but they cannot reliably reveal exact token values, accessibility contrast, every interaction state, live theme behavior, or the opposite color scheme. Prefer source tokens when available and verify these separately.
 - Toolkit rendering, font metrics, fractional scaling, and compositor effects can create small differences even when token values match.
 - Files containing private-use or Nerd Font glyphs need targeted edits because some rewrite tools can damage multi-byte codepoints.

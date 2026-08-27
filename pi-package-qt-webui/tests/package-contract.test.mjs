@@ -13,14 +13,22 @@ test("package identity, command, dependency, and runtime requirements are declar
   assert.equal(manifest.bin?.["qt-webui"], "./bin/qt-webui.mjs");
   assert.deepEqual(manifest.pi?.extensions, ["./extensions/qt-webui-start.mjs"]);
   assert.match(manifest.dependencies?.["@earendil-works/pi-coding-agent"] ?? "", /^\^0\.84\./);
+  assert.match(manifest.dependencies?.["@firstpick/pi-package-webui"] ?? "", /^\^0\.9\.9$/);
   assert.equal(manifest.engines?.node, ">=22.19.0");
   assert.deepEqual(manifest.os, ["linux"]);
 });
 
 test("package allowlist includes the Pi extension, runtime, QML, tests, and documentation", () => {
-  for (const entry of ["bin", "extensions", "lib", "qml", "tests", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]) {
+  for (const entry of ["bin", "extensions", "lib", "qml", "screenshots", "tests", "README.md", "TECHNICAL.md", "DEVELOPMENT.md", "LICENSE"]) {
     assert(manifest.files.includes(entry), `package files should include ${entry}`);
   }
+});
+
+test("README session screenshot is a nontrivial PNG", async () => {
+  const screenshot = await readFile(path.join(root, "screenshots", "session-settlement.png"));
+  assert.deepEqual([...screenshot.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert(screenshot.readUInt32BE(16) >= 560, "screenshot width should show the supported minimum window");
+  assert(screenshot.readUInt32BE(20) >= 520, "screenshot height should show the supported minimum window");
 });
 
 test("development and test scripts use the source launcher without lifecycle hooks", () => {

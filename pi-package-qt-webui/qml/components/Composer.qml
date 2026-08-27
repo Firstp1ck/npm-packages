@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
 import QtQuick.Layouts
 
 // Prompt editor with explicit run modes: Send while idle; Steer, Follow-up, and Abort while a run
@@ -34,7 +33,6 @@ Rectangle {
     signal abortRequested()
     signal restartRequested()
     signal attachRequested()
-    signal sequencesRequested()
     signal attachmentRemoveRequested(string attachmentId)
     signal attachmentEditRequested(string attachmentId)
     signal completionRequested(string kind, string query)
@@ -43,15 +41,8 @@ Rectangle {
     implicitHeight: column.implicitHeight + theme.space4Xl
     radius: theme.radiusLarge
     color: theme.composerSurface
-    border.width: prompt.activeFocus ? theme.focusBorderWidth : theme.borderWidth
+    border.width: theme.borderWidth
     border.color: prompt.activeFocus ? theme.focusRing : theme.composerBorder
-    layer.enabled: true
-    layer.effect: MultiEffect {
-        shadowEnabled: true
-        shadowColor: composer.theme.composerShadow
-        shadowBlur: 0.45
-        shadowVerticalOffset: 3
-    }
 
     Behavior on border.color {
         ColorAnimation { duration: composer.theme.animationDuration }
@@ -166,6 +157,36 @@ Rectangle {
         anchors.margins: composer.theme.spaceXl
         spacing: composer.theme.spaceSm + 1
 
+        RowLayout {
+            Layout.fillWidth: true
+
+            Label {
+                text: "PROMPT"
+                textFormat: Text.PlainText
+                color: composer.theme.muted
+                font.family: composer.theme.monospaceFamily
+                font.pixelSize: composer.theme.typeCaption
+                font.bold: true
+                font.letterSpacing: composer.theme.labelTracking
+                Accessible.role: Accessible.StaticText
+                Accessible.name: "Prompt editor"
+            }
+
+            Item { Layout.fillWidth: true }
+
+            Label {
+                text: composer.active ? (composer.busyPromptMode === "steer" ? "STEER" : "FOLLOW-UP") : "READY"
+                textFormat: Text.PlainText
+                color: composer.active ? composer.theme.accentForeground : composer.theme.success
+                font.family: composer.theme.monospaceFamily
+                font.pixelSize: composer.theme.typeCaption
+                font.bold: true
+                font.letterSpacing: composer.theme.labelTracking
+                Accessible.role: Accessible.StaticText
+                Accessible.name: composer.active ? "Prompt mode " + composer.busyPromptMode : "Prompt ready"
+            }
+        }
+
         CompletionPopup {
             id: completionPopup
             Layout.fillWidth: true
@@ -191,6 +212,7 @@ Rectangle {
                 focus: true
                 color: composer.theme.foreground
                 placeholderTextColor: composer.theme.muted
+                font.family: composer.theme.monospaceFamily
                 selectionColor: composer.theme.selection
                 background: null
                 Accessible.role: Accessible.EditableText
@@ -278,6 +300,7 @@ Rectangle {
                             text: String(chip.modelData.kind === "image" ? "🖼 " : "📄 ") + String(chip.modelData.name)
                             textFormat: Text.PlainText
                             color: composer.theme.foreground
+                            font.family: composer.theme.monospaceFamily
                             font.pixelSize: composer.theme.typeBody
                             elide: Text.ElideMiddle
                         }
@@ -287,6 +310,7 @@ Rectangle {
                             text: composer.sizeLabel(chip.modelData.size) + (chip.modelData.edited ? " · edited" : "")
                             textFormat: Text.PlainText
                             color: composer.theme.muted
+                            font.family: composer.theme.monospaceFamily
                             font.pixelSize: composer.theme.typeSmall
                             elide: Text.ElideRight
                         }
@@ -329,6 +353,7 @@ Rectangle {
                     : composer.ready ? "Enter to send · Shift+Enter for a new line" : "Pi is not available"
                 textFormat: Text.PlainText
                 color: composer.overLimit ? composer.theme.destructive : composer.theme.muted
+                font.family: composer.theme.monospaceFamily
                 font.pixelSize: composer.theme.typeBody
                 elide: Text.ElideRight
             }
@@ -338,30 +363,8 @@ Rectangle {
                 text: prompt.text.length + " / " + composer.maxCharacters
                 textFormat: Text.PlainText
                 color: composer.overLimit ? composer.theme.destructive : composer.theme.muted
+                font.family: composer.theme.monospaceFamily
                 font.pixelSize: composer.theme.typeSmall
-            }
-
-            AppButton {
-                id: attachButton
-                visible: composer.ready
-                theme: composer.theme
-                variant: "ghost"
-                text: "Attach"
-                accessibleName: "Attach files"
-                accessibleDescription: "Opens the file picker; text files and images can be attached"
-                enabled: composer.attachments.length < composer.maxAttachments
-                onClicked: composer.attachRequested()
-            }
-
-            AppButton {
-                id: sequencesButton
-                visible: composer.ready
-                theme: composer.theme
-                variant: "ghost"
-                text: "Sequences"
-                accessibleName: "Saved prompt sequences"
-                accessibleDescription: "Ctrl+Shift+S"
-                onClicked: composer.sequencesRequested()
             }
 
             AppButton {
@@ -386,6 +389,21 @@ Rectangle {
                 accessibleName: composer.busyPromptMode === "steer" ? "Send as steering message" : "Queue as follow-up"
                 enabled: composer.hasText
                 onClicked: composer.trySend(composer.busyPromptMode)
+            }
+
+            AppButton {
+                id: attachButton
+                visible: composer.ready
+                theme: composer.theme
+                variant: "ghost"
+                text: "📎"
+                accessibleName: "Attach files"
+                accessibleDescription: "Opens the file picker; text files and images can be attached"
+                enabled: composer.attachments.length < composer.maxAttachments
+                Layout.preferredWidth: composer.theme.controlHeight
+                leftPadding: composer.theme.spaceXs + 1
+                rightPadding: composer.theme.spaceXs + 1
+                onClicked: composer.attachRequested()
             }
 
             AppButton {

@@ -5,7 +5,7 @@ import path from "node:path";
 
 /** Domain separation for fingerprints owned by this package. */
 export const STAGED_FINGERPRINT_DOMAIN = "firstpick/git-guided-workflow/staged-content/v1\0";
-/** Generation is all-or-nothing: the complete staged diff must fit within 1 MiB. */
+/** Default complete-input ceiling, retained as the direct commit threshold and branch/PR limit. */
 export const GENERATION_INPUT_MAX_BYTES = 1024 * 1024;
 export const COMMIT_MESSAGE_MAX_BYTES = 16 * 1024;
 export const CONVENTIONAL_COMMIT_TYPES = Object.freeze([
@@ -349,17 +349,33 @@ export function validateManualCommitMessage(message: string): string {
 
 export interface GeneratedMessages { short: string; long: string }
 
-/**
- * Parse the only accepted model response shape:
- * <<<SHORT>>>\nsubject\n<<<LONG>>>\nsame subject[\n\nbody]\n<<<END>>>
- */
+/** Parse bounded safe model text; framing and presentation are guidance only. */
 export function parseGeneratedOutput(output: string): GeneratedMessages {
   if (typeof output !== "string") throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output must be text");
+  if (Buffer.byteLength(output, "utf8") > COMMIT_MESSAGE_MAX_BYTES * 2) {
+    throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output is oversized");
+  }
   assertNoUnsafeControls(output);
-  const match = output.match(/^<<<SHORT>>>\n([^\n]+)\n<<<LONG>>>\n([\s\S]+)\n<<<END>>>$/u);
-  if (!match) throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output did not match the required closed format");
-  const short = match[1]!;
-  const long = match[2]!;
+  let normalized = output.trim();
+  if (!normalized) throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output must not be empty");
+
+  const fenced = normalized.match(/^```[^\n]*\n([\s\S]*)\n```$/u);
+  if (fenced) normalized = fenced[1]!.trim();
+  const framed = normalized.match(/^<<<SHORT>>>\n([^\n]+)\n<<<LONG>>>\n([\s\S]+)\n<<<END>>>$/u);
+  if (framed) {
+    const short = framed[1]!;
+    const long = framed[2]!;
+    validateSubject(short);
+    validateManualCommitMessage(long);
+    return { short, long };
+  }
+
+  const presentationMarkers = new Set(["<<<SHORT>>>", "<<<LONG>>>", "<<<END>>>"]);
+  const lines = normalized.split("\n").filter((line) => !presentationMarkers.has(line.trim()));
+  const firstContent = lines.findIndex((line) => line.trim().length > 0);
+  if (firstContent < 0) throw new GuidedGitError("INVALID_GENERATED_OUTPUT", "Generated output must not be empty");
+  const short = lines[firstContent]!.trim();
+  const long = lines.slice(firstContent).join("\n").trim();
   validateSubject(short);
   validateManualCommitMessage(long);
   return { short, long };

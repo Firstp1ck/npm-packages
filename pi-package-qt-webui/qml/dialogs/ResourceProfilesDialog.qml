@@ -304,9 +304,9 @@ AppDialog {
         Layout.fillWidth: true
         visible: !dialog.available || dialog.bridge.active
         implicitHeight: availabilityLabel.implicitHeight + 16
-        radius: 6
+        radius: dialog.theme.radiusSmall
         color: dialog.theme.warningPanelBackground
-        border.width: 1
+        border.width: dialog.theme.borderWidth
         border.color: dialog.theme.warningPanelBorder
         Accessible.role: Accessible.AlertMessage
         Accessible.name: availabilityLabel.text
@@ -327,9 +327,9 @@ AppDialog {
         Layout.fillWidth: true
         visible: dialog.sessionNonDurable
         implicitHeight: durabilityLabel.implicitHeight + 16
-        radius: 6
+        radius: dialog.theme.radiusSmall
         color: dialog.theme.warningPanelBackground
-        border.width: 1
+        border.width: dialog.theme.borderWidth
         border.color: dialog.theme.warningPanelBorder
         Accessible.role: Accessible.AlertMessage
         Accessible.name: durabilityLabel.text
@@ -486,9 +486,9 @@ AppDialog {
                     Accessible.description: samplingRow.supported ? "Allowed range " + samplingRow.range.min + " to " + (samplingRow.modelData === "seed" ? "2^53" : samplingRow.range.max) : dialog.samplingReason(samplingRow.modelData)
                     onTextEdited: dialog.setSamplingValue(samplingRow.modelData, text)
                     background: Rectangle {
-                        radius: 6
+                        radius: dialog.theme.radiusSmall
                         color: dialog.theme.surfaceRaised
-                        border.width: samplingField.activeFocus ? 2 : 1
+                        border.width: dialog.theme.borderWidth
                         border.color: samplingField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
                     }
                 }

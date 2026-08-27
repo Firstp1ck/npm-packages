@@ -59,9 +59,9 @@ AppDialog {
         placeholderTextColor: dialog.theme.muted
         selectionColor: dialog.theme.selection
         background: Rectangle {
-            radius: 6
+            radius: dialog.theme.radiusSmall
             color: dialog.theme.surfaceRaised
-            border.width: field.activeFocus ? 2 : 1
+            border.width: dialog.theme.borderWidth
             border.color: field.activeFocus ? dialog.theme.focusRing : dialog.theme.border
         }
         Accessible.role: Accessible.EditableText

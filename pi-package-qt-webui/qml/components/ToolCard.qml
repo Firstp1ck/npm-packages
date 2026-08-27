@@ -75,6 +75,7 @@ Rectangle {
         }
 
         Label {
+            id: toolSummaryLabel
             Layout.fillWidth: true
             visible: card.toolSummary.length > 0 && !card.compact
             text: card.toolSummary
@@ -87,12 +88,18 @@ Rectangle {
             font.pixelSize: card.theme.typeBody
         }
 
-        Label {
+        TextEdit {
+            id: toolErrorLabel
             Layout.fillWidth: true
             visible: card.toolError.length > 0
             text: card.toolError
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            textFormat: TextEdit.PlainText
+            readOnly: true
+            selectByMouse: true
+            selectByKeyboard: true
+            wrapMode: TextEdit.Wrap
+            selectionColor: card.theme.selection
+            selectedTextColor: card.theme.selectionForeground
             color: card.theme.errorPanelForeground
             font.pixelSize: card.theme.typeBody
         }
@@ -135,10 +142,11 @@ Rectangle {
                 textFormat: TextEdit.PlainText
                 readOnly: true
                 selectByMouse: true
+                selectByKeyboard: true
                 wrapMode: TextEdit.WrapAnywhere
                 color: card.theme.codeForeground
                 selectionColor: card.theme.selection
-                selectedTextColor: card.theme.codeForeground
+                selectedTextColor: card.theme.selectionForeground
                 font.family: card.theme.monospaceFamily
                 font.pixelSize: card.theme.typeBody
                 Accessible.role: Accessible.StaticText

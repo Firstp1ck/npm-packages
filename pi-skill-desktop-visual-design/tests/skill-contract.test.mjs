@@ -35,9 +35,34 @@ test("fallback visual guidance follows the restrained Omarchy profile", () => {
   assert.match(skill, /use square panels and controls with a `0px` radius/);
   assert.match(skill, /no positional hover movement/);
   assert.match(designTokens, /Omarchy-inspired relationship between roles/);
+  assert.match(designTokens, /charcoal with a restrained violet cast/);
+  assert.match(designTokens, /Coherent light counterpart/);
+  assert.match(designTokens, /Green is reserved for semantic success/);
+  assert.match(designTokens, /Both branches must be complete/);
   assert.match(designTokens, /Use a solid 1px border by default/);
+  assert.match(designTokens, /change contrast or alpha, not width/);
   assert.match(designTokens, /Do not add positional hover movement/);
-  assert.match(designTokens, /must not force a dark scheme/);
+  assert.match(designTokens, /must not force dark mode/);
+});
+
+test("screenshot comparison evaluates relationships without copying pixels", () => {
+  assert.match(skill, /Compare relationships, not sampled pixels/);
+  assert.match(skill, /\*\*Analyze supplied screenshots\.\*\*/);
+  assert.match(skill, /palette relationships; primary, secondary, and display hierarchy; density and composition/);
+  assert.match(skill, /outer and module framing; typography scale and tracking; sparse functional landmark iconography/);
+  assert.match(skill, /exact colors, unseen states, automatic-mode behavior, and the opposite color scheme/);
+  assert.match(skill, /\*\*Compare the result\.\*\*/);
+  assert.match(skill, /Record pass, difference, or not observable/);
+  assert.match(skill, /Green or another success color must remain semantic punctuation/);
+});
+
+test("fallback recipes preserve framed hierarchy and restrained landmarks", () => {
+  assert.match(designTokens, /App shells use one thin, square outer frame/);
+  assert.match(designTokens, /do not box every row/);
+  assert.match(designTokens, /display-scale title or value/);
+  assert.match(designTokens, /have an accessible name; do not add an icon dependency/);
+  assert.match(designTokens, /Framing should reveal the composition, not create a card grid/);
+  assert.match(skill, /Keep status and selection treatments rectangular/);
 });
 
 test("routing recognizes forced-light desktop regressions", () => {

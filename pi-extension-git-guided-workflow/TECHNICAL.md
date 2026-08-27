@@ -43,15 +43,19 @@ Each generation command calls the active Pi model directly. It does not expand a
 
 Only the complete bounded context needed for the artifact is sent:
 
-- commit and branch generation send the complete staged diff;
-- branch generation may also send the validated generated commit files when both exist; and
+- commit generation sends the complete staged diff, either directly or across sequential analysis requests;
+- branch generation sends the complete staged diff and may also send the validated generated commit files when both exist; and
 - PR generation sends the current branch/base identities, complete bounded commit list and diff, and an optional `.github/PULL_REQUEST_TEMPLATE.md`.
 
-Git content, filenames, commit text, and templates are marked as untrusted data. They can still contain private information. Do not invoke generation unless sharing that context with the active model provider is acceptable.
+Git content, filenames, commit text, templates, and generated chunk summaries are marked as untrusted data. They can still contain private information. Do not invoke generation unless sharing that context with the active model provider is acceptable.
 
-Commit and branch input is all-or-nothing: the complete staged diff must be valid UTF-8 and at most 1 MiB. PR commit, diff, and template context has a combined 1 MiB cap; the optional template also has a 128 KiB cap. Oversized or invalid UTF-8 input is refused rather than truncated.
+`/git-staged-msg` requires a complete valid UTF-8 staged diff and captures at most 16 MiB. At or below 1 MiB, it sends one direct request. Above 1 MiB, it divides the complete diff into UTF-8-safe chunks of at most 512 KiB and analyzes them sequentially. Each accepted summary is limited to 16 KiB and may use any non-empty safe plain-text presentation; delimiters and layout are guidance only. Chunk-summary requests also carry a 4,096-token provider output ceiling; commit synthesis and correction use an 8,192-token ceiling, with the byte parser remaining authoritative. The final synthesis sends the ordered summaries, not the full diff again. At the 16 MiB ceiling, UTF-8 boundary handling permits at most 33 analysis requests, followed by one synthesis request. The command reports this multi-request work before it starts and reports when analysis is complete.
 
-`/git-staged-msg` makes one direct model request normally. If that response fails closed-format parsing or a safety check, it makes exactly one correction request to the same model with the same staged snapshot, the validation feedback, and the failed response when it is safe and fits the 32 KiB correction bound. Oversized output and output containing unsafe control or bidirectional characters are omitted from the correction request. A second unsafe or structurally invalid response is terminal. Quality deviations do not start correction. Provider failures, cancellation, Git failures, source drift, and artifact-write failures do not start correction. Branch and PR generation do not use correction requests.
+Large-diff generation can therefore take longer and cost more than direct generation. A successful large-diff run uses one request per chunk plus one synthesis request. Chunk-summary formatting never adds a retry. An invalid final commit response can add one final correction request, for a maximum of 35 requests at the capture ceiling. A provider failure, cancellation, or empty, unsafe, or oversized summary stops later requests. A diff above 16 MiB or invalid UTF-8 is refused rather than truncated or sampled.
+
+The 1 MiB all-or-nothing limit for `/git-branch-name` remains unchanged. PR commit, diff, and template context still has a combined 1 MiB cap; the optional template also has a 128 KiB cap.
+
+Chunk-summary presentation is not parsed as a response format. The command trims surrounding whitespace and accepts any remaining non-empty text that stays within the byte limit and contains no unsafe control or bidirectional characters. If the direct response or large-diff synthesis cannot be safely separated into final commit artifacts, `/git-staged-msg` makes exactly one final correction request to the same model. Direct final correction reuses the captured staged snapshot. Large-diff final correction reuses the retained summaries and does not resend or reanalyze the diff chunks. The request includes validation feedback and the failed response when it is safe and fits the 32 KiB correction bound. Oversized output and output containing unsafe control or bidirectional characters are omitted from final correction. A second unsafe or structurally invalid final response is terminal. Quality deviations do not start correction. Provider failures, cancellation, Git failures, source drift, and artifact-write failures do not start correction. Branch and PR generation do not use correction requests.
 
 Only one native generation command can be active at a time, including its correction request. Session shutdown aborts the nested model request, including settling the command when a provider does not cooperate with cancellation. An aborted or failed command writes no new artifact and reports no stale success.
 
@@ -65,13 +69,13 @@ The commit model is asked to:
 - keep the subject within 72 Unicode characters; and
 - begin the long message with the short subject and use typed body bullets.
 
-These are quality guidelines. A deviation does not discard the generated message or start correction. Commit output is rejected only when the closed response cannot be parsed, a subject or body is empty, an artifact exceeds its byte limit, or the content contains unsafe control or bidirectional characters.
+These are quality guidelines. A deviation does not discard the generated message or start correction. Delimiters and layout are optional: framed output is separated directly, while other safe text uses its first content line as the short message and the complete text as the long message. Commit output is rejected only when it is empty, an artifact exceeds its byte limit, or the content contains unsafe control or bidirectional characters.
 
 Generated branch names use an allowed type, `/`, and two to five lowercase kebab-case words. Traversal and invalid Git-ref forms are rejected.
 
 Generated PR descriptions must be bounded Markdown with no unresolved common template placeholders, unsafe controls, empty sections, or unsupported claims that tests or checks ran. No execution evidence is supplied to `/pr`, so the description must use neutral verification wording.
 
-All model responses use closed delimiters and are parsed before filesystem mutation. The first unsafe or structurally invalid commit response can enter the single correction path described above; every other unsafe or structurally invalid output is rejected.
+Commit responses and chunk summaries do not require delimiters; they are bounded untrusted text, and presentation is guidance only. Branch and PR responses retain required delimiters because they map to one specialized validated artifact contract. The first empty, unsafe, or oversized final commit response can enter the single correction path described above; every other unsafe or structurally invalid final output is rejected.
 
 ## Artifact and snapshot safety
 
@@ -114,7 +118,7 @@ Confirm that the originating tab is idle, has no queued messages, and lists `/gi
 
 ### Generation is unavailable
 
-Select an active model and confirm that the session is idle. For commit or branch generation, stage at least one change. If input exceeds its complete-input cap or is not UTF-8, reduce the input or write the artifact manually.
+Select an active model and confirm that the session is idle. For commit or branch generation, stage at least one change. If `/git-staged-msg` exceeds 16 MiB, `/git-branch-name` exceeds 1 MiB, `/pr` exceeds its 1 MiB combined cap, or required input is not UTF-8, reduce the input or write the artifact manually. If large-diff analysis fails partway through, fix the reported provider, cancellation, or invalid-summary problem and invoke the command again; no partial artifact is installed and completed summaries are not saved across commands.
 
 ### PR generation cannot find a base
 

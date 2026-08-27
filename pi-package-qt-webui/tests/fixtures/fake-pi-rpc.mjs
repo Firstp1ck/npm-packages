@@ -35,6 +35,8 @@ let currentSessionName = "Fixture session";
 let helperSession = { tools: null, skills: null, sampling: {} };
 let helperEffective = { tools: null, skills: null, sampling: {} };
 let helperCallCount = 0;
+let switchCallCount = 0;
+let currentSessionId = "fixture-session";
 
 const HELPER_TOOLS = [
   { name: "read", description: "Read a file", source: "core" },
@@ -48,6 +50,22 @@ const HELPER_SKILLS = [
 
 // Persisted history replayed by get_messages: a session named resume-me has a complete exchange
 // with a tool call, one named interrupted ends with an unanswered user message.
+function persistedSession(sessionFile) {
+  if (!existsSync(sessionFile)) return null;
+  try {
+    const entries = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const header = entries.find((entry) => entry?.type === "session");
+    const names = entries.filter((entry) => entry?.type === "session_info" && typeof entry.name === "string");
+    return {
+      id: typeof header?.id === "string" ? header.id : "fixture-session",
+      name: names.at(-1)?.name ?? "",
+      messages: entries.filter((entry) => entry?.type === "message" && entry.message && typeof entry.message === "object").map((entry) => entry.message),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function historyFor(sessionFile) {
   if (sessionFile.includes("resume-me")) {
     return [
@@ -62,7 +80,7 @@ function historyFor(sessionFile) {
       { role: "user", content: [{ type: "text", text: "please continue" }, { type: "image", data: "AAAA", mimeType: "image/png" }], timestamp: 1 },
     ];
   }
-  return [];
+  return persistedSession(sessionFile)?.messages ?? [];
 }
 
 function thinkingLevelsFor(model) {
@@ -172,14 +190,25 @@ function runStream(command) {
   });
   emitDialogs();
   emit({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } });
-  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "thinking about it" } });
-  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "thinking about it" } });
-  emit({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } });
-  emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "streamed draft" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "**Planning user notification strategy**" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: "**Planning user notification strategy**" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 1 } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 1, delta: "**Deciding on partial validation response**" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 1, content: "**Deciding on partial validation response**" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 2 } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 2, delta: "**Discarded streamed draft**" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 2, content: "**Discarded streamed draft**" } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 3 } });
+  emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 3, delta: "streamed draft" } });
   emit({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "<b>read</b>", args: { path: "/tmp/<b>file</b>.txt", nested: { deep: true } } });
   emit({ type: "tool_execution_update", toolCallId: "tool-1", toolName: "<b>read</b>", args: {}, partialResult: { content: [{ type: "text", text: "partial <i>output</i>" }] } });
   emit({ type: "tool_execution_end", toolCallId: "tool-1", toolName: "<b>read</b>", result: { content: [{ type: "text", text: "final tool output" }] }, isError: false });
-  emit({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "thinking about it" }, { type: "text", text: "authoritative final" }], stopReason: "stop" } });
+  emit({ type: "message_end", message: { role: "assistant", content: [
+    { type: "thinking", thinking: "**Planning user notification strategy**" },
+    { type: "thinking", thinking: "**Deciding on partial validation response**" },
+    { type: "thinking", thinking: "" },
+    { type: "text", text: "authoritative final" },
+  ], stopReason: "stop" } });
   setTimeout(() => emit({ type: "agent_settled" }), 30);
 }
 
@@ -312,7 +341,7 @@ function handle(command) {
         thinkingLevel: currentThinkingLevel,
         isStreaming: false,
         isCompacting: compacting,
-        sessionId: "fixture-session",
+        sessionId: currentSessionId,
         sessionName: currentSessionName,
         sessionFile: currentSessionFile,
         messageCount: historyFor(currentSessionFile).length,
@@ -342,12 +371,16 @@ function handle(command) {
   }
 
   if (command.type === "switch_session") {
-    if (typeof command.sessionPath !== "string" || command.sessionPath.includes("cancel-me")) {
+    switchCallCount += 1;
+    const cancelledCalls = String(process.env.QT_WEBUI_FIXTURE_CANCEL_SWITCH_AT || "").split(",").filter(Boolean).map(Number);
+    if (typeof command.sessionPath !== "string" || command.sessionPath.includes("cancel-me") || cancelledCalls.includes(switchCallCount)) {
       response(command, true, { data: { cancelled: true } });
       return;
     }
     currentSessionFile = command.sessionPath;
-    currentSessionName = command.sessionPath.includes("resume-me") ? "Resumed session" : "";
+    const persisted = persistedSession(currentSessionFile);
+    currentSessionId = persisted?.id ?? "fixture-session";
+    currentSessionName = command.sessionPath.includes("resume-me") ? "Resumed session" : persisted?.name ?? "";
     response(command, true, { data: { cancelled: false } });
     return;
   }
@@ -355,6 +388,7 @@ function handle(command) {
   if (command.type === "new_session") {
     sessionSerial += 1;
     currentSessionFile = `/tmp/fixture-session-${sessionSerial}.jsonl`;
+    currentSessionId = `fixture-session-${sessionSerial}`;
     currentSessionName = "";
     response(command, true, { data: { cancelled: false } });
     return;

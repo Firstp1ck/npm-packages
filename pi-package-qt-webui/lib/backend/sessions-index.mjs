@@ -1,13 +1,13 @@
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { LIMITS, boundedString, stripAnsi } from "./protocol.mjs";
+import { LIMITS, ProtocolError, boundedString, stripAnsi } from "./protocol.mjs";
 
-// Lists Pi's persisted sessions for a workspace by reading the session files Pi keeps under
-// $PI_CODING_AGENT_DIR/sessions/<encoded cwd>/. Only the header, session_info entries, and
-// message counts are read, each file is scanned up to a byte budget, and the result is bounded,
-// so a directory with thousands of large sessions cannot stall the backend.
+// Lists Pi's persisted sessions by reading the session files Pi keeps under
+// $PI_CODING_AGENT_DIR/sessions/<encoded cwd>/. Workspace listings keep their historical bounded
+// shape; the all-project catalog uses stable, bounded pages. Only the header, session_info
+// entries, and message counts are read, and each file is scanned up to a byte budget.
 
 export function agentDirectory(env = process.env) {
   const configured = env.PI_CODING_AGENT_DIR;
@@ -15,11 +15,15 @@ export function agentDirectory(env = process.env) {
   return path.join(os.homedir(), ".pi", "agent");
 }
 
+export function sessionsDirectory(env = process.env) {
+  return path.join(agentDirectory(env), "sessions");
+}
+
 // Mirrors Pi's getDefaultSessionDirPath encoding exactly (verified against the Pi package in tests).
 export function sessionDirectoryFor(cwd, env = process.env) {
   const resolved = path.resolve(cwd);
   const safe = `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-  return path.join(agentDirectory(env), "sessions", safe);
+  return path.join(sessionsDirectory(env), safe);
 }
 
 function scanSessionFile(filePath) {
@@ -79,46 +83,119 @@ function scanSessionFile(filePath) {
   });
 }
 
-export async function listSessions(cwd, { env = process.env, now = () => Date.now() } = {}) {
-  const directory = sessionDirectoryFor(cwd, env);
+function isWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function candidatesFromDirectory(directory, canonicalRoot, seenIdentities, { ignoreReadError = false } = {}) {
   let names;
   try {
+    const directoryIdentity = await realpath(directory);
+    if (!isWithin(canonicalRoot, directoryIdentity)) return [];
     names = (await readdir(directory)).filter((name) => name.endsWith(".jsonl"));
   } catch (error) {
-    if (error && error.code === "ENOENT") return { sessions: [], omitted: 0, directory };
+    if ((error && error.code === "ENOENT") || ignoreReadError) return [];
     throw error;
   }
   const candidates = [];
   for (const name of names) {
-    const filePath = path.join(directory, name);
+    const filePath = path.resolve(directory, name);
     try {
-      const stats = await stat(filePath);
-      if (!stats.isFile()) continue;
-      candidates.push({ filePath, mtimeMs: stats.mtimeMs, size: stats.size });
+      const [stats, identity] = await Promise.all([stat(filePath), realpath(filePath)]);
+      if (!stats.isFile() || !isWithin(canonicalRoot, identity) || seenIdentities.has(identity)) continue;
+      seenIdentities.add(identity);
+      candidates.push({ filePath, identity, mtimeMs: stats.mtimeMs, size: stats.size });
     } catch {
-      // A file that vanished between readdir and stat is simply not a session anymore.
+      // A file that vanished, became unreadable, escaped the root, or stopped being a candidate is skipped.
     }
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const omitted = Math.max(0, candidates.length - LIMITS.maxSessionListEntries);
+  return candidates;
+}
+
+async function catalogCandidates(cwd, scope, env) {
+  const root = sessionsDirectory(env);
+  let canonicalRoot;
+  try {
+    canonicalRoot = await realpath(root);
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    throw error;
+  }
+  const seenIdentities = new Set();
+  if (scope === "workspace") return candidatesFromDirectory(sessionDirectoryFor(cwd, env), canonicalRoot, seenIdentities);
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    throw error;
+  }
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    candidates.push(...await candidatesFromDirectory(path.join(root, entry.name), canonicalRoot, seenIdentities, { ignoreReadError: true }));
+  }
+  return candidates;
+}
+
+export async function managedSessionPath(sessionPath, { env = process.env } = {}) {
+  const root = path.resolve(sessionsDirectory(env));
+  const resolved = path.resolve(sessionPath);
+  if (!resolved.endsWith(".jsonl") || !isWithin(root, resolved)) {
+    throw new ProtocolError("invalid_request", "sessionPath must identify a .jsonl file under the active Pi sessions directory");
+  }
+  let canonicalRoot;
+  let stats;
+  let identity;
+  try {
+    [canonicalRoot, stats, identity] = await Promise.all([realpath(root), stat(resolved), realpath(resolved)]);
+  } catch {
+    throw new ProtocolError("unavailable", "That saved session no longer exists or is unreadable");
+  }
+  if (!stats.isFile()) throw new ProtocolError("unavailable", "That saved session no longer exists or is unreadable");
+  if (!isWithin(canonicalRoot, identity)) {
+    throw new ProtocolError("invalid_request", "sessionPath must identify a .jsonl file under the active Pi sessions directory");
+  }
+  return { path: resolved, identity };
+}
+
+export async function listSessions(cwd, { env = process.env, now = () => Date.now(), scope = "workspace", offset = 0 } = {}) {
+  if (scope !== "workspace" && scope !== "all") throw new TypeError("scope must be workspace or all");
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError("offset must be a non-negative safe integer");
+  const directory = scope === "workspace" ? sessionDirectoryFor(cwd, env) : sessionsDirectory(env);
+  const candidates = await catalogCandidates(cwd, scope, env);
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || a.identity.localeCompare(b.identity));
+  const pageEnd = Math.min(candidates.length, offset + LIMITS.maxSessionListEntries);
   const sessions = [];
-  for (const candidate of candidates.slice(0, LIMITS.maxSessionListEntries)) {
+  for (const candidate of candidates.slice(offset, pageEnd)) {
     const scanned = await scanSessionFile(candidate.filePath);
     if (!scanned) continue;
-    const modified = scanned.lastTimestamp > 0 ? scanned.lastTimestamp : candidate.mtimeMs;
+    const modified = Math.floor(candidate.mtimeMs);
     sessions.push({
       path: candidate.filePath,
+      identity: candidate.identity,
       id: boundedString(scanned.header.id, LIMITS.maxRuntimeInfoCharacters, path.basename(candidate.filePath, ".jsonl")),
       name: boundedString(stripAnsi(scanned.name), LIMITS.maxRuntimeInfoCharacters, ""),
       cwd: boundedString(scanned.header.cwd, LIMITS.maxPathCharacters, ""),
-      created: Date.parse(scanned.header.timestamp ?? "") || Math.floor(candidate.mtimeMs),
-      modified: Math.floor(modified),
-      ageMs: Math.max(0, now() - Math.floor(modified)),
+      created: Date.parse(scanned.header.timestamp ?? "") || modified,
+      modified,
+      ageMs: Math.max(0, now() - modified),
       messageCount: scanned.messageCount,
       firstMessage: boundedString(stripAnsi(scanned.firstMessage).replace(/\s+/g, " ").trim(), LIMITS.maxSessionPreviewCharacters, ""),
       scanTruncated: candidate.size > LIMITS.maxSessionScanBytes,
     });
   }
-  sessions.sort((a, b) => b.modified - a.modified);
-  return { sessions, omitted, directory };
+  sessions.sort((a, b) => b.modified - a.modified || a.identity.localeCompare(b.identity));
+  const omitted = Math.max(0, candidates.length - pageEnd);
+  if (scope === "workspace" && offset === 0) return { sessions, omitted, directory };
+  return {
+    sessions,
+    omitted,
+    directory,
+    scope,
+    offset,
+    nextOffset: pageEnd < candidates.length ? pageEnd : null,
+    total: candidates.length,
+  };
 }

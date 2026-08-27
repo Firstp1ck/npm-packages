@@ -61,8 +61,9 @@ test("portal monitor uses argument arrays, follows live changes, and waits for n
 
   monitor.start();
   assert.deepEqual(monitor.snapshot(), { portalColorScheme: "light" });
-  assert.equal(calls[0].command, "gdbus");
+  assert.equal(calls[0].command, "setpriv");
   assert.deepEqual(calls[0].args, [
+    "--pdeathsig", "SIGKILL", "--", "gdbus",
     "monitor", "--session", "--dest", "org.freedesktop.portal.Desktop",
     "--object-path", "/org/freedesktop/portal/desktop",
   ]);
@@ -86,6 +87,36 @@ test("portal monitor uses argument arrays, follows live changes, and waits for n
   child.emit("close", null, "SIGTERM");
   await stopPromise;
   assert.equal(stopped, true);
+});
+
+test("portal monitor falls back when the parent-death wrapper is unavailable", async () => {
+  const calls = [];
+  const children = [];
+  const monitor = createPortalAppearanceMonitor({
+    readColorScheme: () => "unknown",
+    restartDelayMs: 0,
+    maxRestartDelayMs: 0,
+    spawnImpl: (command, args) => {
+      const child = fakeMonitorChild();
+      calls.push({ command, args });
+      children.push(child);
+      return child;
+    },
+  });
+
+  monitor.start();
+  const unavailable = Object.assign(new Error("setpriv unavailable"), { code: "ENOENT" });
+  children[0].emit("error", unavailable);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].command, "setpriv");
+  assert.equal(calls[1].command, "gdbus");
+  assert.deepEqual(calls[1].args, [
+    "monitor", "--session", "--dest", "org.freedesktop.portal.Desktop",
+    "--object-path", "/org/freedesktop/portal/desktop",
+  ]);
+  monitor.stopNow();
+  assert.deepEqual(children[1].signals, ["SIGKILL"]);
 });
 
 test("portal monitor restarts after failure", async () => {
@@ -191,12 +222,12 @@ test("built-in filled button foreground pairs meet WCAG AA at 12px", () => {
     return (values[0] + 0.05) / (values[1] + 0.05);
   };
   const pairs = [
-    ["#2563eb", "#ffffff"], ["#1d4ed8", "#ffffff"], ["#1e40af", "#ffffff"],
-    ["#3b82f6", "#0f172a"], ["#60a5fa", "#0f172a"], ["#2563eb", "#ffffff"],
-    ["#dc2626", "#ffffff"], ["#b91c1c", "#ffffff"], ["#991b1b", "#ffffff"],
-    ["#ef4444", "#0f172a"], ["#f87171", "#0f172a"], ["#dc2626", "#ffffff"],
-    ["#d97706", "#0f172a"], ["#f59e0b", "#0f172a"], ["#d97706", "#0f172a"],
-    ["#f59e0b", "#0f172a"], ["#fbbf24", "#0f172a"], ["#d97706", "#0f172a"],
+    ["#5f529b", "#ffffff"], ["#504584", "#ffffff"], ["#443972", "#ffffff"],
+    ["#afa2ee", "#100e18"], ["#c2b8f7", "#100e18"], ["#9386d3", "#100e18"],
+    ["#a6434e", "#ffffff"], ["#8f3540", "#ffffff"], ["#762b35", "#ffffff"],
+    ["#d7828a", "#100e18"], ["#e39aa1", "#100e18"], ["#bd6670", "#100e18"],
+    ["#8a6500", "#ffffff"], ["#735300", "#ffffff"], ["#5d4300", "#ffffff"],
+    ["#d1ad75", "#100e18"], ["#dfc28c", "#100e18"], ["#b8965b", "#100e18"],
   ];
   for (const [background, foreground] of pairs) {
     assert(contrast(background, foreground) >= 4.5, `${foreground} on ${background} must meet 4.5:1`);

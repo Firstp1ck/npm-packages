@@ -57,9 +57,9 @@ AppDialog {
             font.family: dialog.theme.monospaceFamily
             font.pixelSize: 12
             background: Rectangle {
-                radius: 6
+                radius: dialog.theme.radiusSmall
                 color: dialog.theme.surfaceRaised
-                border.width: editor.activeFocus ? 2 : 1
+                border.width: dialog.theme.borderWidth
                 border.color: editor.activeFocus ? dialog.theme.focusRing : dialog.theme.border
             }
             Accessible.role: Accessible.EditableText

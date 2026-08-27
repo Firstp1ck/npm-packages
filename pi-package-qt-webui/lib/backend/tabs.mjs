@@ -3,7 +3,7 @@ import path from "node:path";
 import { createAttachmentStore } from "./attachments.mjs";
 import { resolveWorkspaceDirectory } from "./directories.mjs";
 import { LIMITS, ProtocolError, boundedString } from "./protocol.mjs";
-import { createTranscriptMirror } from "./transcript.mjs";
+import { createTranscriptMirror, rowsFromHistory } from "./transcript.mjs";
 import { createWorkspaceIndex } from "./workspace.mjs";
 
 // One tab = one Pi session in one working directory, with its own attachments, path index, and a
@@ -13,7 +13,15 @@ import { createWorkspaceIndex } from "./workspace.mjs";
 
 const BADGE_EVENTS = new Set(["message.end", "run.end"]);
 
-export function createTabRegistry({ emit, state, createSession, callerCwd, now = () => Date.now() }) {
+export function createTabRegistry({
+  emit,
+  state,
+  createSession,
+  callerCwd,
+  now = () => Date.now(),
+  onSessionPathsChange = () => {},
+  onSessionIdle = () => {},
+}) {
   const tabs = new Map();
   let order = [];
   let activeId = "";
@@ -73,10 +81,47 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
       state.saveTabs(order.map((id) => {
         const tab = tabs.get(id);
         return { cwd: tab.cwd, sessionFile: tab.sessionFile, name: tab.name };
-      }), Math.max(0, order.indexOf(activeId)));
+      }), activeId ? order.indexOf(activeId) : -1);
     } catch (error) {
       emit("notice", { level: "warning", message: `Could not save the tab layout: ${boundedString(error.message, 200)}` });
     }
+  }
+
+  function sessionPathsChanged() {
+    try {
+      const result = onSessionPathsChange(sessionPaths());
+      if (result && typeof result.catch === "function") result.catch(() => {});
+    } catch {
+      // Monitoring is advisory and must not break tab lifecycle operations.
+    }
+  }
+
+  function comparableRows(rows) {
+    return rows.map((row) => [
+      row.role,
+      row.kind,
+      row.text,
+      row.blocksJson,
+      row.truncated,
+      row.modeLabel,
+      row.attachments,
+      row.toolName,
+      row.toolSummary,
+      row.toolStatus,
+      row.toolOutput,
+      row.toolError,
+    ]);
+  }
+
+  function snapshotMetadata(snapshot) {
+    return {
+      sessionId: snapshot.sessionId,
+      name: snapshot.name,
+      thinkingLevel: snapshot.thinkingLevel,
+      model: snapshot.model
+        ? { provider: snapshot.model.provider ?? "", modelId: snapshot.model.modelId ?? snapshot.model.id ?? "" }
+        : null,
+    };
   }
 
   // Replays the mirror to the client as tagged events so a switch or resume rebuilds the
@@ -99,6 +144,11 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
       sessionName: "",
       unread: 0,
       pendingResume: sessionPath && existsSync(sessionPath) ? sessionPath : "",
+      transitionSessionFile: "",
+      staleSessionFile: "",
+      staleGeneration: 0,
+      preparationPromise: null,
+      persistedMetadataJson: "",
       mirror: createTranscriptMirror(),
       attachments: createAttachmentStore({ workspaceRoot: directory }),
       workspace: createWorkspaceIndex({ root: directory }),
@@ -116,12 +166,14 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
     if (notify) {
       saveState();
       emitTabs();
+      sessionPathsChanged();
     }
     return tab;
   }
 
   function handleSessionEvent(tab, type, payload) {
-    tab.mirror.apply(type, payload);
+    if (type === "transcript.row" && payload.row) tab.mirror.replace([...tab.mirror.rows(), payload.row]);
+    else tab.mirror.apply(type, payload);
     let tabsChanged = false;
     if (type === "pi.runtime") {
       const sessionFile = typeof payload.sessionFile === "string" ? payload.sessionFile : "";
@@ -131,19 +183,29 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
         tab.sessionName = sessionName;
         tabsChanged = true;
         saveState();
+        sessionPathsChanged();
       }
     }
     if (type === "pi.status") {
       tabsChanged = true;
       if (payload.ready && tab.pendingResume) {
         const target = tab.pendingResume;
+        const switching = switchSession(tab.id, target);
         tab.pendingResume = "";
-        tab.session.switchSession(target).catch((error) => {
+        switching.catch((error) => {
           emit("notice", { tab: tab.id, level: "warning", message: `Could not resume ${path.basename(target)}: ${boundedString(error.message, 200)}` });
         });
       }
     }
     if (type === "pi.exit" || type === "pi.started") tabsChanged = true;
+    if (type === "run.end" || (type === "pi.status" && payload.ready === true && payload.active === false)) {
+      try {
+        const result = onSessionIdle(tab);
+        if (result && typeof result.catch === "function") result.catch(() => {});
+      } catch {
+        // A monitor retry must not disturb Pi event processing.
+      }
+    }
     if (tab.id !== activeId) {
       if (BADGE_EVENTS.has(type)) {
         tab.unread += 1;
@@ -170,17 +232,14 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
     const tab = require(id);
     const snapshot = tab.session.snapshot();
     if (snapshot.active && !force) throw new ProtocolError("busy", "A run is still in progress in that tab; closing it aborts the run and stops its Pi process");
-    if (order.length === 1) {
-      // The window always shows one tab; replace the last one with a fresh session in the same place.
-      open({ cwd: tab.cwd, select: false });
-    }
     tabs.delete(tab.id);
     order = order.filter((entry) => entry !== tab.id);
-    if (activeId === tab.id) activeId = order[Math.min(order.length - 1, Math.max(0, order.indexOf(tab.id)))] ?? order[0];
+    if (activeId === tab.id) activeId = "";
     await tab.session.stop();
     tab.attachments.clear();
     saveState();
     emitTabs();
+    sessionPathsChanged();
     if (activeId) {
       const next = tabs.get(activeId);
       next.unread = 0;
@@ -208,13 +267,15 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
     return list();
   }
 
-  // Restores the saved tabs whose directories still exist, then makes sure the directory the
-  // user launched from has a tab and is selected. Each restored tab resumes its session file.
+  // Restores saved tabs whose directories still exist. An explicit -1 selection preserves the
+  // empty workspace; older state still opens and selects the directory the user launched from.
   function restore() {
     let saved = [];
+    let savedActive = 0;
     try {
       const read = state.read();
       saved = read.value.tabs;
+      savedActive = read.value.activeTab;
       for (const problem of read.problems) emit("notice", { level: "warning", message: `State: ${problem}` });
     } catch (error) {
       emit("notice", { level: "warning", message: `Could not read the saved tabs: ${boundedString(error.message, 200)}` });
@@ -240,20 +301,144 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
         emit("notice", { level: "warning", message: `Could not restore the tab for ${boundedString(entry.cwd, 120)}: ${boundedString(error.message, 160)}` });
       }
     }
-    const callerReal = resolveWorkspaceDirectory(callerCwd);
-    let callerTab = order.map((id) => tabs.get(id)).find((tab) => tab.cwd === callerReal);
-    if (!callerTab) callerTab = tabs.size < LIMITS.maxTabs ? open({ cwd: callerReal, select: false, notify: false }) : tabs.get(order[0]);
-    activeId = callerTab.id;
+    if (savedActive !== -1) {
+      const callerReal = resolveWorkspaceDirectory(callerCwd);
+      let callerTab = order.map((id) => tabs.get(id)).find((tab) => tab.cwd === callerReal);
+      if (!callerTab) callerTab = tabs.size < LIMITS.maxTabs ? open({ cwd: callerReal, select: false, notify: false }) : tabs.get(order[0]);
+      activeId = callerTab.id;
+    } else {
+      activeId = "";
+    }
     quiet = false;
     saveState();
     emitTabs();
+    sessionPathsChanged();
     return { restored, activeTab: activeId };
+  }
+
+  // Session targets stay registry-private while Pi is starting or changing sessions, so catalog
+  // reconciliation can treat every path owned by an open tab as open throughout the transition.
+  async function switchSession(id, sessionPath, { staleGeneration = null } = {}) {
+    const tab = require(id);
+    tab.transitionSessionFile = sessionPath;
+    sessionPathsChanged();
+    try {
+      const result = await tab.session.switchSession(sessionPath);
+      const clearsPreparedGeneration = staleGeneration === null
+        || (tab.staleGeneration === staleGeneration && tab.staleSessionFile === sessionPath);
+      if (clearsPreparedGeneration) {
+        tab.staleSessionFile = "";
+        tab.persistedMetadataJson = "";
+        if (staleGeneration === null) tab.staleGeneration += 1;
+      }
+      return result;
+    } finally {
+      if (tab.transitionSessionFile === sessionPath) tab.transitionSessionFile = "";
+      sessionPathsChanged();
+    }
+  }
+
+  function prepareMutation(id) {
+    const tab = require(id);
+    if (tab.preparationPromise) return tab.preparationPromise;
+    if (!tab.staleSessionFile) return Promise.resolve(false);
+    const current = tab.sessionFile;
+    const staleGeneration = tab.staleGeneration;
+    if (!current || current !== tab.staleSessionFile) {
+      if (tab.staleGeneration === staleGeneration) tab.staleSessionFile = "";
+      return Promise.resolve(false);
+    }
+    const preparation = switchSession(tab.id, current, { staleGeneration }).then(() => true);
+    tab.preparationPromise = preparation.finally(() => {
+      if (tab.preparationPromise === preparationWithCleanup) tab.preparationPromise = null;
+    });
+    const preparationWithCleanup = tab.preparationPromise;
+    return preparationWithCleanup;
+  }
+
+  function isPreparingMutation(id) {
+    return Boolean(get(id)?.preparationPromise);
+  }
+
+  function sessionSyncGeneration(id) {
+    return get(id)?.staleGeneration ?? -1;
+  }
+
+  async function newSession(id) {
+    const tab = require(id);
+    tab.transitionSessionFile = tab.sessionFile;
+    sessionPathsChanged();
+    try {
+      const result = await tab.session.newSession();
+      tab.staleSessionFile = "";
+      tab.staleGeneration += 1;
+      tab.persistedMetadataJson = "";
+      return result;
+    } finally {
+      tab.transitionSessionFile = "";
+      sessionPathsChanged();
+    }
+  }
+
+  function applyExternalSnapshot(sessionPath, snapshot) {
+    const resolved = path.resolve(sessionPath);
+    const tab = order.map((id) => tabs.get(id)).find((candidate) => candidate.sessionFile && path.resolve(candidate.sessionFile) === resolved);
+    if (!tab) return { applied: false, reason: "not-open" };
+    if (tab.session.snapshot().active) return { applied: false, reason: "active" };
+
+    const projected = rowsFromHistory(snapshot.messages);
+    const rowsEqual = JSON.stringify(comparableRows(tab.mirror.rows())) === JSON.stringify(comparableRows(projected.rows));
+    const metadata = snapshotMetadata(snapshot);
+    const metadataJson = JSON.stringify(metadata);
+    const runtime = tab.session.snapshot().runtime;
+    const metadataEqual = tab.persistedMetadataJson
+      ? metadataJson === tab.persistedMetadataJson
+      : metadata.sessionId === runtime.sessionId
+        && metadata.name === tab.sessionName
+        && metadata.thinkingLevel === runtime.thinkingLevel
+        && (metadata.model?.provider ?? "") === runtime.provider
+        && (metadata.model?.modelId ?? "") === runtime.modelId;
+    if (rowsEqual && metadataEqual) {
+      tab.persistedMetadataJson = metadataJson;
+      return { applied: false, reason: "equal" };
+    }
+
+    tab.mirror.replace(projected.rows);
+    tab.persistedMetadataJson = metadataJson;
+    tab.staleGeneration += 1;
+    tab.staleSessionFile = tab.sessionFile;
+    tab.session.applyPersistedSnapshotMetadata(snapshot, projected.messageCount);
+    if (snapshot.name !== tab.sessionName) {
+      tab.sessionName = snapshot.name;
+      saveState();
+    }
+    if (tab.id === activeId) replay(tab);
+    else {
+      tab.unread += 1;
+      emitTabs();
+    }
+    return { applied: true, reason: "different", tabId: tab.id, active: tab.id === activeId };
+  }
+
+  function sessionPaths() {
+    const entries = [];
+    for (const id of order) {
+      const tab = tabs.get(id);
+      const seen = new Set();
+      for (const sessionPath of [tab.sessionFile, tab.pendingResume, tab.transitionSessionFile]) {
+        if (!sessionPath || seen.has(sessionPath)) continue;
+        seen.add(sessionPath);
+        entries.push({ tabId: tab.id, path: sessionPath });
+      }
+    }
+    return entries;
   }
 
   // Restart keeps continuity: the new Pi child resumes the session file the tab was showing.
   async function restart(id) {
     const tab = require(id);
     tab.pendingResume = tab.sessionFile && existsSync(tab.sessionFile) ? tab.sessionFile : "";
+    sessionPathsChanged();
     return tab.session.restart();
   }
 
@@ -265,5 +450,30 @@ export function createTabRegistry({ emit, state, createSession, callerCwd, now =
     return order.map((id) => tabs.get(id).session.child).filter(Boolean);
   }
 
-  return { open, close, select, rename, move, restart, restore, list, get, require, active, replay, stopAll, children, saveState, get activeId() { return activeId; }, get size() { return tabs.size; } };
+  return {
+    open,
+    close,
+    select,
+    rename,
+    move,
+    restart,
+    restore,
+    switchSession,
+    prepareMutation,
+    isPreparingMutation,
+    sessionSyncGeneration,
+    newSession,
+    applyExternalSnapshot,
+    sessionPaths,
+    list,
+    get,
+    require,
+    active,
+    replay,
+    stopAll,
+    children,
+    saveState,
+    get activeId() { return activeId; },
+    get size() { return tabs.size; },
+  };
 }

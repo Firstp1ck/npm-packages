@@ -2,9 +2,9 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Renders the bounded block list produced by the backend Markdown renderer. Inline content is
-// StyledText that the backend already escaped and restricted to a small tag whitelist, so this
-// component only lays blocks out; it never parses Markdown or HTML itself.
+// Renders the bounded block list produced by the backend Markdown renderer. The backend escapes
+// inline content and emits only a small tag whitelist before these read-only editors use RichText.
+// This component only lays blocks out; it never parses Markdown or arbitrary HTML itself.
 Column {
     id: root
 
@@ -12,6 +12,8 @@ Column {
     property string blocksJson: "[]"
     property bool compact: false
     property bool highlight: true
+    property color foregroundColor: theme.foreground
+    property bool italic: false
     readonly property var blocks: parseBlocks(blocksJson)
 
     signal linkActivated(string link)
@@ -29,7 +31,7 @@ Column {
     }
 
     // Tokens are [kind, escapedText] pairs from the backend; only the color comes from the theme.
-    // <pre> keeps newlines and indentation, which StyledText would otherwise collapse.
+    // <pre> keeps newlines and indentation in the sanitized RichText output.
     function styledCode(tokens) {
         let markup = "<pre>"
         for (const token of tokens) {
@@ -82,21 +84,24 @@ Column {
                 color: root.theme.quoteBorder
             }
 
-            Label {
+            TextEdit {
                 id: paragraphLabel
                 width: parent.width - parent.leftPadding - (block.quote === true ? 11 : 0)
                 text: block.styled || ""
-                textFormat: Text.StyledText
-                wrapMode: Text.Wrap
-                color: block.quote === true ? root.theme.muted : root.theme.foreground
-                linkColor: root.theme.link
+                textFormat: TextEdit.RichText
+                readOnly: true
+                selectByMouse: true
+                selectByKeyboard: true
+                wrapMode: TextEdit.Wrap
+                selectionColor: root.theme.selection
+                selectedTextColor: root.theme.selectionForeground
+                color: block.quote === true ? root.theme.muted : root.foregroundColor
                 font.pixelSize: root.compact ? 13 : 14
-                font.italic: block.quote === true
-                lineHeight: 1.2
+                font.italic: root.italic || block.quote === true
                 Accessible.role: Accessible.Paragraph
                 onLinkActivated: link => root.linkActivated(link)
                 HoverHandler {
-                    cursorShape: paragraphLabel.hoveredLink.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    cursorShape: paragraphLabel.hoveredLink.length > 0 ? Qt.PointingHandCursor : Qt.IBeamCursor
                 }
             }
         }
@@ -104,17 +109,21 @@ Column {
 
     Component {
         id: headingComponent
-        Label {
+        TextEdit {
+            id: headingLabel
             readonly property var block: parent.block
             width: parent.width
             text: block.styled || ""
-            textFormat: Text.StyledText
-            wrapMode: Text.Wrap
+            textFormat: TextEdit.RichText
+            readOnly: true
+            selectByMouse: true
+            selectByKeyboard: true
+            wrapMode: TextEdit.Wrap
+            selectionColor: root.theme.selection
+            selectedTextColor: root.theme.selectionForeground
             color: root.theme.heading
-            linkColor: root.theme.link
             font.pixelSize: root.headingSize(block.level)
             font.bold: true
-            topPadding: root.compact ? 2 : 6
             Accessible.role: Accessible.Heading
             onLinkActivated: link => root.linkActivated(link)
         }
@@ -126,10 +135,7 @@ Column {
             id: codeBlock
             readonly property var block: parent.block
             readonly property bool hasTokens: Array.isArray(block.tokens) && block.tokens.length > 0
-            // Highlighted code is styled text without selection; "Select text" swaps in the plain
-            // editor so the user can select, then swaps back. Copy always uses the original text.
-            property bool selectable: false
-            readonly property bool highlighted: root.highlight && hasTokens && !selectable
+            readonly property bool highlighted: root.highlight && hasTokens
             width: parent.width
             implicitHeight: codeColumn.implicitHeight + root.theme.space2Xl
             radius: root.theme.radiusMedium
@@ -155,15 +161,6 @@ Column {
                         elide: Text.ElideRight
                     }
                     AppButton {
-                        visible: root.highlight && codeBlock.hasTokens
-                        theme: root.theme
-                        variant: "ghost"
-                        active: codeBlock.selectable
-                        text: codeBlock.selectable ? "Highlight" : "Select text"
-                        accessibleName: codeBlock.selectable ? "Show highlighted code" : "Show selectable plain code"
-                        onClicked: codeBlock.selectable = !codeBlock.selectable
-                    }
-                    AppButton {
                         theme: root.theme
                         variant: "ghost"
                         text: "Copy"
@@ -172,12 +169,18 @@ Column {
                     }
                 }
 
-                Label {
+                TextEdit {
+                    id: highlightedCodeLabel
                     Layout.fillWidth: true
                     visible: codeBlock.highlighted
                     text: codeBlock.highlighted ? root.styledCode(block.tokens) : ""
-                    textFormat: Text.StyledText
-                    wrapMode: Text.WrapAnywhere
+                    textFormat: TextEdit.RichText
+                    readOnly: true
+                    selectByMouse: true
+                    selectByKeyboard: true
+                    wrapMode: TextEdit.WrapAnywhere
+                    selectionColor: root.theme.selection
+                    selectedTextColor: root.theme.selectionForeground
                     color: root.theme.codeForeground
                     font.family: root.theme.monospaceFamily
                     font.pixelSize: root.compact ? 12 : 13
@@ -186,6 +189,7 @@ Column {
                 }
 
                 TextEdit {
+                    id: plainCodeEdit
                     Layout.fillWidth: true
                     visible: !codeBlock.highlighted
                     text: block.text || ""
@@ -196,7 +200,7 @@ Column {
                     wrapMode: TextEdit.WrapAnywhere
                     color: root.theme.codeForeground
                     selectionColor: root.theme.selection
-                    selectedTextColor: root.theme.codeForeground
+                    selectedTextColor: root.theme.selectionForeground
                     font.family: root.theme.monospaceFamily
                     font.pixelSize: root.compact ? 12 : 13
                     Accessible.role: Accessible.StaticText
@@ -223,20 +227,25 @@ Column {
                 font.pixelSize: root.compact ? 13 : 14
             }
 
-            Label {
+            TextEdit {
                 id: itemLabel
                 width: parent.width - parent.leftPadding - 30
                 text: block.styled || ""
-                textFormat: Text.StyledText
-                wrapMode: Text.Wrap
-                color: root.theme.foreground
-                linkColor: root.theme.link
+                textFormat: TextEdit.RichText
+                readOnly: true
+                selectByMouse: true
+                selectByKeyboard: true
+                wrapMode: TextEdit.Wrap
+                selectionColor: root.theme.selection
+                selectedTextColor: root.theme.selectionForeground
+                color: root.foregroundColor
                 font.pixelSize: root.compact ? 13 : 14
+                font.italic: root.italic
                 font.strikeout: block.task === true && block.checked === true
                 Accessible.role: Accessible.ListItem
                 onLinkActivated: link => root.linkActivated(link)
                 HoverHandler {
-                    cursorShape: itemLabel.hoveredLink.length > 0 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    cursorShape: itemLabel.hoveredLink.length > 0 ? Qt.PointingHandCursor : Qt.IBeamCursor
                 }
             }
         }
@@ -276,16 +285,21 @@ Column {
                         border.width: root.theme.borderWidth
                         border.color: root.theme.tableBorder
 
-                        Label {
+                        TextEdit {
                             id: cellLabel
                             anchors.fill: parent
                             anchors.margins: 5
                             text: String(modelData ?? "")
-                            textFormat: Text.StyledText
-                            wrapMode: Text.Wrap
-                            color: root.theme.foreground
-                            linkColor: root.theme.link
+                            textFormat: TextEdit.RichText
+                            readOnly: true
+                            selectByMouse: true
+                            selectByKeyboard: true
+                            wrapMode: TextEdit.Wrap
+                            selectionColor: root.theme.selection
+                            selectedTextColor: root.theme.selectionForeground
+                            color: root.foregroundColor
                             font.bold: parent.isHeader
+                            font.italic: root.italic
                             font.pixelSize: root.compact ? 12 : 13
                             onLinkActivated: link => root.linkActivated(link)
                         }
@@ -293,13 +307,18 @@ Column {
                 }
             }
 
-            Label {
+            TextEdit {
                 id: droppedLabel
                 anchors.top: grid.bottom
                 anchors.topMargin: 4
                 visible: block.droppedRows > 0
                 text: visible ? block.droppedRows + " more rows omitted" : ""
-                textFormat: Text.PlainText
+                textFormat: TextEdit.PlainText
+                readOnly: true
+                selectByMouse: true
+                selectByKeyboard: true
+                selectionColor: root.theme.selection
+                selectedTextColor: root.theme.selectionForeground
                 color: root.theme.muted
                 font.pixelSize: root.theme.typeSmall
             }
@@ -318,12 +337,18 @@ Column {
 
     Component {
         id: noticeComponent
-        Label {
+        TextEdit {
+            id: noticeLabel
             readonly property var block: parent.block
             width: parent.width
             text: block.styled || ""
-            textFormat: Text.StyledText
-            wrapMode: Text.Wrap
+            textFormat: TextEdit.RichText
+            readOnly: true
+            selectByMouse: true
+            selectByKeyboard: true
+            wrapMode: TextEdit.Wrap
+            selectionColor: root.theme.selection
+            selectedTextColor: root.theme.selectionForeground
             color: root.theme.muted
             font.italic: true
             font.pixelSize: root.theme.typeBody

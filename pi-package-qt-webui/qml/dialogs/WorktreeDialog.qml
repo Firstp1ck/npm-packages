@@ -76,9 +76,9 @@ AppDialog {
             Accessible.description: "Choose a suggested type or enter a custom type"
 
             background: Rectangle {
-                radius: 6
+                radius: dialog.theme.radiusSmall
                 color: dialog.theme.surfaceRaised
-                border.width: typeField.activeFocus ? 2 : 1
+                border.width: dialog.theme.borderWidth
                 border.color: typeField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
             }
 
@@ -115,8 +115,8 @@ AppDialog {
                 palette.text: dialog.theme.foreground
                 palette.highlightedText: dialog.theme.foreground
                 background: Rectangle {
-                    radius: 4
-                    color: parent.highlighted ? dialog.theme.selection : "transparent"
+                    radius: dialog.theme.radiusSmall
+                    color: parent.highlighted ? dialog.theme.selection : dialog.theme.transparent
                 }
             }
 
@@ -135,9 +135,9 @@ AppDialog {
                 }
 
                 background: Rectangle {
-                    radius: 7
+                    radius: dialog.theme.radiusMedium
                     color: dialog.theme.surfaceRaised
-                    border.width: 1
+                    border.width: dialog.theme.borderWidth
                     border.color: dialog.theme.border
                 }
             }
@@ -170,9 +170,9 @@ AppDialog {
             font.family: dialog.theme.monospaceFamily
             font.pixelSize: 13
             background: Rectangle {
-                radius: 6
+                radius: dialog.theme.radiusSmall
                 color: dialog.theme.surfaceRaised
-                border.width: nameField.activeFocus ? 2 : 1
+                border.width: dialog.theme.borderWidth
                 border.color: nameField.activeFocus ? dialog.theme.focusRing : dialog.theme.border
             }
             Accessible.role: Accessible.EditableText

@@ -154,7 +154,17 @@ export function rowsFromHistory(messages, { maxRows = LIMITS.maxTranscriptRows }
           push({ rowId: `history-${serial}.${partIndex}`, messageId: `h${serial}`, role: "assistant", kind: "text", text, blocksJson: JSON.stringify(renderMarkdown(text).blocks), truncated: part.text.length > LIMITS.maxMessageCharacters });
         } else if (part.type === "thinking" && typeof part.thinking === "string") {
           partIndex += 1;
-          push({ rowId: `history-${serial}.${partIndex}`, messageId: `h${serial}`, role: "assistant", kind: "thinking", text: boundedString(part.thinking, LIMITS.maxThinkingCharacters), truncated: part.thinking.length > LIMITS.maxThinkingCharacters });
+          if (part.thinking.trim().length === 0) continue;
+          const previous = rows.at(-1);
+          if (previous && previous.messageId === `h${serial}` && previous.kind === "thinking") {
+            const combined = `${previous.text}\n\n${part.thinking}`;
+            previous.text = boundedString(combined, LIMITS.maxThinkingCharacters);
+            previous.blocksJson = JSON.stringify(renderMarkdown(previous.text).blocks);
+            previous.truncated = previous.truncated || combined.length > LIMITS.maxThinkingCharacters;
+          } else {
+            const text = boundedString(part.thinking, LIMITS.maxThinkingCharacters);
+            push({ rowId: `history-${serial}.${partIndex}`, messageId: `h${serial}`, role: "assistant", kind: "thinking", text, blocksJson: JSON.stringify(renderMarkdown(text).blocks), truncated: part.thinking.length > LIMITS.maxThinkingCharacters });
+          }
         } else if (part.type === "toolCall") {
           partIndex += 1;
           const toolCallId = boundedString(part.id, LIMITS.maxRequestIdCharacters, `${serial}.${partIndex}`);

@@ -60,6 +60,7 @@ Button {
         text: control.text
         textFormat: Text.PlainText
         color: control.interactionForeground
+        font.family: control.theme.monospaceFamily
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         font.weight: control.variant === "primary" ? Font.DemiBold : Font.Medium

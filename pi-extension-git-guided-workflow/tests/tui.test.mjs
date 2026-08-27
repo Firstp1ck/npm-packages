@@ -18,6 +18,11 @@ import gitGuidedWorkflow, {
   progressText,
   showActionScreen,
 } from "../index.ts";
+import {
+  BRANCH_OUTPUT_MAX_TOKENS,
+  COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+  COMMIT_OUTPUT_MAX_TOKENS,
+} from "../src/native-generation.ts";
 
 initTheme(undefined, false);
 
@@ -162,6 +167,18 @@ function assistantResponse(output) {
     timestamp: Date.now(),
   };
 }
+
+function requestEvidence(request) {
+  const text = request.messages[0].content[0].text;
+  return JSON.parse(text.slice(text.indexOf("\n") + 1, text.lastIndexOf("\n")));
+}
+
+function chunkSummary(summary) {
+  return summary;
+}
+
+const validNativeCommitOutput = "<<<SHORT>>>\nfeat(core): handle large staged changes\n<<<LONG>>>\nfeat(core): handle large staged changes\n- feat: synthesize complete staged evidence\n<<<END>>>";
+const oversizedStagedContent = `${"large staged evidence line\n".repeat(50_000)}final large marker\n`;
 
 test("registers the workflow and three native generation commands with exact public names", () => {
   const { commands, handlers } = extensionRegistration();
@@ -339,7 +356,7 @@ test("Stage all returns to a fresh summary when counts change during confirmatio
   assert.equal(harness.confirmations.filter(({ title }) => title === "Stage all repository changes?").length, 1);
 });
 
-test("generation sends the complete diff only after selection and accepts the closed format", async () => {
+test("generation sends the complete diff only after selection and accepts the preferred framing", async () => {
   const root = await repository("generate");
   await stageTracked(root, "generated private content\n");
   let completeCalls = 0;
@@ -627,7 +644,7 @@ test("native RPC generation invokes the active model directly and writes correla
   ];
   const modelRegistry = {
     async complete(model, request, options) {
-      calls.push({ model, request, signal: options.signal });
+      calls.push({ model, request, signal: options.signal, maxTokens: options.maxTokens });
       return assistantResponse(outputs.shift());
     },
   };
@@ -643,6 +660,7 @@ test("native RPC generation invokes the active model directly and writes correla
 
   assert.equal(calls.length, 2);
   assert.equal(calls[0].model.id, "native-model");
+  assert.deepEqual(calls.map(({ maxTokens }) => maxTokens), [COMMIT_OUTPUT_MAX_TOKENS, BRANCH_OUTPUT_MAX_TOKENS]);
   assert.match(calls[0].request.systemPrompt, /English.*Always use a concise lowercase scope/su);
   assert.match(calls[0].request.messages[0].content[0].text, /native direct generation/u);
   assert.equal(calls[0].signal.aborted, true, "the completed command controller is closed after the artifact transaction");
@@ -652,6 +670,209 @@ test("native RPC generation invokes the active model directly and writes correla
   assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-branch-name.txt"), "utf8"), "feat/add-native-generation\n");
   assert.ok(harness.notifications.some(({ message }) => /sends the required bounded repository content directly to private-provider/u.test(message)));
   assert.ok(harness.notifications.every(({ message }) => !/prompt template|parent-agent tools/u.test(message) || /No parent-agent tools or prompt template are used/u.test(message)));
+});
+
+test("native commit RPC analyzes every oversized staged chunk sequentially before one synthesis", async () => {
+  const root = await repository("native-rpc-oversized-success");
+  await stageTracked(root, oversizedStagedContent);
+  const calls = [];
+  const outputTokenLimits = [];
+  let inFlight = 0;
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "large-model", provider: "test-provider" },
+    modelRegistry: {
+      async complete(_model, request, options) {
+        inFlight += 1;
+        assert.equal(inFlight, 1, "chunk analysis must remain sequential");
+        calls.push(request);
+        outputTokenLimits.push(options.maxTokens);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        if (/Summarize only the supplied staged-diff chunk/u.test(request.systemPrompt)) {
+          const evidence = requestEvidence(request);
+          return assistantResponse(chunkSummary(`Chunk ${evidence.chunk.index + 1} of ${evidence.chunk.totalChunks} changes tracked content.`));
+        }
+        assert.match(request.systemPrompt, /ordered chunk summaries/u);
+        return assistantResponse(validNativeCommitOutput);
+      },
+    },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx);
+
+  const chunkCalls = calls.filter((request) => /Summarize only the supplied staged-diff chunk/u.test(request.systemPrompt));
+  assert.equal(chunkCalls.length, 3);
+  assert.equal(calls.length, chunkCalls.length + 1);
+  assert.deepEqual(outputTokenLimits, [
+    COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+    COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+    COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+    COMMIT_OUTPUT_MAX_TOKENS,
+  ]);
+  assert.deepEqual(chunkCalls.map((request) => requestEvidence(request).chunk.index), [0, 1, 2]);
+  assert.deepEqual(chunkCalls.map((request) => requestEvidence(request).chunk.totalChunks), [3, 3, 3]);
+  assert.match(calls.at(-1).systemPrompt, /ordered chunk summaries/u);
+  const synthesisEvidence = requestEvidence(calls.at(-1));
+  assert.equal(synthesisEvidence.chunkCount, 3);
+  assert.equal(synthesisEvidence.chunks.some((chunk) => Object.hasOwn(chunk, "diff")), false);
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat(core): handle large staged changes\n");
+  assert.ok(harness.notifications.some(({ message }) => /4 model requests.*3 sequential chunk analyses.*one final synthesis/u.test(message)));
+  assert.ok(harness.notifications.some(({ message }) => /analyzed 3\/3 chunks.*retained summaries/u.test(message)));
+});
+
+test("oversized native commit bounds provider failure and unsafe chunk summaries", async (t) => {
+  await t.test("provider failure stops the remaining chunks", async () => {
+    const root = await repository("native-rpc-oversized-provider-failure");
+    await stageTracked(root, oversizedStagedContent);
+    let calls = 0;
+    const { commands } = extensionRegistration();
+    const harness = createContext(root, {
+      mode: "rpc",
+      model: { id: "failing-large-model", provider: "test-provider" },
+      modelRegistry: {
+        async complete(_model, request) {
+          calls += 1;
+          if (calls === 2) throw new Error("chunk provider unavailable");
+          const evidence = requestEvidence(request);
+          return assistantResponse(chunkSummary(`Chunk ${evidence.chunk.index + 1} analyzed.`));
+        },
+      },
+    });
+
+    await assert.rejects(
+      commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx),
+      /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE: active model generation failed/u,
+    );
+    assert.equal(calls, 2);
+    await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"));
+    await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"));
+  });
+
+  await t.test("empty chunk summary stops before synthesis without a formatting retry", async () => {
+    const root = await repository("native-rpc-oversized-empty-summary");
+    await stageTracked(root, oversizedStagedContent);
+    let calls = 0;
+    const { commands } = extensionRegistration();
+    const harness = createContext(root, {
+      mode: "rpc",
+      model: { id: "empty-summary-model", provider: "test-provider" },
+      modelRegistry: { async complete() { calls += 1; return assistantResponse("  \n"); } },
+    });
+
+    await assert.rejects(
+      commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx),
+      /Generated chunk summary is empty/u,
+    );
+    assert.equal(calls, 1, "formatting deviations do not trigger a retry");
+    await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"));
+  });
+});
+
+test("oversized native commit cancellation between chunks stops without artifacts", async () => {
+  const root = await repository("native-tui-oversized-cancel");
+  await stageTracked(root, oversizedStagedContent);
+  const { commands } = extensionRegistration();
+  let calls = 0;
+  let secondStartedResolve;
+  const secondStarted = new Promise((resolve) => { secondStartedResolve = resolve; });
+  const harness = createContext(root, {
+    mode: "tui",
+    model: { id: "cancel-large-model", provider: "test-provider" },
+    modelRegistry: {
+      async complete(_model, request, { signal }) {
+        calls += 1;
+        if (calls === 1) {
+          const evidence = requestEvidence(request);
+          return assistantResponse(chunkSummary(`Chunk ${evidence.chunk.index + 1} analyzed.`));
+        }
+        secondStartedResolve();
+        return await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      },
+    },
+    onLoader(component) { void secondStarted.then(() => component.handleInput("\x1b")); },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx);
+
+  assert.equal(calls, 2);
+  assert.ok(harness.notifications.some(({ message }) => /git-staged-msg cancelled/u.test(message)));
+  await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"));
+});
+
+test("oversized native commit correction reuses summaries without reanalyzing chunks", async () => {
+  const root = await repository("native-rpc-oversized-correction");
+  await stageTracked(root, oversizedStagedContent);
+  const calls = [];
+  const outputTokenLimits = [];
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "repair-large-model", provider: "test-provider" },
+    modelRegistry: {
+      async complete(_model, request, options) {
+        calls.push(request);
+        outputTokenLimits.push(options.maxTokens);
+        if (/Summarize only the supplied staged-diff chunk/u.test(request.systemPrompt)) {
+          const evidence = requestEvidence(request);
+          return assistantResponse(chunkSummary(`Chunk ${evidence.chunk.index + 1} analyzed.`));
+        }
+        if (/single correction request/u.test(request.systemPrompt)) return assistantResponse(validNativeCommitOutput);
+        return assistantResponse("   \n");
+      },
+    },
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx);
+
+  assert.equal(calls.length, 5, "three analyses, one synthesis, and one correction are the only requests");
+  assert.deepEqual(outputTokenLimits, [
+    COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+    COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+    COMMIT_CHUNK_SUMMARY_OUTPUT_MAX_TOKENS,
+    COMMIT_OUTPUT_MAX_TOKENS,
+    COMMIT_OUTPUT_MAX_TOKENS,
+  ]);
+  assert.equal(calls.filter((request) => /Summarize only the supplied staged-diff chunk/u.test(request.systemPrompt)).length, 3);
+  assert.match(calls[3].systemPrompt, /ordered chunk summaries/u);
+  assert.match(calls[4].systemPrompt, /single correction request.*retained ordered chunk summaries/su);
+  const correctionEvidence = requestEvidence(calls[4]);
+  assert.equal(correctionEvidence.chunkCount, 3);
+  assert.equal(correctionEvidence.chunks.some((chunk) => Object.hasOwn(chunk, "diff")), false);
+  assert.equal(correctionEvidence.previousOutput, "   \n");
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat(core): handle large staged changes\n");
+});
+
+test("oversized native commit staged drift still blocks artifact installation", async () => {
+  const root = await repository("native-rpc-oversized-drift");
+  await stageTracked(root, oversizedStagedContent);
+  let calls = 0;
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: { id: "drift-large-model", provider: "test-provider" },
+    modelRegistry: {
+      async complete(_model, request) {
+        calls += 1;
+        if (/Summarize only the supplied staged-diff chunk/u.test(request.systemPrompt)) {
+          const evidence = requestEvidence(request);
+          return assistantResponse(chunkSummary(`Chunk ${evidence.chunk.index + 1} analyzed.`));
+        }
+        await writeFile(path.join(root, "tracked.txt"), "staged state drifted during synthesis\n");
+        git(root, "add", "--", "tracked.txt");
+        return assistantResponse(validNativeCommitOutput);
+      },
+    },
+  });
+
+  await assert.rejects(
+    commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", harness.ctx),
+    /Staged changes changed during generation/u,
+  );
+  assert.equal(calls, 4);
+  await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"));
+  await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"));
 });
 
 test("native PR RPC generation writes the encoded branch artifact without prompt fallback", async () => {
@@ -723,12 +944,12 @@ test("Escape cancellation keeps generation ownership until provider work settles
   await new Promise((resolve) => setImmediate(resolve));
 });
 
-test("native commit RPC makes one bounded correction request after invalid output", async () => {
+test("native commit RPC makes one bounded correction request after empty output", async () => {
   const root = await repository("native-rpc-commit-correction");
   await stageTracked(root, "repair invalid commit type\n");
   const calls = [];
   const outputs = [
-    "not closed output",
+    "   \n",
     "<<<SHORT>>>\nfeat(core): add bounded repair\n<<<LONG>>>\nfeat(core): add bounded repair\n- feat: retry invalid output once\n<<<END>>>",
   ];
   const { commands } = extensionRegistration();
@@ -754,18 +975,18 @@ test("native commit RPC makes one bounded correction request after invalid outpu
   const correctionEvidence = JSON.parse(correctionJson);
   assert.equal(correctionEvidence.validation.code, "INVALID_GENERATED_OUTPUT");
   assert.match(correctionEvidence.diff, /repair invalid commit type/u);
-  assert.equal(correctionEvidence.previousOutput, "not closed output");
+  assert.equal(correctionEvidence.previousOutput, "   \n");
   assert.ok(harness.notifications.some(({ message, type }) => type === "warning" && /one final correction request/u.test(message)));
   assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat(core): add bounded repair\n");
   assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"), "feat(core): add bounded repair\n- feat: retry invalid output once\n");
 });
 
-test("native commit RPC treats commit quality rules as guidance without correction", async () => {
+test("sub-1 MiB native commit remains one direct request and treats quality rules as guidance", async () => {
   const root = await repository("native-rpc-commit-guidance");
   await stageTracked(root, "accept advisory commit style\n");
   const calls = [];
   const short = `feature: ${"describe the staged changes clearly ".repeat(3)}`;
-  const long = "different subject\nbody without typed bullets";
+  const long = `${short}\ndifferent subject\nbody without typed bullets`;
   const { commands } = extensionRegistration();
   const harness = createContext(root, {
     mode: "rpc",
@@ -773,7 +994,7 @@ test("native commit RPC treats commit quality rules as guidance without correcti
     modelRegistry: {
       async complete(model, request, options) {
         calls.push({ model, request, signal: options.signal });
-        return assistantResponse(`<<<SHORT>>>\n${short}\n<<<LONG>>>\n${long}\n<<<END>>>`);
+        return assistantResponse(long);
       },
     },
   });
@@ -781,9 +1002,11 @@ test("native commit RPC treats commit quality rules as guidance without correcti
   await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en required", harness.ctx);
 
   assert.equal(Array.from(short).length > 72, true);
-  assert.equal(calls.length, 1, "quality deviations must not start correction");
+  assert.equal(calls.length, 1, "sub-1 MiB input and quality deviations must stay on one direct request");
+  assert.match(calls[0].request.messages[0].content[0].text, /^<<<UNTRUSTED_STAGED_DIFF_JSON>>>/u);
+  assert.doesNotMatch(calls[0].request.systemPrompt, /chunk summaries/u);
   assert.equal(harness.notifications.some(({ type }) => type === "warning"), false);
-  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), `${short}\n`);
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), `${short.trim()}\n`);
   assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-long.txt"), "utf8"), `${long}\n`);
 });
 
@@ -807,18 +1030,18 @@ test("RPC exposes fallback eligibility only for direct provider generation failu
   const invalidOutput = createContext(root, {
     mode: "rpc",
     model: { id: "invalid-output-model", provider: "test" },
-    modelRegistry: { async complete() { invalidOutputCalls += 1; return assistantResponse("not closed output"); } },
+    modelRegistry: { async complete() { invalidOutputCalls += 1; return assistantResponse("   \n"); } },
   });
   await assert.rejects(
     commands.get(COMMIT_GENERATION_COMMAND_NAME).handler("en auto", invalidOutput.ctx),
     (error) => {
-      assert.match(error.message, /Generated commit output did not match the closed format/u);
+      assert.match(error.message, /Generated output must not be empty/u);
       assert.doesNotMatch(error.message, /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE/u);
       return true;
     },
   );
   assert.equal(invalidOutputCalls, 2, "a second invalid output must fail without a third request");
-  assert.match(invalidOutput.notifications.at(-1).message, /Generated commit output did not match the closed format/u);
+  assert.match(invalidOutput.notifications.at(-1).message, /Generated output must not be empty/u);
   assert.doesNotMatch(invalidOutput.notifications.at(-1).message, /FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE/u);
 
   let repairProviderCalls = 0;
@@ -828,7 +1051,7 @@ test("RPC exposes fallback eligibility only for direct provider generation failu
     modelRegistry: {
       async complete() {
         repairProviderCalls += 1;
-        if (repairProviderCalls === 1) return assistantResponse("not closed output");
+        if (repairProviderCalls === 1) return assistantResponse("   \n");
         throw new Error("provider unavailable during correction");
       },
     },

@@ -21,10 +21,12 @@ import {
 import { createResourceStore, resolveEffective, updateProfile, validateProfile } from "./resources.mjs";
 import { SAMPLING_KEYS, supportedSamplingValues } from "./sampling.mjs";
 import { createSequenceStore } from "./sequences.mjs";
-import { listSessions } from "./sessions-index.mjs";
+import { createSessionSyncMonitor, loadPersistedSessionSnapshot, sessionRevisionKey } from "./session-sync.mjs";
+import { listSessions, managedSessionPath, sessionsDirectory } from "./sessions-index.mjs";
 import { createSettingsStore } from "./settings.mjs";
-import { createStateStore } from "./state.mjs";
+import { createStateStore, sessionSettlementKey } from "./state.mjs";
 import { createTabRegistry } from "./tabs.mjs";
+import { createThemeService } from "./themes.mjs";
 
 // Backend entry point. Quickshell starts this process, writes protocol requests to its stdin,
 // and reads responses and events from its stdout. The backend owns every Pi child (one per tab)
@@ -33,12 +35,33 @@ import { createTabRegistry } from "./tabs.mjs";
 
 const COALESCABLE_EVENTS = new Set(["part.render", "tool.update"]);
 
+// Every request that can persist session state is fenced here. Explicit switch/new/restart paths
+// reconcile or replace the child themselves and therefore manage stale state in the registry.
+export const SESSION_MUTATION_REQUESTS = new Set([
+  "prompt",
+  "sequence_run",
+  "tab_rename",
+  "compact",
+  "model_set",
+  "model_cycle",
+  "thinking_set",
+  "thinking_cycle",
+  "resources_state",
+  "tools_set",
+  "skills_set",
+  "sampling_set",
+]);
+
 export function createBackend({
   input = process.stdin,
   output = process.stdout,
   env = process.env,
   exit = (code) => process.exit(code),
   onFatal = null,
+  createSessionMonitor = createSessionSyncMonitor,
+  loadSessionSnapshot = loadPersistedSessionSnapshot,
+  createTabSession = (options) => createPiSession(options),
+  sessionSyncNow = () => Date.now(),
 } = {}) {
   const smokeMode = env.QT_WEBUI_SMOKE_MODE === "1";
   const nodeExecutable = env.QT_WEBUI_NODE_EXECUTABLE || process.execPath;
@@ -47,6 +70,8 @@ export function createBackend({
   const startupReadinessMs = Number.parseInt(env.QT_WEBUI_PI_STARTUP_TIMEOUT_MS ?? "", 10);
   const piRequestTimeoutMs = smokeMode ? Number.parseInt(env.QT_WEBUI_PI_REQUEST_TIMEOUT_MS ?? "", 10) : Number.NaN;
   const helperTimeoutMs = smokeMode ? Number.parseInt(env.QT_WEBUI_HELPER_TIMEOUT_MS ?? "", 10) : Number.NaN;
+  const smokeNowMs = smokeMode ? Number.parseInt(env.QT_WEBUI_SMOKE_NOW_MS ?? "", 10) : Number.NaN;
+  const now = Number.isSafeInteger(smokeNowMs) && smokeNowMs >= 0 ? () => smokeNowMs : () => Date.now();
 
   let sequence = 0;
   let dropped = 0;
@@ -58,6 +83,8 @@ export function createBackend({
   let closing = false;
   let shutdownPromise = null;
   const inflight = new Map();
+  const exclusiveTabOperations = new Set();
+  const mutatingTabOperations = new Map();
 
   // Slow-consumer policy: coalescable records (streaming renders, tool progress) are dropped
   // while the outbound queue is over budget; essential records are always written, and every
@@ -125,9 +152,14 @@ export function createBackend({
     onChange: (portalColorScheme) => emit("appearance.changed", { portalColorScheme }),
   });
   const settings = createSettingsStore({ env });
-  const state = createStateStore({ env });
+  const state = createStateStore({ env, now });
   const sequences = createSequenceStore({ env });
   const resources = createResourceStore({ env });
+  const themes = createThemeService({
+    cwd,
+    settingsStore: settings,
+    onChange: (themeState) => emit("themes.changed", { state: themeState }),
+  });
   const sessionOptions = {
     nodeExecutable,
     piCliEntry,
@@ -138,11 +170,216 @@ export function createBackend({
       : {}),
     ...(Number.isFinite(helperTimeoutMs) && helperTimeoutMs > 0 ? { helperTimeoutMs } : {}),
   };
+  let sessionMonitor = null;
+  let monitorPathsPromise = Promise.resolve();
+  let monitorPathsRunning = false;
+  let monitorPathsDirty = false;
+  let registryPathGeneration = 0;
+  let registryOwnedSessionPaths = new Set();
+  let monitoredSessionPaths = new Set();
+  let futureSessionPaths = new Set();
+  const pendingSessionChanges = new Map();
+  const reconcilingSessionPaths = new Set();
+  const reconciliationFailures = new Map();
+  const reconciliationWarnings = new Set();
+  const reconciliationBackoffBaseMs = 2_000;
+  const reconciliationBackoffMaxMs = 60_000;
+
+  function warnSessionSyncOnce(operation, error, tab = "") {
+    const code = typeof error?.code === "string" ? error.code : error?.name || "Error";
+    const key = `${operation}:${code}`;
+    if (reconciliationWarnings.has(key)) return;
+    reconciliationWarnings.add(key);
+    emit("notice", { ...(tab ? { tab } : {}), level: "warning", message: `Session synchronization: ${boundedError(error?.message ?? String(error))}` });
+  }
+
+  function pruneSessionSyncState() {
+    for (const sessionPath of pendingSessionChanges.keys()) {
+      if (registryOwnedSessionPaths.has(path.resolve(sessionPath))) continue;
+      pendingSessionChanges.delete(sessionPath);
+      reconcilingSessionPaths.delete(sessionPath);
+      reconciliationFailures.delete(sessionPath);
+    }
+    for (const sessionPath of reconciliationFailures.keys()) {
+      if (!registryOwnedSessionPaths.has(path.resolve(sessionPath))) reconciliationFailures.delete(sessionPath);
+    }
+    futureSessionPaths = new Set([...futureSessionPaths].filter((sessionPath) => registryOwnedSessionPaths.has(sessionPath)));
+  }
+
+  function samePathSet(left, right) {
+    return left.size === right.size && [...left].every((sessionPath) => right.has(sessionPath));
+  }
+
+  async function runMonitoredPathValidation() {
+    const requested = [...registryOwnedSessionPaths];
+    const validated = await Promise.all(requested.map(async (sessionPath) => {
+      try {
+        return { path: (await managedSessionPath(sessionPath, { env })).path, valid: true, retry: false };
+      } catch (error) {
+        return { path: sessionPath, valid: false, retry: error?.code === "unavailable" };
+      }
+    }));
+    const nextMonitored = new Set(validated
+      .filter((entry) => entry.valid && registryOwnedSessionPaths.has(path.resolve(entry.path)))
+      .map((entry) => entry.path));
+    const nextFuture = new Set(validated
+      .filter((entry) => entry.retry && registryOwnedSessionPaths.has(entry.path))
+      .map((entry) => entry.path));
+    if (!samePathSet(monitoredSessionPaths, nextMonitored)) registryPathGeneration += 1;
+    monitoredSessionPaths = nextMonitored;
+    futureSessionPaths = nextFuture;
+    pruneSessionSyncState();
+    return sessionMonitor.setOpenSessionPaths([...monitoredSessionPaths]);
+  }
+
+  function validateMonitoredPaths() {
+    if (!sessionMonitor) return monitorPathsPromise;
+    if (monitorPathsRunning) {
+      monitorPathsDirty = true;
+      return monitorPathsPromise;
+    }
+    monitorPathsRunning = true;
+    monitorPathsPromise = (async () => {
+      do {
+        monitorPathsDirty = false;
+        try {
+          await runMonitoredPathValidation();
+        } catch (error) {
+          warnSessionSyncOnce("open-paths", error);
+        }
+      } while (monitorPathsDirty);
+    })().finally(() => {
+      monitorPathsRunning = false;
+    });
+    return monitorPathsPromise;
+  }
+
+  function updateMonitoredPaths(paths) {
+    registryOwnedSessionPaths = new Set(paths.map((entry) => path.resolve(entry.path)));
+    registryPathGeneration += 1;
+    pruneSessionSyncState();
+    return validateMonitoredPaths();
+  }
+
   const registry = createTabRegistry({
     emit,
     state,
     callerCwd: cwd,
-    createSession: ({ cwd: tabCwd, emit: tabEmit }) => createPiSession({ ...sessionOptions, cwd: tabCwd, emit: tabEmit }),
+    createSession: ({ cwd: tabCwd, emit: tabEmit }) => createTabSession({ ...sessionOptions, cwd: tabCwd, emit: tabEmit }),
+    onSessionPathsChange: (paths) => updateMonitoredPaths(paths),
+    onSessionIdle: (tab) => retryPendingSessionChanges(tab),
+  });
+
+  function tabForSessionPath(sessionPath) {
+    const resolved = path.resolve(sessionPath);
+    return allTabs().find((tab) => tab.sessionFile && path.resolve(tab.sessionFile) === resolved) ?? null;
+  }
+
+  function tabSessionSyncBusy(tab) {
+    return tab.session.snapshot().active
+      || exclusiveTabOperations.has(tab.id)
+      || (mutatingTabOperations.get(tab.id) ?? 0) > 0
+      || registry.isPreparingMutation(tab.id);
+  }
+
+  function recordReconciliationFailure(pending) {
+    const previous = reconciliationFailures.get(pending.path);
+    const attempts = previous?.revisionKey === pending.revisionKey ? previous.attempts + 1 : 1;
+    const delayMs = Math.min(reconciliationBackoffBaseMs * (2 ** Math.min(attempts - 1, 10)), reconciliationBackoffMaxMs);
+    reconciliationFailures.set(pending.path, {
+      revisionKey: pending.revisionKey,
+      attempts,
+      retryAfterMs: sessionSyncNow() + delayMs,
+    });
+  }
+
+  async function reconcileSessionChange(change) {
+    const resolvedPath = path.resolve(change.path);
+    const normalizedChange = { ...change, path: resolvedPath };
+    const previousFailure = reconciliationFailures.get(resolvedPath);
+    if (previousFailure && previousFailure.revisionKey !== change.revisionKey) reconciliationFailures.delete(resolvedPath);
+    pendingSessionChanges.set(resolvedPath, normalizedChange);
+    if (reconcilingSessionPaths.has(resolvedPath)) return;
+    reconcilingSessionPaths.add(resolvedPath);
+    try {
+      while (pendingSessionChanges.has(resolvedPath)) {
+        const pending = pendingSessionChanges.get(resolvedPath);
+        const tab = tabForSessionPath(pending.path);
+        if (!tab || !registryOwnedSessionPaths.has(pending.path) || !monitoredSessionPaths.has(pending.path)) {
+          pendingSessionChanges.delete(pending.path);
+          reconciliationFailures.delete(pending.path);
+          sessionMonitor?.acknowledgeSessionRevision(pending.path, pending.revisionKey);
+          break;
+        }
+        if (tabSessionSyncBusy(tab)) break;
+        const failure = reconciliationFailures.get(pending.path);
+        if (failure?.revisionKey === pending.revisionKey && sessionSyncNow() < failure.retryAfterMs) break;
+
+        const loadRegistryGeneration = registryPathGeneration;
+        const loadTabGeneration = registry.sessionSyncGeneration(tab.id);
+        try {
+          const managed = await managedSessionPath(pending.path, { env });
+          if (managed.path !== pending.path) throw new Error("The monitored session path changed during validation");
+        } catch (error) {
+          pendingSessionChanges.delete(pending.path);
+          reconciliationFailures.delete(pending.path);
+          sessionMonitor?.acknowledgeSessionRevision(pending.path, pending.revisionKey);
+          warnSessionSyncOnce("snapshot-path", error, tab.id);
+          break;
+        }
+
+        let snapshot;
+        try {
+          snapshot = await loadSessionSnapshot(pending.path);
+        } catch (error) {
+          if (pendingSessionChanges.get(pending.path) !== pending) continue;
+          recordReconciliationFailure(pending);
+          warnSessionSyncOnce("snapshot-load", error, tab.id);
+          break;
+        }
+        if (pendingSessionChanges.get(pending.path) !== pending) continue;
+        const currentTab = tabForSessionPath(pending.path);
+        if (!currentTab
+          || currentTab.id !== tab.id
+          || registryPathGeneration !== loadRegistryGeneration
+          || registry.sessionSyncGeneration(tab.id) !== loadTabGeneration) continue;
+        if (tabSessionSyncBusy(tab)) break;
+        if (!registryOwnedSessionPaths.has(pending.path) || !monitoredSessionPaths.has(pending.path)) {
+          pendingSessionChanges.delete(pending.path);
+          reconciliationFailures.delete(pending.path);
+          sessionMonitor?.acknowledgeSessionRevision(pending.path, pending.revisionKey);
+          break;
+        }
+        if (sessionRevisionKey(snapshot.revision) !== pending.revisionKey) {
+          recordReconciliationFailure(pending);
+          break;
+        }
+        reconciliationFailures.delete(pending.path);
+        const result = registry.applyExternalSnapshot(pending.path, snapshot);
+        if (result.reason === "active") break;
+        if (pendingSessionChanges.get(pending.path) === pending) pendingSessionChanges.delete(pending.path);
+        sessionMonitor?.acknowledgeSessionRevision(pending.path, pending.revisionKey);
+      }
+    } finally {
+      reconcilingSessionPaths.delete(resolvedPath);
+    }
+  }
+
+  function retryPendingSessionChanges(tab) {
+    for (const change of pendingSessionChanges.values()) {
+      if (!tab.sessionFile || path.resolve(change.path) !== path.resolve(tab.sessionFile)) continue;
+      void reconcileSessionChange(change);
+    }
+  }
+
+  sessionMonitor = createSessionMonitor({
+    sessionsRoot: sessionsDirectory(env),
+    onCatalogChange: (event) => {
+      emit("sessions.changed", { reason: event.reason });
+      if (futureSessionPaths.size > 0) void validateMonitoredPaths();
+    },
+    onSessionChange: (change) => void reconcileSessionChange(change),
+    onWarning: (warning) => warnSessionSyncOnce(warning.operation, warning),
   });
 
   function allTabs() {
@@ -234,6 +471,7 @@ export function createBackend({
   }
 
   async function resourceContext(tab) {
+    await registry.prepareMutation(tab.id);
     const helper = normalizeHelperState(tab, await tab.session.helperState());
     return resourceContextFrom(tab, helper, resources.read());
   }
@@ -295,8 +533,6 @@ export function createBackend({
     }
   }
 
-  const exclusiveTabOperations = new Set();
-
   function assertExclusiveTabOperationAvailable(tab) {
     if (exclusiveTabOperations.has(tab.id)) throw new ProtocolError("busy", "Another resource, model, or session operation is already in progress for this tab");
   }
@@ -308,6 +544,7 @@ export function createBackend({
       return await operation();
     } finally {
       exclusiveTabOperations.delete(tab.id);
+      retryPendingSessionChanges(tab);
     }
   }
 
@@ -424,6 +661,7 @@ export function createBackend({
     async hello() {
       const active = registry.active();
       if (active) registry.replay(active);
+      const themeState = await themes.refresh();
       return {
         protocolVersion: PROTOCOL_VERSION,
         backendPid: process.pid,
@@ -435,6 +673,7 @@ export function createBackend({
         attachments: active ? active.attachments.list() : [],
         settings: settings.read().settings,
         appearance: appearance.snapshot(),
+        themeState,
         recentActions: state.read().value.recentActions,
         stats: { maxWritableLength, droppedTotal, backpressurePauses, queuedRecords },
       };
@@ -442,7 +681,8 @@ export function createBackend({
     async prompt(request) {
       const tab = tabFor(request);
       assertExclusiveTabOperationAvailable(tab);
-      // Attachments are consumed only once the prompt is known to be acceptable.
+      await registry.prepareMutation(tab.id);
+      // Attachments are consumed only once stale-state reconciliation and prompt validation pass.
       tab.session.assertPromptAllowed(request.mode);
       const taken = request.attachments.length > 0 ? tab.attachments.take(request.attachments) : null;
       return tab.session.prompt({ message: request.message, mode: request.mode, attachments: taken });
@@ -468,7 +708,24 @@ export function createBackend({
     async settings_set(request) {
       const result = settings.write(request.values);
       emit("settings.changed", { settings: result.settings });
+      if (Object.hasOwn(request.values, "appearanceMode") || Object.hasOwn(request.values, "selectedThemeName")) {
+        emit("themes.changed", { state: await themes.refresh() });
+      }
       return { settings: result.settings, path: result.path };
+    },
+    async themes_list() {
+      return themes.list();
+    },
+    async theme_select(request) {
+      try {
+        const state = await themes.select(request.selection);
+        emit("settings.changed", { settings: settings.read().settings });
+        emit("themes.changed", { state });
+        return state;
+      } catch (error) {
+        if (error?.code === "theme_unavailable") throw new ProtocolError("stale_request", error.message);
+        throw error;
+      }
     },
     async open_link(request) {
       if (smokeMode) return { delivered: false, suppressed: "smoke-mode", url: request.url };
@@ -513,6 +770,7 @@ export function createBackend({
     async model_set(request) {
       const tab = tabFor(request);
       return withExclusiveTabOperation(tab, async () => {
+        await registry.prepareMutation(tab.id);
         const result = await tab.session.setModel({ provider: request.provider, modelId: request.modelId });
         return { ...result, resources: await safeReadResources(tab) };
       });
@@ -520,6 +778,7 @@ export function createBackend({
     async model_cycle(request) {
       const tab = tabFor(request);
       return withExclusiveTabOperation(tab, async () => {
+        await registry.prepareMutation(tab.id);
         const result = await tab.session.cycleModel();
         return { ...result, resources: await safeReadResources(tab) };
       });
@@ -530,6 +789,7 @@ export function createBackend({
     async thinking_set(request) {
       const tab = tabFor(request);
       return withExclusiveTabOperation(tab, async () => {
+        await registry.prepareMutation(tab.id);
         const result = await tab.session.setThinkingLevel({ level: request.level });
         return { ...result, resources: await safeReadResources(tab) };
       });
@@ -537,6 +797,7 @@ export function createBackend({
     async thinking_cycle(request) {
       const tab = tabFor(request);
       return withExclusiveTabOperation(tab, async () => {
+        await registry.prepareMutation(tab.id);
         const result = await tab.session.cycleThinkingLevel();
         return { ...result, resources: await safeReadResources(tab) };
       });
@@ -563,7 +824,10 @@ export function createBackend({
     },
     async compact(request) {
       const tab = tabFor(request);
-      return withExclusiveTabOperation(tab, () => tab.session.compact({ instructions: request.instructions }));
+      return withExclusiveTabOperation(tab, async () => {
+        await registry.prepareMutation(tab.id);
+        return tab.session.compact({ instructions: request.instructions });
+      });
     },
     async draft_get(request) {
       return { key: request.key, text: state.getDraft(request.key) };
@@ -592,6 +856,7 @@ export function createBackend({
       if (!sequence) throw new ProtocolError("stale_request", "That sequence no longer exists");
       const tab = tabFor(request);
       assertExclusiveTabOperationAvailable(tab);
+      await registry.prepareMutation(tab.id);
       return tab.session.runSequence({ sequenceId: sequence.id, entries: sequence.entries });
     },
     async commands_list(request) {
@@ -638,31 +903,88 @@ export function createBackend({
     },
     async tab_rename(request) {
       const tab = tabFor(request);
-      const summary = registry.rename(tab.id, request.name);
-      let sessionRenamed = false;
-      try {
-        await tab.session.setSessionName(request.name);
-        sessionRenamed = true;
-      } catch (error) {
-        emit("notice", { tab: tab.id, level: "warning", message: `The tab was renamed but Pi did not record the session name: ${boundedError(error.message)}` });
-      }
-      return { tab: summary, sessionRenamed };
+      return withExclusiveTabOperation(tab, async () => {
+        await registry.prepareMutation(tab.id);
+        const summary = registry.rename(tab.id, request.name);
+        let sessionRenamed = false;
+        try {
+          await tab.session.setSessionName(request.name);
+          sessionRenamed = true;
+        } catch (error) {
+          emit("notice", { tab: tab.id, level: "warning", message: `The tab was renamed but Pi did not record the session name: ${boundedError(error.message)}` });
+        }
+        return { tab: summary, sessionRenamed };
+      });
     },
     async tab_move(request) {
       return registry.move(tabFor(request).id, request.delta);
     },
     async sessions_list(request) {
-      const tab = tabFor(request);
-      const result = await listSessions(tab.cwd, { env });
-      return { ...result, current: tab.sessionFile, cwd: tab.cwd };
+      const tab = request.scope === "all" ? (registry.get(request.tab) ?? registry.active()) : tabFor(request);
+      const catalogCwd = tab?.cwd ?? cwd;
+      const catalogNow = now();
+      const openSessionPaths = registry.sessionPaths();
+      const [result, managedOpenSessions] = await Promise.all([
+        listSessions(catalogCwd, { env, scope: request.scope, offset: request.offset, now: () => catalogNow }),
+        Promise.all(openSessionPaths.map(async (entry) => {
+          try {
+            const managed = await managedSessionPath(entry.path, { env });
+            return { tabId: entry.tabId, identity: managed.identity };
+          } catch {
+            // A stale or unmanaged open path cannot be associated with a catalog row.
+            return null;
+          }
+        })),
+      ]);
+      const openTabsByIdentity = new Map();
+      for (const entry of managedOpenSessions) {
+        if (entry && !openTabsByIdentity.has(entry.identity)) openTabsByIdentity.set(entry.identity, entry.tabId);
+      }
+      const sessionSettleDays = settings.read().settings.sessionSettleDays;
+      const settledKeys = state.reconcileAutomaticSessionSettlement(result.sessions, {
+        openSessionIdentities: openTabsByIdentity.keys(),
+        thresholdMs: sessionSettleDays * 24 * 60 * 60 * 1000,
+        nowMs: catalogNow,
+      });
+      const sessions = result.sessions.map(({ identity, ...session }) => ({
+        ...session,
+        settled: settledKeys.has(sessionSettlementKey(identity)),
+        openTabId: openTabsByIdentity.get(identity) ?? "",
+      }));
+      return { ...result, sessions, current: tab?.sessionFile ?? "", cwd: catalogCwd };
+    },
+    async session_settled(request) {
+      const managed = await managedSessionPath(request.sessionPath, { env });
+      if (request.settled) {
+        const openSessions = await Promise.all(allTabs().filter((tab) => tab.sessionFile).map(async (tab) => {
+          try {
+            const openSession = await managedSessionPath(tab.sessionFile, { env });
+            return { tab, identity: openSession.identity };
+          } catch {
+            return null;
+          }
+        }));
+        if (openSessions.some((entry) => entry && entry.identity === managed.identity && entry.tab.session.snapshot().active)) {
+          throw new ProtocolError("busy", "A session cannot be settled while its run is active");
+        }
+      }
+      let settled;
+      try {
+        settled = state.setSessionSettled(managed.identity, request.settled);
+      } catch (error) {
+        if (String(error?.message ?? "").startsWith("at most ")) throw new ProtocolError("limit_exceeded", boundedError(error.message));
+        throw error;
+      }
+      emit("sessions.changed", { path: managed.path, settled });
+      return { path: managed.path, settled };
     },
     async session_switch(request) {
       const tab = tabFor(request);
-      return withExclusiveTabOperation(tab, () => tab.session.switchSession(request.sessionPath));
+      return withExclusiveTabOperation(tab, () => registry.switchSession(tab.id, request.sessionPath));
     },
     async session_new(request) {
       const tab = tabFor(request);
-      return withExclusiveTabOperation(tab, () => tab.session.newSession());
+      return withExclusiveTabOperation(tab, () => registry.newSession(tab.id));
     },
     async directory_list(request) {
       const listing = listDirectory(request.path, { showHidden: request.showHidden });
@@ -696,7 +1018,8 @@ export function createBackend({
       return { worktree, tab: opened };
     },
     async shutdown() {
-      queueMicrotask(() => shutdown(0, "shutdown request"));
+      // Let the request promise enqueue its response before cleanup can make the process exit.
+      setImmediate(() => shutdown(0, "shutdown request"));
       return { closing: true };
     },
     async debug_crash() {
@@ -735,8 +1058,24 @@ export function createBackend({
       respondError(request.id, "timeout", `${request.type} did not complete within ${timeoutMs} ms`);
     }, timeoutMs);
     inflight.set(request.id, { type: request.type, timer });
+    let mutatingTabId = "";
     Promise.resolve()
-      .then(() => handlers[request.type](request))
+      .then(async () => {
+        if (SESSION_MUTATION_REQUESTS.has(request.type)) {
+          mutatingTabId = tabFor(request).id;
+          mutatingTabOperations.set(mutatingTabId, (mutatingTabOperations.get(mutatingTabId) ?? 0) + 1);
+          await registry.prepareMutation(mutatingTabId);
+        }
+        return handlers[request.type](request);
+      })
+      .finally(() => {
+        if (!mutatingTabId) return;
+        const remaining = (mutatingTabOperations.get(mutatingTabId) ?? 1) - 1;
+        if (remaining > 0) mutatingTabOperations.set(mutatingTabId, remaining);
+        else mutatingTabOperations.delete(mutatingTabId);
+        const tab = registry.get(mutatingTabId);
+        if (tab) retryPendingSessionChanges(tab);
+      })
       .then((data) => {
         if (settled) return;
         settled = true;
@@ -753,20 +1092,23 @@ export function createBackend({
   }
 
   function killAllNow() {
+    themes.stop();
     appearance.stopNow();
+    void sessionMonitor.stop();
     for (const child of registry.children()) killProcessTreeNow(child);
   }
 
   function shutdown(code, reason) {
     if (shutdownPromise) return shutdownPromise;
     closing = true;
+    themes.stop();
     const appearanceStop = appearance.stop();
     emit("backend.closing", { reason });
     const forced = setTimeout(() => {
       killAllNow();
       exit(code);
     }, LIMITS.shutdownGraceMs + 1_000);
-    shutdownPromise = Promise.all([appearanceStop, registry.stopAll()]).then(() => {
+    shutdownPromise = Promise.all([appearanceStop, sessionMonitor.stop(), registry.stopAll()]).then(() => {
       clearTimeout(forced);
       for (const entry of inflight.values()) clearTimeout(entry.timer);
       inflight.clear();
@@ -813,17 +1155,36 @@ export function createBackend({
     });
     input.on("end", () => shutdown(0, "stdin closed"));
     input.on("error", () => shutdown(0, "stdin error"));
-    appearance.start();
+    // Smoke backends must not attach helper processes to the developer's live desktop portal.
+    // The monitor itself is covered with injected fakes in appearance.test.mjs.
+    if (!smokeMode) appearance.start();
     emit("backend.ready", { protocolVersion: PROTOCOL_VERSION, backendPid: process.pid, limits: LIMITS, cwd, smokeMode, appearance: appearance.snapshot() });
     // Restored tabs start their Pi children now; their events carry tab ids from the first frame.
     try {
       registry.restore();
+      void updateMonitoredPaths(registry.sessionPaths())
+        .then(() => sessionMonitor.start())
+        .catch((error) => warnSessionSyncOnce("start", error));
     } catch (error) {
       fatal(error);
     }
   }
 
-  return { run, shutdown, emit, registry, get session() { return registry.active()?.session ?? null; } };
+  return {
+    run,
+    shutdown,
+    emit,
+    registry,
+    sessionMonitor,
+    sessionSyncSnapshot: () => ({
+      pendingPaths: [...pendingSessionChanges.keys()],
+      reconcilingPaths: [...reconcilingSessionPaths],
+      failurePaths: [...reconciliationFailures.keys()],
+      monitoredPaths: [...monitoredSessionPaths],
+      futurePaths: [...futureSessionPaths],
+    }),
+    get session() { return registry.active()?.session ?? null; },
+  };
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);

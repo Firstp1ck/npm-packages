@@ -1,4 +1,5 @@
 import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
+import { branchResourceDirective } from "@firstpick/pi-package-webui/lib/resource-selection.mjs";
 import { applySamplingToPayload, samplingCapabilities, validateSamplingParams } from "../backend/sampling.mjs";
 
 // Pi-side helper loaded by the Qt WebUI backend with `--extension`. It answers requests that the
@@ -9,7 +10,9 @@ import { applySamplingToPayload, samplingCapabilities, validateSamplingParams } 
 
 export const HELPER_COMMAND = "qt-webui-helper";
 export const RESPONSE_PREFIX = "__QT_WEBUI_HELPER__";
-const ENTRY_TYPE = "qt-webui-resources";
+const QT_RESOURCES_ENTRY_TYPE = "qt-webui-resources";
+const WEBUI_TOOLS_ENTRY_TYPE = "webui-tools-config";
+const WEBUI_SKILLS_ENTRY_TYPE = "webui-skills-config";
 const MAX_NAMES = 512;
 
 function nameList(value) {
@@ -83,28 +86,65 @@ export default function qtWebUiHelper(pi) {
       : { durable: false, reason: "This Pi session is ephemeral; resource overrides apply only until it ends." };
   }
 
-  function persist(ctx, next) {
+  function persist(ctx, update, next) {
     const durability = sessionDurability(ctx);
     if (!durability.durable) return durability;
-    pi.appendEntry(ENTRY_TYPE, { version: 1, tools: next.tools, skills: next.skills, sampling: { ...next.sampling } });
+    if (Object.hasOwn(update, "tools")) {
+      pi.appendEntry(WEBUI_TOOLS_ENTRY_TYPE, next.tools === null
+        ? { version: 2, mode: "inherit" }
+        : { version: 2, mode: "explicit", enabledTools: [...next.tools] });
+    }
+    if (Object.hasOwn(update, "skills")) {
+      pi.appendEntry(WEBUI_SKILLS_ENTRY_TYPE, next.skills === null
+        ? { version: 2, mode: "inherit" }
+        : { version: 2, mode: "explicit", enabledSkills: [...next.skills] });
+    }
+    if (Object.hasOwn(update, "sampling")) {
+      // Keep the version-1 Qt entry for sampling and downgrade recovery. Current Qt releases
+      // ignore its tool/skill fields whenever a newer shared Web UI entry exists.
+      pi.appendEntry(QT_RESOURCES_ENTRY_TYPE, { version: 1, tools: next.tools, skills: next.skills, sampling: { ...next.sampling } });
+    }
     return durability;
   }
 
   function restore(ctx) {
-    let saved = null;
+    let legacy = null;
+    let toolConfig = null;
+    let skillConfig = null;
     try {
       for (const entry of ctx.sessionManager.getBranch()) {
-        if (entry && entry.type === "custom" && entry.customType === ENTRY_TYPE && entry.data && typeof entry.data === "object") saved = entry.data;
+        if (!entry || entry.type !== "custom" || !entry.data || typeof entry.data !== "object") continue;
+        if (entry.customType === QT_RESOURCES_ENTRY_TYPE) legacy = entry.data;
+        else if (entry.customType === WEBUI_TOOLS_ENTRY_TYPE) toolConfig = entry.data;
+        else if (entry.customType === WEBUI_SKILLS_ENTRY_TYPE) skillConfig = entry.data;
       }
     } catch {
-      saved = null;
+      legacy = null;
+      toolConfig = null;
+      skillConfig = null;
     }
-    if (!saved) return;
     const knownTools = new Set(pi.getAllTools().map((tool) => tool.name));
     const knownSkills = new Set(skillsFrom(typeof ctx.getSystemPromptOptions === "function" ? ctx.getSystemPromptOptions() : null).map((skill) => skill.name));
-    sessionTools = Array.isArray(saved.tools) ? nameList(saved.tools).filter((name) => knownTools.has(name)) : null;
-    sessionSkills = Array.isArray(saved.skills) ? nameList(saved.skills).filter((name) => knownSkills.has(name)) : null;
-    sessionSampling = validatedSampling(saved.sampling || {});
+
+    if (toolConfig) {
+      const directive = branchResourceDirective(toolConfig, "tools");
+      sessionTools = directive.pinned ? nameList(directive.names || []).filter((name) => knownTools.has(name)) : null;
+    } else if (legacy) {
+      sessionTools = Array.isArray(legacy.tools) ? nameList(legacy.tools).filter((name) => knownTools.has(name)) : null;
+    }
+
+    if (skillConfig) {
+      const directive = branchResourceDirective(skillConfig, "skills");
+      if (!directive.pinned) sessionSkills = null;
+      else if (directive.legacyDisabledNames !== null) {
+        const disabled = new Set(nameList(directive.legacyDisabledNames));
+        sessionSkills = [...knownSkills].filter((name) => !disabled.has(name));
+      } else sessionSkills = nameList(directive.names || []).filter((name) => knownSkills.has(name));
+    } else if (legacy) {
+      sessionSkills = Array.isArray(legacy.skills) ? nameList(legacy.skills).filter((name) => knownSkills.has(name)) : null;
+    }
+
+    if (legacy) sessionSampling = validatedSampling(legacy.sampling || {});
   }
 
   function currentState(ctx, durability = sessionDurability(ctx)) {
@@ -155,7 +195,7 @@ export default function qtWebUiHelper(pi) {
         skills: Object.hasOwn(sessionUpdate, "skills") ? (sessionUpdate.skills === null ? null : nameList(sessionUpdate.skills).filter((name) => allSkills.has(name))) : sessionSkills,
         sampling: Object.hasOwn(sessionUpdate, "sampling") ? validatedSampling(sessionUpdate.sampling || {}) : sessionSampling,
       };
-      durability = persist(ctx, next);
+      durability = persist(ctx, sessionUpdate, next);
       sessionTools = next.tools;
       sessionSkills = next.skills;
       sessionSampling = next.sampling;

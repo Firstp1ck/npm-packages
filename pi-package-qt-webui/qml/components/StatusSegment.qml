@@ -13,23 +13,34 @@ Rectangle {
 
     readonly property real availableWidth: parent && parent.width > 0 ? parent.width : implicitWidth
 
-    implicitWidth: statusFlow.implicitWidth + theme.spaceXl
+    implicitWidth: statusFlow.contentImplicitWidth + theme.spaceXl
     width: Math.min(implicitWidth, availableWidth)
-    implicitHeight: statusFlow.implicitHeight + theme.spaceMd
+    implicitHeight: statusFlow.contentImplicitHeight + theme.spaceMd
     radius: theme.radiusSmall
     color: theme.surfaceRaised
     border.width: theme.borderWidth
-    border.color: theme.border
+    border.color: theme.frameBorder
     Accessible.role: Accessible.Grouping
     Accessible.name: groupName
 
     Flow {
         id: statusFlow
+        readonly property real contentImplicitWidth: {
+            let total = 0
+            for (let index = 0; index < statusRepeater.count; index++) {
+                const item = statusRepeater.itemAt(index)
+                if (item) total += item.implicitWidth
+            }
+            return total
+        }
+        readonly property real contentImplicitHeight: childrenRect.height
+
         anchors.fill: parent
         anchors.margins: segment.theme.spaceSm
         spacing: 0
 
         Repeater {
+            id: statusRepeater
             model: segment.entries
 
             delegate: Item {
@@ -65,6 +76,7 @@ Rectangle {
                         text: String(entry.modelData.icon || "")
                         textFormat: Text.PlainText
                         color: segment.theme.muted
+                        font.family: segment.theme.monospaceFamily
                         font.pixelSize: segment.theme.typeSmall
                     }
 
@@ -74,6 +86,7 @@ Rectangle {
                         text: String(entry.modelData.label || "")
                         textFormat: Text.PlainText
                         color: segment.theme.muted
+                        font.family: segment.theme.monospaceFamily
                         font.pixelSize: segment.theme.typeSmall
                         elide: Text.ElideRight
                     }
@@ -87,6 +100,7 @@ Rectangle {
                         color: entry.tone === "error" ? segment.theme.errorForeground
                             : entry.tone === "warning" ? segment.theme.toolForeground
                             : entry.tone === "ok" ? segment.theme.readyForeground : segment.theme.foreground
+                        font.family: segment.theme.monospaceFamily
                         font.pixelSize: segment.theme.typeSmall
                         font.bold: true
                         elide: Text.ElideRight

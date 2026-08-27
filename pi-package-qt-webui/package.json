@@ -33,13 +33,15 @@
     "test": "node tests/run-all.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.84.0"
+    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@firstpick/pi-package-webui": "^0.9.9"
   },
   "files": [
     "bin",
     "extensions",
     "lib",
     "qml",
+    "screenshots",
     "tests",
     "README.md",
     "TECHNICAL.md",

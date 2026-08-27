@@ -83,8 +83,11 @@ Item {
                     textFormat: Text.PlainText
                     color: row.fromUser ? row.theme.accentForeground
                         : row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.muted
+                    font.family: row.theme.monospaceFamily
                     font.weight: Font.DemiBold
                     font.pixelSize: row.theme.typeSmall
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: row.theme.labelTracking
                 }
 
                 Label {
@@ -92,6 +95,7 @@ Item {
                     text: row.modeLabel
                     textFormat: Text.PlainText
                     color: row.theme.muted
+                    font.family: row.theme.monospaceFamily
                     font.pixelSize: row.theme.typeSmall
                 }
 
@@ -100,6 +104,7 @@ Item {
                     text: "streaming…"
                     textFormat: Text.PlainText
                     color: row.theme.muted
+                    font.family: row.theme.monospaceFamily
                     font.pixelSize: row.theme.typeSmall
                     font.italic: true
                 }
@@ -109,6 +114,7 @@ Item {
                     text: "shortened"
                     textFormat: Text.PlainText
                     color: row.theme.warning
+                    font.family: row.theme.monospaceFamily
                     font.pixelSize: row.theme.typeSmall
                 }
 
@@ -124,19 +130,24 @@ Item {
                 }
             }
 
-            Label {
+            TextEdit {
+                id: userMessageLabel
                 Layout.fillWidth: true
-                visible: row.kind === "user" || row.kind === "thinking"
+                visible: row.kind === "user"
                 text: row.text
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                color: row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.foreground
+                textFormat: TextEdit.PlainText
+                readOnly: true
+                selectByMouse: true
+                selectByKeyboard: true
+                wrapMode: TextEdit.Wrap
+                selectionColor: row.theme.selection
+                selectedTextColor: row.theme.selectionForeground
+                color: row.theme.foreground
                 font.pixelSize: row.compact ? 13 : 14
-                font.italic: row.kind === "thinking"
-                lineHeight: 1.3
             }
 
             Label {
+                id: attachmentLabel
                 Layout.fillWidth: true
                 visible: row.hasAttachments
                 text: "Attached: " + row.attachments
@@ -150,11 +161,13 @@ Item {
 
             MarkdownBlocks {
                 Layout.fillWidth: true
-                visible: row.kind === "text"
+                visible: row.kind === "text" || row.kind === "thinking"
                 theme: row.theme
                 compact: row.compact
-                highlight: row.highlightCode
-                blocksJson: row.kind === "text" ? row.blocksJson : "[]"
+                highlight: row.kind === "text" && row.highlightCode
+                foregroundColor: row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.foreground
+                italic: row.kind === "thinking"
+                blocksJson: row.kind === "text" || row.kind === "thinking" ? row.blocksJson : "[]"
                 onLinkActivated: link => row.linkActivated(link)
                 onCopyRequested: text => row.copyRequested(text)
             }

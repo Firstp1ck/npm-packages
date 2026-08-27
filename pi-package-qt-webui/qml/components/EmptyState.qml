@@ -2,23 +2,24 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Shown while the transcript is empty. The workspace rail and header already provide context, so
-// this panel stays focused on starting or resuming work and remains scrollable in a short window.
+// Shown when no session is selected or while the selected session has no transcript. The panel
+// stays focused on the next useful action and remains scrollable in a short window.
 Item {
     id: empty
 
     required property QtObject theme
     property bool ready: false
     property bool backendReady: false
+    property bool sessionOpen: true
 
     signal restartRequested()
-    signal focusComposerRequested()
+    signal newSessionRequested()
     signal resumeRequested()
     signal openDirectoryRequested()
 
     implicitHeight: content.implicitHeight
     Accessible.role: Accessible.Grouping
-    Accessible.name: "Empty transcript"
+    Accessible.name: empty.sessionOpen ? "Empty transcript" : "No session open"
 
     Flickable {
         anchors.fill: parent
@@ -34,21 +35,64 @@ Item {
             width: Math.max(0, Math.min(parent.width - empty.theme.space4Xl, 420))
             spacing: empty.theme.spaceXl
 
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                spacing: empty.theme.spaceXxs
+                Accessible.role: Accessible.Graphic
+                Accessible.name: "Prompt landmark"
+
+                Label {
+                    text: ">"
+                    textFormat: Text.PlainText
+                    color: empty.theme.accentForeground
+                    font.family: empty.theme.monospaceFamily
+                    font.pixelSize: empty.theme.typeDisplayLarge
+                    font.bold: true
+                    Accessible.ignored: true
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: empty.theme.spaceXl
+                    Layout.preferredHeight: empty.theme.borderWidth * 2
+                    Layout.alignment: Qt.AlignBottom
+                    Layout.bottomMargin: empty.theme.spaceSm
+                    color: empty.theme.accentForeground
+                    Accessible.ignored: true
+                }
+            }
+
             Label {
                 Layout.fillWidth: true
-                text: empty.ready ? "Start a conversation" : empty.backendReady ? "Starting Pi…" : "Starting Qt WebUI…"
+                text: !empty.sessionOpen ? "NO SESSION OPEN" : empty.ready ? "SESSION READY" : "WORKSPACE STARTUP"
                 textFormat: Text.PlainText
-                color: empty.theme.heading
-                font.pixelSize: empty.theme.typeDisplay
+                color: empty.theme.muted
+                font.family: empty.theme.monospaceFamily
+                font.pixelSize: empty.theme.typeCaption
                 font.bold: true
+                font.letterSpacing: empty.theme.labelTracking
                 horizontalAlignment: Text.AlignHCenter
             }
 
             Label {
                 Layout.fillWidth: true
-                text: empty.ready ? "Ask about this workspace, resume earlier work, or open another folder." : "Your workspace will be ready shortly."
+                text: !empty.sessionOpen ? "Choose where to continue" : empty.ready ? "Start a conversation" : empty.backendReady ? "Starting Pi…" : "Starting Qt WebUI…"
+                textFormat: Text.PlainText
+                color: empty.theme.heading
+                font.family: empty.theme.monospaceFamily
+                font.pixelSize: empty.theme.typeDisplay
+                font.bold: true
+                horizontalAlignment: Text.AlignHCenter
+                Accessible.role: Accessible.Heading
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: !empty.sessionOpen
+                    ? "Select a session from the workspace list, start a new one, or open another folder."
+                    : empty.ready ? "Ask about this workspace, resume earlier work, or open another folder." : "Your workspace will be ready shortly."
                 textFormat: Text.PlainText
                 color: empty.theme.muted
+                font.family: empty.theme.monospaceFamily
                 font.pixelSize: empty.theme.typeBody
                 wrapMode: Text.Wrap
                 horizontalAlignment: Text.AlignHCenter
@@ -57,18 +101,21 @@ Item {
             Flow {
                 Layout.fillWidth: true
                 Layout.preferredHeight: childrenRect.height
-                visible: empty.ready
+                visible: !empty.sessionOpen || empty.ready
                 spacing: empty.theme.spaceMd
 
                 AppButton {
+                    visible: !empty.sessionOpen
                     theme: empty.theme
-                    text: "Focus prompt"
-                    accessibleName: "Focus the prompt"
-                    accessibleDescription: "Ctrl+L"
-                    onClicked: empty.focusComposerRequested()
+                    variant: "primary"
+                    text: "New session"
+                    accessibleName: "Start a new session"
+                    accessibleDescription: "Ctrl+N"
+                    onClicked: empty.newSessionRequested()
                 }
 
                 AppButton {
+                    visible: empty.sessionOpen
                     theme: empty.theme
                     text: "Resume session"
                     accessibleName: "Resume a saved session in this tab"
@@ -87,7 +134,7 @@ Item {
 
             Label {
                 Layout.fillWidth: true
-                visible: empty.ready
+                visible: empty.sessionOpen && empty.ready
                 text: "Enter sends  ·  Shift+Enter adds a line  ·  Ctrl+F searches  ·  Ctrl+K opens the palette"
                 textFormat: Text.PlainText
                 color: empty.theme.muted
@@ -99,7 +146,7 @@ Item {
 
             AppButton {
                 Layout.alignment: Qt.AlignHCenter
-                visible: !empty.ready
+                visible: empty.sessionOpen && !empty.ready
                 theme: empty.theme
                 variant: "warning"
                 text: "Restart Pi"

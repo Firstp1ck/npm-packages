@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { sessionDirectoryFor } from "../lib/backend/sessions-index.mjs";
+import { REQUIRED_THEME_TOKENS } from "../lib/backend/themes.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs");
@@ -19,6 +20,11 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_THEME_DARK_OVERRIDE",
   "QT_WEBUI_SMOKE_THEME_AUTOMATIC",
   "QT_WEBUI_SMOKE_REDUCED_MOTION",
+  "QT_WEBUI_SMOKE_EXTERNAL_THEME_APPLIED",
+  "QT_WEBUI_SMOKE_THEME_TYPED_COLLISION",
+  "QT_WEBUI_SMOKE_THEME_SELECTION_PERSISTED",
+  "QT_WEBUI_SMOKE_THEME_FALLBACK",
+  "QT_WEBUI_SMOKE_THEME_RECOVERED",
   "QT_WEBUI_SMOKE_RUNTIME_INFO",
   "QT_WEBUI_SMOKE_PARSE_RECOVERED",
   "QT_WEBUI_SMOKE_DIALOG_FOCUS",
@@ -67,6 +73,17 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_RESOURCE_SKILLS_ENABLED",
   "QT_WEBUI_SMOKE_RESOURCE_SAMPLING_SAVED",
   "QT_WEBUI_SMOKE_RESOURCE_UNSUPPORTED_PRESERVED",
+  "QT_WEBUI_SMOKE_SESSION_AGE_LABELS",
+  "QT_WEBUI_SMOKE_SESSION_SORT_GRACE",
+  "QT_WEBUI_SMOKE_SESSION_CATALOG_LOADED",
+  "QT_WEBUI_SMOKE_WORKSPACE_SEARCH_FILTERED",
+  "QT_WEBUI_SMOKE_SESSION_SETTLED",
+  "QT_WEBUI_SMOKE_SETTLED_COLLAPSED",
+  "QT_WEBUI_SMOKE_SETTLED_EXPANDED",
+  "QT_WEBUI_SMOKE_SESSION_RESTORED",
+  "QT_WEBUI_SMOKE_SESSION_NEW_TAB_RESUMED",
+  "QT_WEBUI_SMOKE_SESSION_EXISTING_TAB_REUSED",
+  "QT_WEBUI_SMOKE_EMPTY_SESSION_STATE",
   "QT_WEBUI_SMOKE_TAB_OPENED",
   "QT_WEBUI_SMOKE_TAB_PICKER_INVALIDATED",
   "QT_WEBUI_SMOKE_TAB_PICKER_LOADING_RECOVERED",
@@ -93,6 +110,35 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_COMPLETE",
 ];
 
+function smokeTheme(name, accent) {
+  const backgroundTokens = new Set(["selectedBg", "userMessageBg", "customMessageBg", "toolPendingBg", "toolSuccessBg", "toolErrorBg"]);
+  const colors = Object.fromEntries(REQUIRED_THEME_TOKENS.map((token) => [token, backgroundTokens.has(token) ? "bg" : "fg"]));
+  Object.assign(colors, {
+    accent,
+    border: accent,
+    borderAccent: accent,
+    borderMuted: "#666666",
+    success: "#66cc88",
+    error: "#ff6677",
+    warning: "#ddaa55",
+    text: "",
+    userMessageText: "fg",
+    customMessageText: "fg",
+  });
+  return {
+    name,
+    vars: { bg: "#202020", fg: "#f0f0f0" },
+    colors,
+    export: {
+      pageBg: "#101010",
+      cardBg: "#202020",
+      infoBg: "#282828",
+      backgroundImage: "url(ignored.png)",
+      backgroundOverlay: "linear-gradient(ignored)",
+    },
+  };
+}
+
 function waylandUnavailableReason() {
   if (!process.env.WAYLAND_DISPLAY) return "no Wayland display: WAYLAND_DISPLAY is unset";
   if (!process.env.XDG_RUNTIME_DIR) return "no Wayland display: XDG_RUNTIME_DIR is unset";
@@ -107,7 +153,7 @@ function quickshellUnavailableReason() {
   return null;
 }
 
-export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, extraEnv = {}, timeoutMs = 40_000, orderOnly = false }) {
+export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, extraEnv = {}, timeoutMs = 40_000, orderOnly = false, themeOnly = false }) {
   const program = `
     import { launchQtWebUi } from ${JSON.stringify(launcherUrl)};
     const code = await launchQtWebUi({
@@ -121,7 +167,7 @@ export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, ex
         QT_WEBUI_SMOKE_MODE: "1",
         QT_WEBUI_SMOKE_CAPTURE_PATH: ${JSON.stringify(capturePath)},
         QT_WEBUI_SMOKE_STATE_PATH: ${JSON.stringify(statePath)},
-        QT_WEBUI_THEME_MODE: ${JSON.stringify(orderOnly ? "order-only" : "normal")},
+        QT_WEBUI_THEME_MODE: ${JSON.stringify(themeOnly ? "theme-only" : orderOnly ? "order-only" : "normal")},
         QT_WEBUI_PI_STARTUP_TIMEOUT_MS: "1500",
         QT_WEBUI_PI_REQUEST_TIMEOUT_MS: "10000",
       },
@@ -188,6 +234,10 @@ async function smokeWorkspace(t) {
   await writeFile(path.join(callerCwd, "src", "main.mjs"), "export const answer = 42;\n");
   await mkdir(path.join(temporary, "other"));
   await writeFile(capturePath, "");
+  const themesDirectory = path.join(temporary, "agent", "themes");
+  await mkdir(themesDirectory, { recursive: true });
+  await writeFile(path.join(themesDirectory, "smoke-theme.json"), JSON.stringify(smokeTheme("smoke-theme", "#123456")));
+  await writeFile(path.join(themesDirectory, "light.json"), JSON.stringify(smokeTheme("light", "#654321")));
   // The workspace is a Git repository so the worktree flow can run; the fixture session file
   // makes "Resume a session" list something to pick.
   const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Smoke", GIT_AUTHOR_EMAIL: "smoke@example.invalid", GIT_COMMITTER_NAME: "Smoke", GIT_COMMITTER_EMAIL: "smoke@example.invalid", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
@@ -241,9 +291,10 @@ async function assertCapture(capturePath) {
   assert.equal(attachmentPrompt.images, undefined);
   assert.deepEqual(commands.filter((command) => command.type === "follow_up").map((command) => command.message), ["queued follow-up"], "the sequence queues its second entry");
   assert(commands.filter((command) => command.type === "get_commands").length >= 2, "the composer and palette load commands; resource-helper discovery may share those reads per tab");
-  assert.deepEqual(commands.filter((command) => command.type === "switch_session").map((command) => path.basename(command.sessionPath)), ["2026-08-26_resume-me.jsonl"]);
+  assert.deepEqual(commands.filter((command) => command.type === "switch_session").map((command) => path.basename(command.sessionPath)), ["2026-08-26_resume-me.jsonl", "2026-08-26_resume-me.jsonl"],
+    "the catalog resumes in a new tab before the legacy picker resumes in place");
   assert.equal(commands.filter((command) => command.type === "new_session").length, 1);
-  assert.equal(commands.filter((command) => command.type === "get_messages").length, 1, "history is read once, after the resume");
+  assert.equal(commands.filter((command) => command.type === "get_messages").length, 2, "history is read after each explicit resume");
   assert(commands.filter((command) => command.type === "get_session_stats").length >= 1, "usage statistics are read");
   assert(!prompts.some((command) => /^\/(review|fix-tests|skill:)/.test(command.message)), "palette commands are inserted, never sent");
   assert.equal(commands.filter((command) => command.type === "abort").length, 2,
@@ -292,10 +343,36 @@ test("real Quickshell completes the deterministic backend and Pi behavior scenar
   await assertCapture(workspace.capturePath);
   const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
   assert.equal(settings.compactTranscript, false, "the compact setting was turned on in the settings phase and back off through the palette");
+  assert.equal(settings.appearanceMode, "light", "the typed built-in selection updated only Qt WebUI's built-in fallback mode");
+  assert.equal(settings.selectedThemeName, "light", "the colliding external theme identity persisted separately from the built-in fallback");
   const state = JSON.parse(await readFile(path.join(workspace.temporary, "state", "qt-webui", "state.json"), "utf8"));
   assert.deepEqual(state.recentActions, ["action:toggle-compact"]);
   assert.equal(state.tabs.length, 1);
 });
+
+for (const [label, extraEnv] of [["default scale", {}], ["200% scaling", { QT_SCALE_FACTOR: "2" }]]) {
+  test(`real Quickshell applies, falls back, and recovers a Pi theme at ${label}`, { timeout: 30_000 }, async (t) => {
+    const skipReason = waylandUnavailableReason() ?? quickshellUnavailableReason();
+    if (skipReason) return t.skip(skipReason);
+    const workspace = await smokeWorkspace(t);
+    const result = await runLiveSmoke({ ...workspace, themeOnly: true, extraEnv, timeoutMs: 20_000 });
+    const combined = `${result.stdout}\n${result.stderr}`;
+    assert.equal(result.signal, null, combined);
+    assert.equal(result.code, 0, combined);
+    for (const marker of [
+      "QT_WEBUI_SMOKE_EXTERNAL_THEME_APPLIED",
+      "QT_WEBUI_SMOKE_THEME_TYPED_COLLISION",
+      "QT_WEBUI_SMOKE_THEME_SELECTION_PERSISTED",
+      "QT_WEBUI_SMOKE_THEME_FALLBACK",
+      "QT_WEBUI_SMOKE_THEME_RECOVERED",
+      "QT_WEBUI_SMOKE_COMPLETE",
+    ]) assert.match(combined, new RegExp(marker), `missing ${marker}\n${combined}`);
+    assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign/i, combined);
+    const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
+    assert.equal(settings.appearanceMode, "light");
+    assert.equal(settings.selectedThemeName, "light");
+  });
+}
 
 test("real Quickshell completes a model reorder and persists merged identities", { timeout: 30_000 }, async (t) => {
   const skipReason = waylandUnavailableReason() ?? quickshellUnavailableReason();

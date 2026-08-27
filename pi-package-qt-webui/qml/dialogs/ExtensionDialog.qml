@@ -185,9 +185,9 @@ AppDialog {
             color: dialog.theme.foreground
             selectionColor: dialog.theme.selection
             background: Rectangle {
-                radius: 6
+                radius: dialog.theme.radiusSmall
                 color: dialog.theme.surfaceRaised
-                border.width: editorArea.activeFocus ? 2 : 1
+                border.width: dialog.theme.borderWidth
                 border.color: editorArea.activeFocus ? dialog.theme.focusRing : dialog.theme.border
             }
             Accessible.role: Accessible.EditableText
