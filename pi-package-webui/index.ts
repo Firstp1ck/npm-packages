@@ -25,6 +25,8 @@ import {
   resolveResourceSelection,
   setExactModelProfile,
 } from "./lib/resource-selection.mjs";
+import { selectTuiModelProfile } from "./lib/tui-model-profile-selector.mjs";
+import { selectTuiResources } from "./lib/tui-resource-selector.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = __dirname;
@@ -947,32 +949,6 @@ function registerTuiResourceController(pi: ExtensionAPI): void {
     return true;
   }
 
-  async function chooseResources(ctx: ExtensionCommandContext, title: string, visibleNames: string[], initiallyEnabled: string[]): Promise<string[] | undefined> {
-    const enabled = new Set(initiallyEnabled.filter((name) => visibleNames.includes(name)));
-    while (true) {
-      const actions = [
-        "Save selection",
-        "Enable all",
-        "Enable none",
-        ...visibleNames.map((name) => `${enabled.has(name) ? "[x]" : "[ ]"} ${name}`),
-      ];
-      const selected = await ctx.ui.select(title, actions);
-      if (!selected) return undefined;
-      if (selected === "Save selection") return visibleNames.filter((name) => enabled.has(name));
-      if (selected === "Enable all") {
-        visibleNames.forEach((name) => enabled.add(name));
-        continue;
-      }
-      if (selected === "Enable none") {
-        enabled.clear();
-        continue;
-      }
-      const name = selected.slice(4);
-      if (enabled.has(name)) enabled.delete(name);
-      else enabled.add(name);
-    }
-  }
-
   function availableModels(ctx: ExtensionCommandContext): any[] {
     return ctx.modelRegistry.getAvailable()
       .filter((model: any) => model?.provider && model?.id)
@@ -1023,11 +999,19 @@ function registerTuiResourceController(pi: ExtensionAPI): void {
         ctx.ui.notify("No authenticated Pi models are available.", "warning");
         return;
       }
-      const labels = models.map((model: any) => `${model.provider}/${model.id}${model.name && model.name !== model.id ? ` — ${model.name}` : ""}`);
-      const selectedLabel = await ctx.ui.select(`Exact model for ${resourceLabel.toLowerCase()}`, labels);
-      if (!selectedLabel) return;
-      const selectedIndex = labels.indexOf(selectedLabel);
-      const model = models[selectedIndex];
+      const configuredModelKeys = (Array.isArray(settings.resourceDefaults?.modelProfiles)
+        ? settings.resourceDefaults.modelProfiles
+        : [])
+        .filter((profile: any) => Array.isArray(profile?.[resourceType]?.[selectionKey]))
+        .map((profile: any) => `${profile.provider}\0${profile.modelId}`);
+      const model = await selectTuiModelProfile(ctx, {
+        title: `${resourceLabel} Model Profile`,
+        subtitle: "Choose a profile to edit. This does not switch the active model.",
+        models,
+        activeModelKey: modelKey(ctx.model),
+        configuredModelKeys,
+      });
+      if (!model) return;
       provider = model.provider;
       modelId = model.id;
       const action = await ctx.ui.select(`${resourceLabel} for ${provider}/${modelId}`, ["Edit selection", "Use inherited defaults"]);
@@ -1049,7 +1033,13 @@ function registerTuiResourceController(pi: ExtensionAPI): void {
       }
     }
 
-    const selected = await chooseResources(ctx, `${resourceLabel}: toggle resources, then save`, visibleNames, previousNames || []);
+    const selectionTarget = scope === "Model default" ? `${provider}/${modelId} model profile` : scope;
+    const selected = await selectTuiResources(ctx, {
+      title: `${resourceLabel} Configuration`,
+      subtitle: `${selectionTarget}. Changes apply only after Ctrl+S.`,
+      resources: visibleNames,
+      enabledResourceNames: previousNames || [],
+    });
     if (!selected) return;
     if (scope === "Session only") {
       const preserved = preserveUnavailableResourceNames(previousNames, visibleNames, selected);
@@ -1078,7 +1068,7 @@ function registerTuiResourceController(pi: ExtensionAPI): void {
       });
     }
     await recompute(ctx);
-    ctx.ui.notify(`${resourceLabel} ${scope.toLowerCase()} saved.`, "info");
+    ctx.ui.notify(`${resourceLabel} ${selectionTarget.toLowerCase()} saved.`, "info");
   }
 
   pi.registerCommand("tools", {

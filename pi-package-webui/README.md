@@ -162,7 +162,7 @@ For a long scoped-model list, right-click the Git footer **Model** box and choos
 
 **Optional feature needed:** None — the browser tools setup is included in Pi Web UI core.
 
-Enable tools for the current session, save a global default, or configure an exact model profile. Selecting that model automatically applies its tool profile unless the session has its own tool selection.
+Enable tools for the current session, save a global default, or configure an exact model profile. In Pi's TUI, `/tools` uses the same searchable keyboard workflow as `/scoped-models`: arrow keys move, `Enter` toggles, `Ctrl+A` enables matching entries, `Ctrl+X` clears them, and `Ctrl+S` saves. **Model default** opens a searchable exact-model picker that marks the active model and existing tool profiles without switching the active model. Selecting a configured model automatically applies its tool profile unless the session has its own tool selection.
 
 #### Skills setup
 
@@ -170,7 +170,7 @@ Enable tools for the current session, save a global default, or configure an exa
 
 **Optional feature needed:** None — the browser skills setup is included in Pi Web UI core.
 
-Find installed skills and manage session, global, or exact-model activation. Selecting a configured model automatically applies its skill profile unless the session has its own skill selection.
+Find installed skills and manage session, global, or exact-model activation. In Pi's TUI, `/skills` uses the same searchable keyboard workflow as `/scoped-models`, including the exact-model picker used by `/tools`. Selecting a configured model automatically applies its skill profile unless the session has its own skill selection.
 
 ### Project automation and Git
 

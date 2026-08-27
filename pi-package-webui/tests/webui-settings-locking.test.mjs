@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -170,9 +170,40 @@ try {
   assert.equal(JSON.parse(await readFile(liveLockRecord, "utf8")).token, "live");
   await rm(liveLockRecord);
 
+  const liveIncompleteRecord = path.join(liveLockDirectory, `${process.pid}-${Date.now() - 100}-incomplete.json`);
+  await writeFile(liveIncompleteRecord, "", "utf8");
+  await assert.rejects(
+    withWebuiSettingsLock(liveLockTarget, () => true, { timeoutMs: 35, retryMs: 5 }),
+    (error) => error?.code === "WEBUI_SETTINGS_LOCK_TIMEOUT",
+    "a newly created incomplete record from a live owner must retain a short write grace period",
+  );
+  await rm(liveIncompleteRecord);
+
   const exited = spawn(process.execPath, ["-e", "process.exit(0)"], { stdio: "ignore" });
   const deadPid = exited.pid;
   await once(exited, "exit");
+  const deadIncompleteRecord = path.join(liveLockDirectory, `${deadPid}-${Date.now()}-incomplete.json`);
+  await writeFile(deadIncompleteRecord, "", "utf8");
+  assert.equal(
+    await withWebuiSettingsLock(liveLockTarget, () => "recovered incomplete", { timeoutMs: 250, retryMs: 5 }),
+    "recovered incomplete",
+    "an incomplete record from a dead owner must not block future saves",
+  );
+  await assert.rejects(readFile(deadIncompleteRecord, "utf8"), { code: "ENOENT" });
+
+  await mkdir(liveLockDirectory, { recursive: true });
+  const malformedLockRecord = path.join(liveLockDirectory, "malformed.json");
+  await writeFile(malformedLockRecord, "{", "utf8");
+  const staleTime = new Date(Date.now() - 5_000);
+  await utimes(malformedLockRecord, staleTime, staleTime);
+  assert.equal(
+    await withWebuiSettingsLock(liveLockTarget, () => "recovered malformed", { timeoutMs: 250, retryMs: 5 }),
+    "recovered malformed",
+    "an old malformed record without owner metadata must not block future saves",
+  );
+  await assert.rejects(readFile(malformedLockRecord, "utf8"), { code: "ENOENT" });
+
+  await mkdir(liveLockDirectory, { recursive: true });
   const deadLockRecord = path.join(liveLockDirectory, "dead.json");
   await writeFile(deadLockRecord, `${JSON.stringify({ pid: deadPid, token: "dead", state: "active" })}\n`, "utf8");
   assert.equal(await withWebuiSettingsLock(liveLockTarget, () => "recovered", { timeoutMs: 250, retryMs: 5 }), "recovered");

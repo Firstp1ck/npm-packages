@@ -4,6 +4,32 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 [Back to README](README.md) · [Advanced user technical reference](TECHNICAL.md)
 
+## TUI tool and skill selector
+
+`index.ts` keeps resource scope resolution and persistence in `registerTuiResourceController`. After the user chooses Session, Global, or Model scope, `lib/tui-resource-selector.mjs` owns the shared searchable list used by both `/tools` and `/skills`. Its interaction follows Pi's `/scoped-models` selector: arrows navigate, Enter toggles, the `app.models.enableAll`, `app.models.clearAll`, and `app.models.save` bindings perform bulk actions and save, and Escape or Ctrl+C cancels. Bulk actions affect only filtered resources while search is active.
+
+For Model scope, `lib/tui-model-profile-selector.mjs` searches provider, exact ID, and display name. It returns the selected model object directly rather than reconstructing a model from its rendered label. The picker opens at the active model when possible and marks models with a resource-specific profile.
+
+Focused contributor validation:
+
+```bash
+node --check lib/tui-resource-selector.mjs
+node --check lib/tui-model-profile-selector.mjs
+node tests/tui-resource-selector.test.mjs
+node tests/tui-model-profile-selector.test.mjs
+node tests/resource-tui-extension.test.mjs
+```
+
+## Web UI settings write lock
+
+`updateWebuiSettings` serializes same-process updates and uses per-writer records under `<settings-file>.lock` for cross-process writes. A process can exit after creating its record but before writing valid JSON, leaving an empty file. Lock acquisition removes incomplete records immediately when their PID is dead. It gives a live writer a one-second grace period, then removes records that are still empty or malformed so one interrupted write cannot block every later settings save.
+
+Focused contributor validation:
+
+```bash
+node tests/webui-settings-locking.test.mjs
+```
+
 ## File viewer image contract
 
 `GET /api/files/content` keeps workspace-path confinement and the shared 2 MiB `FILE_VIEWER_MAX_BYTES` cap before reading either text or images. Text responses use `kind: "text"` with UTF-8 `content` and `language`. The explicit extension allowlist maps `.png`, `.jpg`/`.jpeg`, `.gif`, `.webp`, and `.avif` to fixed MIME types; those responses use `kind: "image"`, `mimeType`, and base64 `data` without decoding the bytes as UTF-8. SVG and all unlisted binary formats continue to return `415` through the text/binary guard.

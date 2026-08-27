@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, readdir, rename, rm, rmdir } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -31,6 +31,7 @@ const WEBUI_SETTINGS_VERSION = 8;
 const WEBUI_SETTINGS_FILE_ENV = "PI_WEBUI_SETTINGS_FILE";
 const WEBUI_SETTINGS_LOCK_TIMEOUT_MS = 2_000;
 const WEBUI_SETTINGS_LOCK_RETRY_MS = 25;
+const WEBUI_SETTINGS_LOCK_INVALID_RECORD_GRACE_MS = 1_000;
 export const WEBUI_SIDE_PANEL_WIDTH_MIN_PX = 320;
 export const WEBUI_SIDE_PANEL_WIDTH_MAX_PX = 4096;
 const webuiSettingsUpdateQueues = new Map();
@@ -240,22 +241,51 @@ function lockOwnerIsDead(pid) {
   }
 }
 
+function settingsLockRecordNameMetadata(name) {
+  const match = name.match(/^(\d+)-(\d+)-[^/]+\.json$/);
+  if (!match) return {};
+  const ownerPid = Number(match[1]);
+  const createdAt = Number(match[2]);
+  return {
+    ownerPid: Number.isSafeInteger(ownerPid) && ownerPid > 0 ? ownerPid : undefined,
+    createdAt: Number.isSafeInteger(createdAt) && createdAt > 0 ? createdAt : undefined,
+  };
+}
+
 async function readSettingsLockRecords(lockDirectory) {
   const names = (await readdir(lockDirectory)).filter((name) => name.endsWith(".json")).sort();
-  return Promise.all(names.map(async (name) => {
+  const records = await Promise.all(names.map(async (name) => {
     const recordFile = path.join(lockDirectory, name);
+    const nameMetadata = settingsLockRecordNameMetadata(name);
     try {
-      const value = JSON.parse(await readFile(recordFile, "utf8"));
+      const [value, fileStat] = await Promise.all([
+        readFile(recordFile, "utf8").then((text) => JSON.parse(text)),
+        stat(recordFile),
+      ]);
       const valid = Number.isSafeInteger(value?.pid)
         && value.pid > 0
         && typeof value?.token === "string"
         && value.token.length > 0
         && ["pending", "active"].includes(value?.state);
-      return { ...value, name, recordFile, valid };
-    } catch {
-      return { name, recordFile, valid: false };
+      const createdAt = Number.isSafeInteger(value?.createdAt) && value.createdAt > 0
+        ? value.createdAt
+        : nameMetadata.createdAt;
+      return {
+        ...value,
+        ownerPid: nameMetadata.ownerPid,
+        createdAt,
+        name,
+        recordFile,
+        mtimeMs: fileStat.mtimeMs,
+        valid,
+      };
+    } catch (error) {
+      if (error?.code === "ENOENT") return undefined;
+      const fileStat = await stat(recordFile).catch(() => undefined);
+      return { ...nameMetadata, name, recordFile, mtimeMs: fileStat?.mtimeMs, valid: false };
     }
   }));
+  return records.filter(Boolean);
 }
 
 async function renameWithWindowsRetry(source, target) {
@@ -306,9 +336,10 @@ export async function withWebuiSettingsLock(storageFile, operation, {
   await mkdir(lockDirectory, { mode: 0o700 }).catch((error) => {
     if (error?.code !== "EEXIST") throw error;
   });
-  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const createdAt = Date.now();
+  const token = `${process.pid}-${createdAt}-${Math.random().toString(16).slice(2)}`;
   const recordFile = path.join(lockDirectory, `${token}.json`);
-  const ownRecord = { pid: process.pid, token, state: "pending" };
+  const ownRecord = { pid: process.pid, token, state: "pending", createdAt };
   let handle;
   try {
     handle = await open(recordFile, "wx", 0o600);
@@ -327,14 +358,22 @@ export async function withWebuiSettingsLock(storageFile, operation, {
   try {
     while (!acquired) {
       let records = await readSettingsLockRecords(lockDirectory);
-      let removedDeadOwner = false;
+      let removedStaleRecord = false;
       for (const record of records) {
-        if (record.valid && lockOwnerIsDead(record.pid)) {
+        const ownerPid = record.valid ? record.pid : record.ownerPid;
+        const ownerIsDead = lockOwnerIsDead(ownerPid);
+        const recordAgeMs = Math.max(
+          Number.isFinite(record.mtimeMs) ? Date.now() - record.mtimeMs : 0,
+          Number.isSafeInteger(record.createdAt) ? Date.now() - record.createdAt : 0,
+        );
+        const invalidRecordIsStale = !record.valid
+          && (ownerIsDead || recordAgeMs >= WEBUI_SETTINGS_LOCK_INVALID_RECORD_GRACE_MS);
+        if ((record.valid && ownerIsDead) || invalidRecordIsStale) {
           await rm(record.recordFile, { force: true });
-          removedDeadOwner = true;
+          removedStaleRecord = true;
         }
       }
-      if (removedDeadOwner) continue;
+      if (removedStaleRecord) continue;
 
       const active = records.filter((record) => record.valid && record.state === "active");
       if (active.length === 1 && active[0].token === token) {
