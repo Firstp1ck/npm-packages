@@ -143,6 +143,16 @@ AppDialog {
         return true
     }
 
+    function visibleListDraft() {
+        if (listMode === "inherit") return null
+        const visibleNames = []
+        for (const item of visibleInventory) {
+            const name = item && item.name !== undefined ? String(item.name) : ""
+            if (name.length > 0 && visibleNames.indexOf(name) === -1) visibleNames.push(name)
+        }
+        return listDraft.filter(name => visibleNames.indexOf(String(name)) !== -1).slice(0, bridge.maxResourceNames)
+    }
+
     function samplingCapability(key) {
         if (!available || !state.sampling || !state.sampling.capabilities) return { supported: false, reason: "Capabilities are unavailable" }
         return state.sampling.capabilities[key] || { supported: false, reason: "Capability is unavailable" }
@@ -211,8 +221,8 @@ AppDialog {
 
     function saveCurrent(callback) {
         if (!controlsEnabled) return false
-        if (section === "tools") return bridge.setEnabledTools(scope, listMode === "inherit" ? null : listDraft.slice(), callback)
-        if (section === "skills") return bridge.setEnabledSkills(scope, listMode === "inherit" ? null : listDraft.slice(), callback)
+        if (section === "tools") return bridge.setEnabledTools(scope, visibleListDraft(), callback)
+        if (section === "skills") return bridge.setEnabledSkills(scope, visibleListDraft(), callback)
         if (!samplingDraftValid) return false
         return bridge.setSampling(scope, samplingPatch(), callback)
     }

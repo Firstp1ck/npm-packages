@@ -260,7 +260,7 @@ function assertHealthyOutput(combined) {
   for (const marker of smokeMarkers) assert.match(combined, new RegExp(marker), `missing ${marker}\n${combined}`);
   assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE/, combined);
   assert.doesNotMatch(combined, /QQmlApplicationEngine failed|TypeError:|ReferenceError:|is not a type|Cannot assign|Stack trace/i, combined);
-  assert.doesNotMatch(combined, /Failed to register with host portal|Cannot create delegate|Required property \w+ was not initialized/i, combined);
+  assert.doesNotMatch(combined, /Failed to register with host portal|Cannot create delegate|Required property \w+ was not initialized|Accessible attached property must be attached to an object deriving from Item or Action/i, combined);
 }
 
 async function assertCapture(capturePath) {
@@ -367,7 +367,7 @@ for (const [label, extraEnv] of [["default scale", {}], ["200% scaling", { QT_SC
       "QT_WEBUI_SMOKE_THEME_RECOVERED",
       "QT_WEBUI_SMOKE_COMPLETE",
     ]) assert.match(combined, new RegExp(marker), `missing ${marker}\n${combined}`);
-    assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign/i, combined);
+    assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign|Accessible attached property must be attached to an object deriving from Item or Action/i, combined);
     const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
     assert.equal(settings.appearanceMode, "light");
     assert.equal(settings.selectedThemeName, "light");
@@ -385,7 +385,7 @@ test("real Quickshell completes a model reorder and persists merged identities",
   for (const marker of ["QT_WEBUI_SMOKE_MODEL_REORDER_COMPLETED", "QT_WEBUI_SMOKE_MODEL_REORDER_SAVED", "QT_WEBUI_SMOKE_MODEL_REORDER_REAPPLIED", "QT_WEBUI_SMOKE_COMPLETE"]) {
     assert.match(combined, new RegExp(marker), `missing ${marker}\n${combined}`);
   }
-  assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign/i, combined);
+  assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign|Accessible attached property must be attached to an object deriving from Item or Action/i, combined);
   const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
   assert.deepEqual(settings.modelOrder, ["fixture-provider/fixture-fast", "fixture-provider/fixture-model", "other-provider/other-model", "absent-provider/absent-model"]);
 });

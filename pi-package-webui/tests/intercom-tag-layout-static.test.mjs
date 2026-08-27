@@ -17,30 +17,49 @@ function rule(selector, label) {
   return css.slice(start, end + 1);
 }
 
+function functionSource(name, nextName) {
+  const start = app.indexOf(`function ${name}(`);
+  const candidates = [
+    app.indexOf(`\nfunction ${nextName}(`, start),
+    app.indexOf(`\nasync function ${nextName}(`, start),
+  ].filter((index) => index > start);
+  const end = Math.min(...candidates);
+  assert.ok(start >= 0 && Number.isFinite(end), `${name} should remain a standalone frontend helper`);
+  return app.slice(start, end);
+}
+
 const container = rule(".composer-intercom-tags", "conversation tag container styles");
-const denseContainer = rule(".composer-intercom-tags.dense", "dense conversation tag container styles");
-const containerRules = [...css.matchAll(/\.composer-intercom-tags(?:\.dense)?\s*\{([^}]*)\}/g)].map((match) => match[1]).join("\n");
 const tag = rule(".composer-intercom-tag", "conversation tag styles");
 const label = rule(".composer-intercom-tag-label", "conversation tag label styles");
 const icon = rule(".composer-intercom-tag-icon", "conversation tag icon styles");
 const count = rule(".composer-intercom-tag-count", "conversation tag count styles");
+const disclosure = functionSource("setIntercomConversationOverflowOpen", "fitIntercomConversationTags");
+const install = functionSource("installIntercomConversationTagResizeHandling", "updateIntercomConversationTag");
+const render = functionSource("renderIntercomConversationTags", "refreshIntercomConversationSummaries");
 
-assert.match(container, /display:\s*grid;/, "conversation tags should use a bounded grid instead of a scroller");
-assert.match(container, /grid-auto-flow:\s*column;/, "ordinary conversation counts should remain on one row");
-assert.match(container, /grid-auto-columns:\s*minmax\(0,\s*1fr\);/, "ordinary conversation tags should receive equal shares of the available inline width");
-assert.match(denseContainer, /grid-auto-flow:\s*row;/, "dense conversation counts should wrap into rows");
-assert.match(denseContainer, /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(44px,\s*1fr\)\);/, "dense rows should retain a 44px minimum inline target");
-assert.match(container, /min-width:\s*0;/, "the conversation tag container should shrink with its composer surface");
-assert.doesNotMatch(containerRules, /overflow(?:-x|-inline)?\s*:[^;]*(?:auto|scroll)/, "conversation tag containers must not restore horizontal auto/scroll overflow");
-assert.doesNotMatch(container, /scrollbar|overscroll-behavior-inline/, "conversation tag layout should not retain scroller-only behavior");
+assert.match(container, /position:\s*relative;/, "the overflow popup should anchor to the conversation tag strip");
+assert.match(container, /display:\s*inline-flex;/, "conversation tags should remain on one measured row");
+assert.match(container, /flex-direction:\s*row-reverse;/, "the newest conversation should start at the right edge and older tags should extend toward the middle");
+assert.match(container, /flex:\s*0 1 50%;/, "the desktop strip should be allowed to reach the middle of the input row");
+assert.match(container, /max-width:\s*50%;/, "the desktop strip should stop at half of the input row");
+assert.match(container, /overflow:\s*hidden;/, "unfitted direct tags should not leak outside the strip");
+assert.doesNotMatch(css, /\.composer-intercom-tags\.dense\s*\{/, "dense grids should not make conversation labels unrecognizable");
+assert.doesNotMatch(container, /overflow(?:-x|-inline)?\s*:[^;]*(?:auto|scroll)/, "conversation tags should not restore horizontal scrolling");
 
-assert.match(tag, /width:\s*100%;[\s\S]*min-width:\s*0;[\s\S]*max-width:\s*100%;/, "each equal-share tag should fill and shrink inside its grid track");
-assert.match(tag, /overflow:\s*hidden;/, "tag contents should not expand the equal-share track");
+assert.match(tag, /flex:\s*0 0 auto;[\s\S]*width:\s*auto;[\s\S]*max-width:\s*min\(13rem, 100%\);/, "direct tags should keep readable intrinsic widths up to the bounded maximum before overflow fitting");
+assert.match(tag, /overflow:\s*hidden;/, "a single very long tag should still truncate safely");
 assert.match(label, /flex:\s*1 1 auto;[\s\S]*min-width:\s*0;[\s\S]*overflow:\s*hidden;[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/, "long visual labels should produce a real single-line ellipsis");
 assert.match(icon, /flex:\s*0 0 auto;/, "the conversation icon should stay stable while the label shrinks");
 assert.match(count, /flex:\s*0 0 auto;/, "the conversation count should stay stable while the label shrinks");
-assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.composer-intercom-tag \{ min-height: 44px; \}/, "narrow and coarse-pointer tags should retain a 44px activation target");
-assert.match(app, /container\.classList\.toggle\("dense", orderedTags\.length > 8\);/, "the documented dense threshold should activate only above eight conversations");
-assert.match(app, /const visualSignature = JSON\.stringify\(\[label, conversation\.messageCount\]\);[\s\S]*if \(tag\.dataset\.intercomVisualSignature !== visualSignature\)[\s\S]*tag\.replaceChildren\(\.\.\.children\);[\s\S]*tag\.dataset\.intercomVisualSignature = visualSignature;/, "unchanged tag visuals should retain their existing children inside the polite live region");
+
+assert.match(disclosure, /classList\.toggle\("overflow-open", expanded\)[\s\S]*aria-expanded[\s\S]*menu\.hidden = !expanded/, "the +X disclosure should synchronize visual, accessible, and hidden state");
+assert.match(install, /ResizeObserver[\s\S]*event\.key !== "Escape"[\s\S]*restoreFocus: true[\s\S]*document\.addEventListener\("pointerdown"/, "resize, Escape, and outside-click handling should keep the disclosure usable");
+assert.match(render, /make\("button", "composer-intercom-tag overflow"[\s\S]*aria-haspopup[\s\S]*intercomConversationOverflowMenu[\s\S]*role", "dialog"/, "the hidden conversation count should render as an accessible popup button");
+assert.match(render, /composer-intercom-overflow-menu-item[\s\S]*setIntercomConversationOverflowOpen\(false\);[\s\S]*openIntercomConversation\(conversationId\)/, "hidden conversations should open through the existing conversation dialog");
+assert.match(css, /\.composer-intercom-overflow-menu \{[\s\S]*position: absolute;[\s\S]*bottom: calc\(100% \+ 0\.42rem\);[\s\S]*max-height:[\s\S]*overflow-y: auto;/, "the bounded popup should expand upward above the compact strip");
+assert.match(css, /@media \(max-width: 720px\)[\s\S]*?\.composer-intercom-tags \{ flex: 0 0 100%; width: 100%; min-width: 0; max-width: 100%; \}[\s\S]*?\.composer-intercom-overflow-menu \.composer-intercom-tag \{ min-height: 44px; \}/, "narrow disclosures should use the full row and keep hidden conversations touch-friendly");
+assert.match(css, /body\.mobile-composer-disclosure \.composer-actions-panel > \.composer-context-tags \{[\s\S]*display: flex;[\s\S]*flex-wrap: wrap;/, "the narrow composer disclosure should give the full-width conversation strip its own row");
+assert.match(app, /installSessionSkillTagResizeHandling\(\);\s*installIntercomConversationTagResizeHandling\(\);/, "startup should install responsive fitting for both compact tag groups");
+assert.match(app, /const visualSignature = JSON\.stringify\(\[label, conversation\.messageCount\]\);[\s\S]*tag\.replaceChildren\(\.\.\.children\);[\s\S]*tag\.dataset\.intercomVisualSignature = visualSignature;/, "unchanged tag visuals should retain their existing children inside the polite live region");
 
 console.log("intercom-tag-layout-static.test.mjs passed");

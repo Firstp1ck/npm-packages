@@ -43,6 +43,12 @@ const HELPER_TOOLS = [
   { name: "bash", description: "Run a command", source: "core" },
   { name: "write", description: "Write a file", source: "core" },
 ];
+const PROJECT_ONLY_TOOL = { name: "project-only", description: "Project-local test tool", source: "extension" };
+function helperToolsForFixture() {
+  return process.env.QT_WEBUI_FIXTURE_EXTRA_TOOL_CWD === process.cwd()
+    ? [...HELPER_TOOLS, PROJECT_ONLY_TOOL]
+    : HELPER_TOOLS;
+}
 const HELPER_SKILLS = [
   { name: "brave-search", description: "Web search", filePath: "/tmp/skills/brave-search/SKILL.md", disableModelInvocation: false },
   { name: "review", description: "Review code", filePath: "/tmp/skills/review/SKILL.md", disableModelInvocation: false },
@@ -551,7 +557,8 @@ function handle(command) {
           : new Set();
       const labels = { temperature: "temperature", top_p: "top p", frequency_penalty: "frequency penalty", presence_penalty: "presence penalty", seed: "seed", top_k: "top k", min_p: "min p" };
       const capabilities = Object.fromEntries(Object.keys(labels).map((key) => [key, { supported: supported.has(key), reason: supported.has(key) ? "" : api ? `${api} does not accept ${labels[key]}` : "no active model" }]));
-      const activeTools = helperEffective.tools === null ? HELPER_TOOLS.map((entry) => entry.name) : helperEffective.tools;
+      const helperTools = helperToolsForFixture();
+      const activeTools = helperEffective.tools === null ? helperTools.map((entry) => entry.name) : helperEffective.tools;
       const enabledSkills = helperEffective.skills === null ? HELPER_SKILLS.map((entry) => entry.name) : helperEffective.skills;
       const data = {
         model: { provider: currentModel.provider, id: currentModel.id, api },
@@ -562,7 +569,7 @@ function handle(command) {
             ? { durable: false, reason: "This Pi session is ephemeral; resource overrides apply only until it ends." }
             : { durable: true, reason: "" },
         },
-        tools: { all: HELPER_TOOLS.map((entry) => ({ ...entry, enabled: activeTools.includes(entry.name) })), active: activeTools, baseline: HELPER_TOOLS.map((entry) => entry.name) },
+        tools: { all: helperTools.map((entry) => ({ ...entry, enabled: activeTools.includes(entry.name) })), active: activeTools, baseline: helperTools.map((entry) => entry.name) },
         skills: { all: HELPER_SKILLS, enabled: enabledSkills },
         scopedModels: scopedModelsForFixture(),
         sampling: { applied: structuredClone(helperEffective.sampling || {}), api, capabilities, thinkingActive: currentModel.reasoning === true && currentThinkingLevel !== "off" },

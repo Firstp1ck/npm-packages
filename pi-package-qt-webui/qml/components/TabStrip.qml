@@ -43,11 +43,31 @@ Rectangle {
         return text === homeDirectory && homeDirectory.length > 0 ? "~" : text
     }
 
-    function statusDescription(tab) {
-        if (tab.statusKind === "error") return "error"
-        if (!tab.ready) return "starting"
-        if (tab.active) return "working"
-        return "ready"
+    function activityStateFor(tab) {
+        const state = String(tab.activityState || "")
+        if (state === "blocked") return "blocked"
+        if (state === "working") return "working"
+        if (state === "done") return "done"
+        return "idle"
+    }
+
+    function conditionDescription(tab) {
+        const conditions = []
+        if (tab.statusKind === "error") {
+            const detail = String(tab.statusText || "").trim()
+            conditions.push(detail.length > 0 ? "error: " + detail : "error")
+        } else if (!tab.ready) {
+            conditions.push("starting")
+        }
+        // A blocked tab already says that input is pending; repeating it adds noise for screen readers.
+        if (Number(tab.needsInput || 0) > 0 && activityStateFor(tab) !== "blocked") conditions.push("needs input")
+        return conditions.join(", ")
+    }
+
+    function tooltipDescription(tab) {
+        const condition = conditionDescription(tab)
+        return shortPath(tab.cwd) + (tab.sessionName ? "\n" + tab.sessionName : "")
+            + "\n" + activityStateFor(tab) + (condition.length > 0 ? "\n" + condition : "")
     }
 
     function revealActiveTab() {
@@ -104,6 +124,8 @@ Rectangle {
                 readonly property bool current: modelData.id === strip.activeTabId
                 readonly property bool keyboardCursor: index === tabList.currentIndex && tabList.activeFocus
                 readonly property string label: strip.tabLabel(modelData)
+                readonly property string activityState: strip.activityStateFor(modelData)
+                readonly property string conditionText: strip.conditionDescription(modelData)
                 width: strip.vertical ? tabList.width : Math.min(tabRow.implicitWidth + strip.theme.space2Xl, 260)
                 height: strip.vertical ? 46 : tabRow.implicitHeight + strip.theme.spaceLg
                 radius: strip.theme.radiusSmall
@@ -113,13 +135,14 @@ Rectangle {
                 Behavior on color { ColorAnimation { duration: strip.theme.motionNormal } }
                 Behavior on border.color { ColorAnimation { duration: strip.theme.motionNormal } }
                 Accessible.role: Accessible.PageTab
-                Accessible.name: "Tab " + (index + 1) + ": " + label + ", " + strip.statusDescription(modelData)
+                Accessible.name: "Tab " + (index + 1) + ": " + label + ", " + activityState
+                    + (conditionText.length > 0 ? ", " + conditionText : "")
                     + (modelData.unread > 0 ? ", " + modelData.unread + " unread" : "")
-                    + (modelData.needsInput > 0 ? ", needs input" : "") + (current ? ", selected" : "")
+                    + (current ? ", selected" : "")
                 Accessible.selected: current
 
                 ToolTip.visible: tabHover.hovered
-                ToolTip.text: strip.shortPath(modelData.cwd) + (modelData.sessionName ? "\n" + modelData.sessionName : "")
+                ToolTip.text: strip.tooltipDescription(modelData)
                 ToolTip.delay: 500
 
                 HoverHandler {
@@ -149,8 +172,10 @@ Rectangle {
                         height: 8
                         radius: 4
                         color: tabItem.modelData.statusKind === "error" ? strip.theme.destructive
-                            : !tabItem.modelData.ready ? strip.theme.muted
-                            : tabItem.modelData.active ? strip.theme.runningForeground : strip.theme.readyForeground
+                            : tabItem.activityState === "blocked" ? strip.theme.warning
+                            : tabItem.activityState === "working" ? strip.theme.runningForeground
+                            : tabItem.activityState === "done" ? strip.theme.readyForeground
+                            : strip.theme.muted
                     }
 
                     ColumnLayout {
@@ -179,6 +204,20 @@ Rectangle {
                             font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
                         }
+                    }
+
+                    Label {
+                        // The colored dot already carries idle state; the word would only squeeze horizontal titles.
+                        visible: strip.vertical || tabItem.activityState !== "idle"
+                        text: tabItem.activityState
+                        textFormat: Text.PlainText
+                        color: tabItem.modelData.statusKind === "error" ? strip.theme.destructive
+                            : tabItem.activityState === "blocked" ? strip.theme.warning
+                            : tabItem.activityState === "working" ? strip.theme.runningForeground
+                            : tabItem.activityState === "done" ? strip.theme.readyForeground
+                            : strip.theme.muted
+                        font.family: strip.theme.monospaceFamily
+                        font.pixelSize: strip.theme.typeCaption
                     }
 
                     Rectangle {

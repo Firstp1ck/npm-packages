@@ -647,10 +647,27 @@ Scope {
         return false
     }
 
+    function notificationSessionLabel(tabId) {
+        const id = String(tabId || "")
+        const tab = tabById(id)
+        if (tab && typeof tab.name === "string" && tab.name.trim().length > 0) return tab.name.trim()
+        if (tab && typeof tab.sessionName === "string" && tab.sessionName.trim().length > 0) return tab.sessionName.trim()
+        if (id === activeTabId && sessionName.trim().length > 0) return sessionName.trim()
+        return tabLabel(tab)
+    }
+
+    function notificationBody(body, tabId) {
+        const label = notificationSessionLabel(tabId)
+        const details = String(body || "").trim()
+        if (label.length === 0) return details
+        if (details.length === 0 || details === label) return label
+        return label + "\n" + details
+    }
+
     function notifyDesktop(title, body, sourceTabId) {
         const tabId = sourceTabId === undefined ? activeTabId : String(sourceTabId || "")
         if (!desktopNotifications || windowActive || tabSessionIsSettled(tabId)) return false
-        request("notify", { "title": boundedText(title, 256), "body": boundedText(body || "", 256) }, response => {
+        request("notify", { "title": boundedText(title, 256), "body": boundedText(notificationBody(body, tabId), 256) }, response => {
             if (smokeMode && response.ok) console.log("QT_WEBUI_SMOKE_NOTIFICATION_REQUESTED")
         })
         return true

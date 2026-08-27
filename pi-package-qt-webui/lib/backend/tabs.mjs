@@ -44,16 +44,21 @@ export function createTabRegistry({
 
   function summary(tab) {
     const snapshot = tab.session.snapshot();
+    const representedSessionFile = tab.transitionSessionFile || tab.pendingResume || tab.sessionFile;
+    const activityState = snapshot.active
+      ? snapshot.pendingDialogs > 0 ? "blocked" : "working"
+      : tab.unacknowledgedCompletion ? "done" : "idle";
     return {
       id: tab.id,
       cwd: tab.cwd,
       name: tab.name,
-      sessionFile: tab.sessionFile,
+      sessionFile: representedSessionFile,
       sessionName: tab.sessionName,
       statusKind: snapshot.statusKind,
       statusText: snapshot.statusText,
       ready: snapshot.ready,
       active: snapshot.active,
+      activityState,
       unread: tab.unread,
       needsInput: snapshot.pendingDialogs,
       pid: snapshot.pid,
@@ -143,6 +148,7 @@ export function createTabRegistry({
       sessionFile: "",
       sessionName: "",
       unread: 0,
+      unacknowledgedCompletion: false,
       pendingResume: sessionPath && existsSync(sessionPath) ? sessionPath : "",
       transitionSessionFile: "",
       staleSessionFile: "",
@@ -198,6 +204,14 @@ export function createTabRegistry({
       }
     }
     if (type === "pi.exit" || type === "pi.started") tabsChanged = true;
+    if (type === "run.start") {
+      tab.unacknowledgedCompletion = false;
+      tabsChanged = true;
+    }
+    if (type === "run.end") {
+      tab.unacknowledgedCompletion = tab.id !== activeId;
+      tabsChanged = true;
+    }
     if (type === "run.end" || (type === "pi.status" && payload.ready === true && payload.active === false)) {
       try {
         const result = onSessionIdle(tab);
@@ -206,12 +220,12 @@ export function createTabRegistry({
         // A monitor retry must not disturb Pi event processing.
       }
     }
-    if (tab.id !== activeId) {
-      if (BADGE_EVENTS.has(type)) {
-        tab.unread += 1;
-        tabsChanged = true;
-      }
-      if (type === "extension.request" || type === "extension.cancelled" || type === "extension.answered") tabsChanged = true;
+    if (tab.id !== activeId && BADGE_EVENTS.has(type)) {
+      tab.unread += 1;
+      tabsChanged = true;
+    }
+    if (type === "extension.request" || type === "extension.cancelled" || type === "extension.answered") {
+      tabsChanged = true;
     }
     emit(type, { tab: tab.id, ...payload });
     if (tabsChanged) emitTabs();
@@ -222,6 +236,7 @@ export function createTabRegistry({
     const tab = require(id);
     activeId = tab.id;
     tab.unread = 0;
+    tab.unacknowledgedCompletion = false;
     saveState();
     emitTabs();
     replay(tab);
@@ -334,6 +349,7 @@ export function createTabRegistry({
       return result;
     } finally {
       if (tab.transitionSessionFile === sessionPath) tab.transitionSessionFile = "";
+      emitTabs();
       sessionPathsChanged();
     }
   }
@@ -438,6 +454,8 @@ export function createTabRegistry({
   async function restart(id) {
     const tab = require(id);
     tab.pendingResume = tab.sessionFile && existsSync(tab.sessionFile) ? tab.sessionFile : "";
+    // The replacement child cannot deliver the previous run's output, so an unseen completion is void.
+    tab.unacknowledgedCompletion = false;
     sessionPathsChanged();
     return tab.session.restart();
   }

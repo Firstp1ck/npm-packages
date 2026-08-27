@@ -18,7 +18,7 @@ import {
   makeResponse,
   validateRequest,
 } from "./protocol.mjs";
-import { createResourceStore, resolveEffective, updateProfile, validateProfile } from "./resources.mjs";
+import { createResourceStore, resolveEffective, resourceModelKey, updateProfile, validateProfile } from "./resources.mjs";
 import { SAMPLING_KEYS, supportedSamplingValues } from "./sampling.mjs";
 import { createSequenceStore } from "./sequences.mjs";
 import { createSessionSyncMonitor, loadPersistedSessionSnapshot, sessionRevisionKey } from "./session-sync.mjs";
@@ -465,7 +465,7 @@ export function createBackend({
   }
 
   function resourceContextFrom(tab, helper, stored) {
-    const modelProfile = stored.value.models[`${helper.model.provider}/${helper.model.id}`] ?? validateProfile(null);
+    const modelProfile = stored.value.models[resourceModelKey(helper.model.provider, helper.model.id)] ?? validateProfile(null);
     const effective = resolveEffective({ session: helper.sessionProfile, model: modelProfile, global: stored.value.global });
     return { tab, helper, stored, modelProfile, effective };
   }
@@ -473,13 +473,13 @@ export function createBackend({
   async function resourceContext(tab) {
     await registry.prepareMutation(tab.id);
     const helper = normalizeHelperState(tab, await tab.session.helperState());
-    return resourceContextFrom(tab, helper, resources.read());
+    return resourceContextFrom(tab, helper, await resources.read());
   }
 
   function helperEffective(context) {
     return {
-      tools: context.effective.tools,
-      skills: context.effective.skills,
+      tools: context.effective.tools === null ? null : context.effective.tools.filter((name) => context.helper.toolNames.has(name)),
+      skills: context.effective.skills === null ? null : context.effective.skills.filter((name) => context.helper.skillNames.has(name)),
       sampling: supportedSamplingValues(context.effective.sampling, context.helper.sampling.capabilities),
     };
   }
@@ -514,6 +514,7 @@ export function createBackend({
       sampling: { ...context.helper.sampling, applied: context.helper.appliedSampling },
       problems: context.stored.problems,
       path: context.stored.path,
+      sharedPath: context.stored.sharedPath,
     };
   }
 
@@ -553,7 +554,7 @@ export function createBackend({
     const nextValue = structuredClone(before.stored.value);
     if (scope === "global") nextValue.global = updateProfile(nextValue.global, field, value);
     else {
-      const key = `${before.helper.model.provider}/${before.helper.model.id}`;
+      const key = resourceModelKey(before.helper.model.provider, before.helper.model.id);
       nextValue.models[key] = updateProfile(nextValue.models[key] ?? validateProfile(null), field, value);
     }
     return { ...before.stored, value: nextValue };
@@ -637,11 +638,37 @@ export function createBackend({
       let committedStored = storedBefore;
       if (scope !== "session") {
         try {
-          resources.update(scope, { provider: before.helper.model.provider, modelId: before.helper.model.id }, field, value);
-          committedStored = resources.read();
+          committedStored = await resources.update(
+            scope,
+            { provider: before.helper.model.provider, modelId: before.helper.model.id },
+            field,
+            value,
+            { visibleNames: field === "tools" || field === "skills" ? [...known] : null },
+          );
         } catch (error) {
           await rollbackResources(attempted, beforeById, scope, field, error);
         }
+      }
+
+      const reconciliationFailures = [];
+      for (const target of targets) {
+        const applied = appliedHelpers.get(target.id);
+        const prospective = prospectiveById.get(target.id);
+        let committed = resourceContextFrom(target, applied, committedStored);
+        if (JSON.stringify(helperEffective(prospective)) !== JSON.stringify(helperEffective(committed))) {
+          try {
+            const raw = await target.session.helperApply({ effective: helperEffective(committed) });
+            const reconciled = normalizeHelperState(target, raw);
+            committed = resourceContextFrom(target, reconciled, committedStored);
+            validateAppliedHelper(committed, reconciled);
+            appliedHelpers.set(target.id, reconciled);
+          } catch (error) {
+            reconciliationFailures.push(`${target.id}: ${boundedError(error?.message ?? String(error))}`);
+          }
+        }
+      }
+      if (reconciliationFailures.length > 0) {
+        throw new ProtocolError("internal_error", `The resource change was saved, but runtime reconciliation failed (${reconciliationFailures.join("; ")}). The affected session state may be inconsistent until resources are refreshed or the session restarts.`);
       }
 
       let requestedResult = null;
@@ -756,7 +783,7 @@ export function createBackend({
         stats: { maxWritableLength, droppedTotal, backpressurePauses, queuedRecords, sequence, inflight: inflight.size },
         tabs: registry.list(),
         recentActions: saved.recentActions,
-        paths: { settings: settings.path, state: state.path, sequences: sequences.path, resources: resources.path },
+        paths: { settings: settings.path, state: state.path, sequences: sequences.path, resources: resources.path, sharedResources: resources.sharedPath },
         limits: LIMITS,
       };
     },

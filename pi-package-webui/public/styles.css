@@ -9684,30 +9684,30 @@ summary { cursor: pointer; color: var(--warning); }
   display: none !important;
 }
 .composer-intercom-tags {
+  position: relative;
   pointer-events: auto;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  flex: 0 1 17rem;
+  display: inline-flex;
+  flex: 0 1 50%;
+  flex-direction: row-reverse;
   align-items: center;
   gap: 0.28rem;
   min-width: 0;
-  max-width: min(17rem, 100%);
+  max-width: 50%;
   padding-block: 0.12rem;
+  overflow: hidden;
+}
+.composer-intercom-tags.overflow-open {
+  overflow: visible;
 }
 .composer-intercom-tags[hidden] { display: none !important; }
-.composer-intercom-tags.dense {
-  grid-auto-flow: row;
-  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
-  align-items: stretch;
-}
 .composer-intercom-tag {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 0.34rem;
-  width: 100%;
+  width: auto;
   min-width: 0;
-  max-width: 100%;
+  max-width: min(13rem, 100%);
   min-height: 0;
   margin: 0;
   padding: 0.14rem 0.5rem;
@@ -9754,9 +9754,53 @@ summary { cursor: pointer; color: var(--warning); }
   line-height: 1.1;
   text-align: center;
 }
+.composer-intercom-tag.overflow {
+  color: var(--ctp-subtext0);
+  font-variant-numeric: tabular-nums;
+  border-color: rgba(166, 173, 200, 0.30);
+  background: linear-gradient(120deg, rgba(166, 173, 200, 0.22), rgba(166, 173, 200, 0.08)), var(--ctp-crust);
+}
+.composer-intercom-tag.overflow[aria-expanded="true"] {
+  color: var(--ctp-green);
+  border-color: rgba(166, 227, 161, 0.78);
+  box-shadow: 0 0.42rem 1rem rgba(var(--ctp-crust-rgb), 0.48), 0 0 1.1rem rgba(166, 227, 161, 0.3);
+}
+.composer-intercom-overflow-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.42rem);
+  z-index: 150;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 0.34rem;
+  box-sizing: border-box;
+  width: min(32rem, calc(100vw - 1.5rem));
+  max-height: min(42vh, 18rem);
+  padding: 0.46rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  border: 1px solid rgba(166, 227, 161, 0.36);
+  border-radius: 0.9rem;
+  background: var(--ctp-crust);
+  box-shadow: 0 0.9rem 2.2rem rgba(var(--ctp-crust-rgb), 0.72), 0 0 1rem rgba(166, 227, 161, 0.18), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+.composer-intercom-overflow-menu[hidden] {
+  display: none !important;
+}
+.composer-intercom-overflow-menu .composer-intercom-tag {
+  width: 100%;
+  max-width: none;
+  min-height: 2rem;
+}
 @media (max-width: 720px), (max-device-width: 720px), (pointer: coarse) and (hover: none) {
-  .composer-intercom-tags { flex: 1 1 100%; min-width: 0; max-width: 100%; }
+  .composer-intercom-tags { flex: 0 0 100%; width: 100%; min-width: 0; max-width: 100%; }
   .composer-intercom-tag { min-height: 44px; }
+  .composer-intercom-overflow-menu {
+    width: min(32rem, calc(100vw - 1rem));
+    max-height: min(50vh, 20rem);
+  }
+  .composer-intercom-overflow-menu .composer-intercom-tag { min-height: 44px; }
 }
 .composer-feature-category-tag {
   flex: 0 1 auto;
@@ -19297,6 +19341,7 @@ body:has(#undoToast:not([hidden])) .notice-toast-stack { bottom: calc(max(1rem, 
   }
   body.mobile-composer-disclosure .composer-actions-panel > .composer-context-tags {
     display: flex;
+    flex-wrap: wrap;
     min-height: 44px;
     padding: 0.3rem;
     overflow: visible;

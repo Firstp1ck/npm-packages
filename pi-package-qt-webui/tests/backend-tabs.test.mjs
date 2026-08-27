@@ -258,6 +258,7 @@ test("catalog refresh excludes startup resumes and explicit session-switch targe
   await utimes(switchPath, new Date(now), new Date(now));
 
   const backend = await readyBackend(t, { cwd, env });
+  const beforeOpen = backend.events.length;
   const opened = await backend.send("tab_open", { cwd, sessionPath: startupPath });
   const tabId = opened.data.tab.id;
   const piPid = opened.data.tab.pid;
@@ -284,6 +285,13 @@ test("catalog refresh excludes startup resumes and explicit session-switch targe
   assert(pendingCatalog.data.sessions.every((session) => !("identity" in session)), "transition identities remain backend-private");
   resumePi();
   await backend.waitForEvent("pi.runtime", (event) => event.tab === tabId && event.sessionFile === startupPath);
+  await backend.send("tabs_list");
+  const openingFiles = backend.events.slice(beforeOpen)
+    .filter((event) => event.type === "tabs.update")
+    .map((event) => event.tabs.find((tab) => tab.id === tabId)?.sessionFile)
+    .filter(Boolean);
+  assert(openingFiles.length > 0, "opening the saved session publishes its tab summary");
+  assert.deepEqual([...new Set(openingFiles)], [startupPath], "every loading summary represents the requested session instead of a temporary blank tab");
 
   await utimes(switchPath, new Date(now - 60 * dayMs), new Date(now - 60 * dayMs));
   stopPi();
@@ -688,6 +696,67 @@ test("broader resource profiles reconcile every idle matching tab before commit 
   assert(backend.events.filter((event) => event.type === "resources.changed").every((event) => event.tab === firstTab || event.tab === secondTab));
 });
 
+test("committed broader profiles reconcile retained tools against each affected tab's inventory", async (t) => {
+  const first = await temporary(t, "qt-webui-resources-common-");
+  const second = await temporary(t, "qt-webui-resources-project-tool-");
+  const backend = await readyBackend(t, {
+    cwd: first,
+    env: {
+      QT_WEBUI_FIXTURE_EXTRA_TOOL_CWD: second,
+      QT_WEBUI_FIXTURE_HELPER_NOTIFY_DELAY_MS: "120",
+    },
+  });
+  const firstTab = (await backend.send("hello")).data.tabs.activeTab;
+  const opened = await backend.send("tab_open", { cwd: second });
+  const secondTab = opened.data.tab.id;
+  await backend.waitForEvent("pi.status", (event) => event.tab === secondTab && event.statusKind === "ready");
+
+  const baseline = await backend.send("tools_set", { tab: firstTab, scope: "global", enabledTools: ["bash"] });
+  assert.equal(baseline.ok, true, JSON.stringify(baseline));
+  await writeFile(backend.capturePath, "");
+
+  const pending = backend.send("tools_set", { tab: firstTab, scope: "global", enabledTools: ["read"] });
+  const deadline = Date.now() + 2_000;
+  let prospectiveApplyStarted = false;
+  while (Date.now() < deadline) {
+    const requests = (await backend.readCapture())
+      .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+      .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)));
+    if (requests.some((request) => request.action === "apply")) {
+      prospectiveApplyStarted = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(prospectiveApplyStarted, true, "the prospective affected-tab apply starts before the concurrent canonical write");
+
+  const canonical = JSON.parse(await readFile(backend.webuiSettingsPath, "utf8"));
+  canonical.resourceDefaults.tools.enabledTools = ["bash", "project-only"];
+  await writeFile(backend.webuiSettingsPath, JSON.stringify(canonical));
+
+  const committed = await pending;
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  assert.deepEqual(committed.data.profiles.global.tools, ["read", "project-only"], "the locked latest-snapshot commit retains the tool unknown to the initiating tab");
+
+  async function effectiveTools(tab) {
+    const afterSeq = backend.events.at(-1)?.seq || 0;
+    assert.equal((await backend.send("prompt", { tab, message: "__QT_WEBUI_EFFECTIVE__" })).ok, true);
+    const notification = await backend.waitForEvent("extension.notify", (event) => event.seq > afterSeq
+      && event.tab === tab && event.message.startsWith("QT_WEBUI_HELPER_EFFECTIVE "));
+    await backend.waitForEvent("pi.status", (event) => event.tab === tab && event.statusKind === "ready" && event.seq > notification.seq);
+    return JSON.parse(notification.message.slice("QT_WEBUI_HELPER_EFFECTIVE ".length)).tools;
+  }
+
+  assert.deepEqual(await effectiveTools(firstTab), ["read"], "the initiating tab receives only tools in its own inventory");
+  assert.deepEqual(await effectiveTools(secondTab), ["read", "project-only"], "committed-state reconciliation restores the retained project tool where it is available");
+
+  const applications = (await backend.readCapture())
+    .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+    .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)))
+    .filter((request) => request.action === "apply");
+  assert(applications.some((request) => request.payload.effective.tools?.includes("project-only")), "the production helper apply path receives the reconciled committed tool");
+});
+
 test("broader profile transactions fence compaction and session lifecycle through commit and rollback", async (t) => {
   async function waitForHelperCalls(backend, count) {
     const deadline = Date.now() + 5_000;
@@ -733,7 +802,11 @@ test("broader profile transactions fence compaction and session lifecycle throug
     const opened = await backend.send("tab_open", { cwd: second });
     const secondTab = opened.data.tab.id;
     await backend.waitForEvent("pi.status", (event) => event.tab === secondTab && event.statusKind === "ready");
-    if (rollback) await mkdir(path.join(backend.temporary, "config", "qt-webui", "resources.json"), { recursive: true });
+    if (rollback) {
+      await backend.send("resources_state", { tab: firstTab });
+      await writeFile(backend.capturePath, "");
+      await writeFile(`${backend.webuiSettingsPath}.lock`, "blocked");
+    }
 
     const transaction = backend.send("skills_set", { tab: firstTab, scope: "global", enabledSkills: ["review"] });
     await waitForHelperCalls(backend, 1);

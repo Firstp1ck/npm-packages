@@ -33,8 +33,8 @@ const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, 
   readFile(path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs"), "utf8"),
 ]);
 
-const [workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog] = await Promise.all([
-  readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("components", "DropUpPicker.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
+const [workingIndicator, statusSegment, statusOverlay, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog] = await Promise.all([
+  readQml(path.join("components", "WorkingIndicator.qml")), readQml(path.join("components", "StatusSegment.qml")), readQml(path.join("components", "StatusOverlay.qml")), readQml(path.join("components", "DropUpPicker.qml")), readQml(path.join("dialogs", "PickerDialog.qml")),
   readQml(path.join("components", "CompletionPopup.qml")), readQml(path.join("dialogs", "SequencesDialog.qml")), readQml(path.join("dialogs", "TextEditDialog.qml")),
   readQml(path.join("components", "TabStrip.qml")), readQml(path.join("components", "SessionList.qml")), readQml(path.join("dialogs", "ConfirmDialog.qml")), readQml(path.join("dialogs", "InputDialog.qml")), readQml(path.join("dialogs", "WorktreeDialog.qml")), readQml(path.join("dialogs", "DirectoryDialog.qml")),
 ]);
@@ -43,7 +43,7 @@ const [eventsDialog, diagnosticsDialog, resourceProfilesDialog] = await Promise.
   readQml(path.join("dialogs", "DiagnosticsDialog.qml")),
   readQml(path.join("dialogs", "ResourceProfilesDialog.qml")),
 ]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, statusOverlay, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -104,7 +104,7 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   assert.match(shell, /positionViewAtIndex\(searchCurrentRow, ListView\.Center\)/);
   assert.match(shell, /Loader\s*\{[\s\S]*active:\s*root\.smokeMode[\s\S]*SmokeDriver/);
   assert.match(shell, /footer:\s*WorkingIndicator\s*\{[\s\S]*running:\s*bridge\.active/);
-  assert.match(shell, /Repeater\s*\{[\s\S]*model:\s*root\.statusGroups[\s\S]*StatusSegment/);
+  assert.match(shell, /StatusOverlay\s*\{[\s\S]*groups:\s*root\.statusGroups/);
   assert.match(functionBody(shell, "groupStatusChips"), /chip\.group === "meta"/);
   assert.match(shell, /text:\s*bridge\.restarting \? "Restarting…"/);
 });
@@ -200,7 +200,13 @@ test("global sessions page safely into accessible Working and default-expanded S
   assert.match(functionBody(bridge, "sessionTab"), /openTabId[\s\S]*tabById\(openTabId\)/, "canonical identities stay hidden behind backend-provided tab ids");
   const settledNotificationGuard = functionBody(bridge, "tabSessionIsSettled");
   assert.match(settledNotificationGuard, /session\.settled !== true[\s\S]*sessionTab\(session\)[\s\S]*String\(tab\.id \|\| ""\) === id/, "notification suppression follows the canonical catalog-to-tab association");
-  assert.match(functionBody(bridge, "notifyDesktop"), /sourceTabId === undefined \? activeTabId[\s\S]*tabSessionIsSettled\(tabId\)/, "every desktop notification checks the originating session's settled state");
+  const notificationLabel = functionBody(bridge, "notificationSessionLabel");
+  assert.match(notificationLabel, /tab\.name[\s\S]*tab\.sessionName[\s\S]*id === activeTabId[\s\S]*sessionName[\s\S]*tabLabel\(tab\)/, "notifications prefer the session's displayed name and retain an unnamed-tab fallback");
+  const notificationBody = functionBody(bridge, "notificationBody");
+  const formatNotificationBody = new Function("body", "tabId", "notificationSessionLabel", notificationBody);
+  assert.equal(formatNotificationBody("Build failed", "tab-2", () => "Release prep"), "Release prep\nBuild failed");
+  assert.equal(formatNotificationBody("Release prep", "tab-2", () => "Release prep"), "Release prep", "an existing session-name body is not repeated");
+  assert.match(functionBody(bridge, "notifyDesktop"), /sourceTabId === undefined \? activeTabId[\s\S]*tabSessionIsSettled\(tabId\)[\s\S]*notificationBody\(body, tabId\)/, "every desktop notification checks the originating session and includes its name");
   assert.equal((functionBody(bridge, "handleInactiveTabEvent").match(/notifyDesktop\([^\n]*event\.tab\)/g) ?? []).length, 2, "background input and run-completion notifications identify their originating tab");
   assert.match(open, /tabs\.length >= maxTabs[\s\S]*return openTab\(String\(session\.cwd \|\| ""\), path, callback\)/, "another saved session opens in a new cwd-aware tab without bypassing the tab limit");
   assert.match(functionBody(shell, "openCatalogSession"), /openTabId\.length > 0[\s\S]*bridge\.selectTab\(openTabId\)[\s\S]*bridge\.openCatalogSession\(session\)/, "temporary unsaved tab rows remain selectable");
@@ -274,6 +280,49 @@ test("global sessions page safely into accessible Working and default-expanded S
   for (const signal of ["settleAllRequested()", "closeRequested(string tabId)", "newTabRequested()", "openDirectoryRequested()"] ) {
     assert(sessionList.includes(`signal ${signal}`), `session list should expose ${signal}`);
   }
+});
+
+test("open session rows and tab controls present backend-owned activity states with orthogonal conditions", () => {
+  for (const [name, source] of [["session list", sessionList], ["tab strip", tabStrip]]) {
+    const activityStateFor = functionBody(source, "activityStateFor");
+    assert.match(activityStateFor, /\.activityState/, `${name} consumes backend activityState`);
+    for (const state of ["blocked", "working", "done", "idle"]) {
+      assert.match(activityStateFor, new RegExp(`"${state}"`), `${name} exposes the ${state} label`);
+    }
+    assert.doesNotMatch(activityStateFor, /\.active|\.unread|\.needsInput/, `${name} does not independently infer activity`);
+
+    const conditionDescription = functionBody(source, "conditionDescription");
+    assert.match(conditionDescription, /statusKind === "error"[\s\S]*statusText/, `${name} preserves process errors as a separate condition`);
+    assert.match(conditionDescription, /needsInput[\s\S]*"needs input"/, `${name} reports pending input as a separate condition`);
+  }
+
+  const sessionStatus = functionBody(sessionList, "statusFor");
+  assert.match(sessionStatus, /!session\.open\) return "saved · "/, "closed saved rows retain their existing status");
+  assert.match(sessionStatus, /activityStateFor\(session\) \+ " · "/, "open rows display the backend activity label");
+  assert.match(functionBody(sessionList, "enriched"), /"activityState": tab \? String\(tab\.activityState/, "catalog-backed open rows copy activityState from their tab summary");
+  assert.match(functionBody(sessionList, "buildWorkingSessions"), /activityState: String\(tab\.activityState/, "temporary open rows copy activityState from their tab summary");
+  const workingRow = objectBodyWithId(sessionList, "Rectangle", "workingRow");
+  assert.match(workingRow, /Accessible\.name:[\s\S]*statusFor\(modelData\)[\s\S]*conditionText/, "open-row accessibility includes activity and orthogonal conditions");
+  assert.match(workingRow, /ToolTip\.text:\s*sessionList\.statusTooltip\(modelData\)/, "open-row tooltips include the same status description");
+  const sessionPunctuation = objectBodyContaining(workingRow, "Rectangle", "width: 4");
+  assert.match(sessionPunctuation, /statusKind === "error" \? sessionList\.theme\.destructive/, "session errors retain destructive precedence");
+  for (const [state, token] of [["blocked", "warning"], ["working", "runningForeground"], ["done", "readyForeground"]]) {
+    assert.match(sessionPunctuation, new RegExp(`=== "${state}" \\? sessionList\\.theme\\.${token}`), `session ${state} uses ${token}`);
+  }
+  assert.match(sessionPunctuation, /: sessionList\.theme\.muted/, "session idle uses muted");
+  assert.match(sessionPunctuation, /width:\s*4[\s\S]*height:\s*12[\s\S]*radius:\s*0/, "session activity keeps rectangular status punctuation");
+
+  const tabItem = objectBodyWithId(tabStrip, "Rectangle", "tabItem");
+  assert.match(tabItem, /readonly property string activityState:\s*strip\.activityStateFor\(modelData\)/);
+  assert.match(tabItem, /Accessible\.name:[\s\S]*activityState[\s\S]*conditionText/, "tab accessibility includes activity and orthogonal conditions");
+  assert.match(tabItem, /ToolTip\.text:\s*strip\.tooltipDescription\(modelData\)/, "tab tooltips include activity and orthogonal conditions");
+  assert.match(tabItem, /Label\s*\{[\s\S]*text:\s*tabItem\.activityState/, "tab controls visibly show the lowercase activity label");
+  const tabPunctuation = objectBodyContaining(tabItem, "Rectangle", "width: 8");
+  assert.match(tabPunctuation, /statusKind === "error" \? strip\.theme\.destructive/, "tab errors retain destructive precedence");
+  for (const [state, token] of [["blocked", "warning"], ["working", "runningForeground"], ["done", "readyForeground"]]) {
+    assert.match(tabPunctuation, new RegExp(`=== "${state}" \\? strip\\.theme\\.${token}`), `tab ${state} uses ${token}`);
+  }
+  assert.match(tabPunctuation, /: strip\.theme\.muted/, "tab idle uses muted");
 });
 
 test("automatic session settlement setting is confirmed, bounded, cancellable, and refreshes after save", () => {
@@ -650,8 +699,19 @@ test("resource profiles expose explicit scopes, inheritance, enabled names, supp
   assert.match(resourceProfilesDialog, /property string section: "tools"/);
   assert.match(resourceProfilesDialog, /\["session", "model", "global"\]/);
   assert.match(resourceProfilesDialog, /\["tools", "skills", "sampling"\]/);
-  assert.match(functionBody(resourceProfilesDialog, "saveCurrent"), /setEnabledTools\(scope, listMode === "inherit" \? null : listDraft\.slice\(\)/);
-  assert.match(functionBody(resourceProfilesDialog, "saveCurrent"), /setEnabledSkills\(scope, listMode === "inherit" \? null : listDraft\.slice\(\)/);
+  const visibleListDraft = functionBody(resourceProfilesDialog, "visibleListDraft");
+  assert.match(visibleListDraft, /if \(listMode === "inherit"\) return null/);
+  assert.match(visibleListDraft, /for \(const item of visibleInventory\)/);
+  assert.match(visibleListDraft, /visibleNames\.indexOf\(String\(name\)\) !== -1/);
+  assert.match(visibleListDraft, /slice\(0, bridge\.maxResourceNames\)/);
+  const runVisibleListDraft = new Function("listMode", "visibleInventory", "listDraft", "bridge", visibleListDraft);
+  assert.equal(runVisibleListDraft("inherit", [{ name: "read" }], ["read", "temporarily-unavailable"], { maxResourceNames: LIMITS.maxResourceNames }), null);
+  assert.deepEqual(runVisibleListDraft("custom", [{ name: "read" }, { name: "write" }], ["read", "temporarily-unavailable"], { maxResourceNames: LIMITS.maxResourceNames }), ["read"]);
+  assert.deepEqual(runVisibleListDraft("custom", [{ name: "read" }], [], { maxResourceNames: LIMITS.maxResourceNames }), [], "intentional none remains distinct after filtering");
+  const saveCurrent = functionBody(resourceProfilesDialog, "saveCurrent");
+  assert.match(saveCurrent, /setEnabledTools\(scope, visibleListDraft\(\), callback\)/);
+  assert.match(saveCurrent, /setEnabledSkills\(scope, visibleListDraft\(\), callback\)/);
+  assert.doesNotMatch(saveCurrent, /listDraft\.slice\(\)/, "the dialog must not submit unavailable configured names");
   assert.match(functionBody(resourceProfilesDialog, "chooseNone"), /listMode = "custom"[\s\S]*listDraft = \[\]/, "none is distinct from inherit");
   assert.match(functionBody(resourceProfilesDialog, "chooseInherit"), /listMode = "inherit"/);
   assert.match(functionBody(resourceProfilesDialog, "effectiveSource"), /field \+ "Source"/);
@@ -917,6 +977,43 @@ test("the palette, usage, events, and diagnostics stay keyboard-first, bounded, 
   assert.match(shell, /EventsDialog\s*\{[\s\S]*returnFocusItem:\s*composer/);
   assert.match(shell, /DiagnosticsDialog\s*\{[\s\S]*returnFocusItem:\s*composer/);
   assert.match(fixture, /"get_session_stats"/);
+});
+
+test("session details stay collapsed behind a bounded complete status overlay", () => {
+  const responseControls = objectBodyContaining(shell, "RowLayout", "id: responseControls");
+  const trigger = objectBodyWithId(responseControls, "AppButton", "statusButton");
+  const overlayWiring = objectBodyWithId(shell, "StatusOverlay", "statusOverlayItem");
+  assert.match(shell, /readonly property int statusEntryCount:\s*\{[\s\S]*group\.entries\.length/);
+  assert.match(trigger, /visible:\s*root\.statusEntryCount > 0/);
+  assert.match(trigger, /active:\s*statusOverlayItem\.opened/);
+  assert.match(trigger, /text:\s*"Status " \+ root\.statusEntryCount/);
+  assert.match(trigger, /if \(statusOverlayItem\.opened\) statusOverlayItem\.close\(\)[\s\S]*else statusOverlayItem\.present\(\)/, "the same control opens and closes the overlay");
+  assert.doesNotMatch(shell, /\bStatusSegment\s*\{/, "status rows no longer occupy persistent space below the prompt");
+  assert.match(overlayWiring, /anchorItem:\s*statusButton[\s\S]*returnFocusItem:\s*statusButton[\s\S]*groups:\s*root\.statusGroups/);
+  assert.match(statusOverlay, /parent:\s*anchorItem \? anchorItem : boundsItem/);
+  assert.match(statusOverlay, /closePolicy:\s*Popup\.CloseOnEscape \| Popup\.CloseOnPressOutsideParent/, "the trigger is inside the popup parent, so its press reaches the toggle instead of being consumed as an outside press");
+  assert.match(statusOverlay, /x:\s*Math\.max[\s\S]*- \(anchorItem \? anchorPosition\.x : 0\)[\s\S]*y:\s*Math\.max[\s\S]*- \(anchorItem \? anchorPosition\.y : 0\)/, "bounded window coordinates are translated back into the trigger parent coordinate space");
+  assert.match(statusOverlay, /width:\s*Math\.min\(maximumWidth,[\s\S]*height:\s*Math\.min\(implicitHeight, maximumHeight, dropUpAvailableHeight\)/);
+  assert.match(statusOverlay, /ScrollView\s*\{[\s\S]*ScrollBar\.vertical\.policy:\s*ScrollBar\.AsNeeded/);
+  assert.match(statusOverlay, /model:\s*popup\.groups[\s\S]*model:\s*groupSection\.modelData\.entries/);
+  assert.match(statusOverlay, /entryLabel:\s*String\(modelData\.label \|\| ""\)/);
+  assert.match(statusOverlay, /entryValue:\s*String\(modelData\.value \|\| ""\)/);
+  assert.match(statusOverlay, /detailText:\s*String\(modelData\.title \|\| ""\)/);
+  assert.match(statusOverlay, /String\(statusEntry\.modelData\.icon \|\| ""\)/);
+  assert.match(statusOverlay, /color:\s*popup\.valueColor\(statusEntry\.tone\)/);
+  assert.match(statusOverlay, /wrapMode:\s*Text\.WrapAnywhere/);
+  assert.doesNotMatch(statusOverlay, /\belide:/, "expanded status values and details remain fully readable");
+  assert.match(functionBody(statusOverlay, "present"), /entryCount === 0[\s\S]*open\(\)[\s\S]*closeButton\.forceActiveFocus\(\)/);
+  assert.match(statusOverlay, /onClosed:\s*if \(returnFocusItem\) returnFocusItem\.forceActiveFocus\(\)/);
+});
+
+test("status overlay attaches dialog accessibility to its visual content", () => {
+  const rootProperties = statusOverlay.slice(statusOverlay.indexOf("{") + 1, statusOverlay.indexOf("background:"));
+  const statusColumn = objectBodyWithId(statusOverlay, "ColumnLayout", "statusColumn");
+  assert.doesNotMatch(rootProperties, /Accessible\./, "Popup does not derive from Item or Action");
+  assert.match(statusColumn, /Accessible\.role:\s*Accessible\.Dialog/);
+  assert.match(statusColumn, /Accessible\.name:\s*"Session details"/);
+  assert.match(statusColumn, /Accessible\.description:\s*popup\.entryCount/);
 });
 
 test("controls carry accessible names, roles, and focus behavior", () => {

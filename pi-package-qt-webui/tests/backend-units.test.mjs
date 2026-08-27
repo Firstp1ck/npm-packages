@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -22,7 +22,7 @@ import {
   validateRequest,
 } from "../lib/backend/protocol.mjs";
 import { normalizeModel, normalizeModels, normalizeModelScope, normalizeThinkingLevels } from "../lib/backend/pi-session.mjs";
-import { createResourceStore, resolveEffective, updateProfile, validateResources } from "../lib/backend/resources.mjs";
+import { createResourceStore, resolveEffective, resourceModelKey, updateProfile, validateResources } from "../lib/backend/resources.mjs";
 import { applySamplingToPayload, samplingCapabilities, validateSamplingParams } from "../lib/backend/sampling.mjs";
 import { createSettingsStore, defaultSettings } from "../lib/backend/settings.mjs";
 import { createStateStore, sessionSettlementKey, validateState } from "../lib/backend/state.mjs";
@@ -192,7 +192,7 @@ test("resource profiles resolve session then exact model then global without col
   assert.deepEqual((await store.profileFor("global")).sampling, { temperature: 0.7, top_k: 99 }, "unsupported values stay persisted locally");
   assert.deepEqual((await store.profileFor("model", "p", "m")).tools, []);
   await store.update("model", { provider: "p", modelId: "m" }, "tools", null);
-  assert.equal(Object.hasOwn((await store.read()).value.models, "p/m"), false, "an all-inherit canonical model profile is removed");
+  assert.equal(Object.hasOwn((await store.read()).value.models, resourceModelKey("p", "m")), false, "an all-inherit canonical model profile is removed");
   const mode = (await stat(store.path)).mode & 0o777;
   assert.equal(mode, 0o600);
   assert.equal(store.sharedPath, sharedPath);
@@ -237,14 +237,15 @@ test("resource store migrates legacy tool and skill profiles once without overri
     skills: ["legacy-global-skill"],
     sampling: { temperature: 0.7 },
   }, "canonical values win while null fields receive the legacy fallback once");
-  assert.deepEqual(migrated.value.models["provider/model"], {
+  assert.deepEqual(migrated.value.models[resourceModelKey("provider", "model")], {
     tools: ["canonical-model-tool"],
     skills: ["legacy-model-skill"],
     sampling: { seed: 9 },
   });
   const canonicalAfterMigration = JSON.parse(await readFile(sharedPath, "utf8"));
   assert.deepEqual(canonicalAfterMigration.retained, { owner: "pi-webui" }, "the canonical latest-snapshot merge preserves unrelated settings");
-  assert.equal(JSON.parse(await readFile(localPath, "utf8")).migrations.webuiToolSkillState, true);
+  assert.equal(canonicalAfterMigration.resourceDefaults.qtWebuiMigrations.webuiToolSkillState, true, "the migration data and completion marker commit atomically in the canonical store");
+  assert.equal(JSON.parse(await readFile(localPath, "utf8")).migrations, undefined, "migration never needs a second local marker write");
 
   const localAfterMigration = JSON.parse(await readFile(localPath, "utf8"));
   localAfterMigration.global.skills = ["must-not-migrate-again"];
@@ -254,9 +255,141 @@ test("resource store migrates legacy tool and skill profiles once without overri
   await store.update("model", { provider: "provider", modelId: "model" }, "tools", null);
   await store.update("model", { provider: "provider", modelId: "model" }, "skills", null);
   const cleared = await store.read();
-  assert.equal(cleared.value.models["provider/model"].tools, null);
-  assert.equal(cleared.value.models["provider/model"].skills, null, "canonical inherit does not resurrect retained legacy selections");
-  assert.deepEqual(cleared.value.models["provider/model"].sampling, { seed: 9 });
+  const clearedModel = cleared.value.models[resourceModelKey("provider", "model")];
+  assert.equal(clearedModel.tools, null);
+  assert.equal(clearedModel.skills, null, "canonical inherit does not resurrect retained legacy selections");
+  assert.deepEqual(clearedModel.sampling, { seed: 9 });
+});
+
+test("resource migration uses a failure-safe canonical marker even when the local directory cannot be written", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-marker-"));
+  const directory = path.join(root, "local");
+  const sharedPath = path.join(root, "shared", "settings.json");
+  await mkdir(directory, { recursive: true });
+  const localPath = path.join(directory, "resources.json");
+  await writeFile(localPath, JSON.stringify({ global: { tools: ["legacy-tool"] }, models: {} }));
+  if (process.platform !== "win32") await chmod(directory, 0o500);
+  t.after(async () => {
+    if (process.platform !== "win32") await chmod(directory, 0o700).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const store = createResourceStore({ directory, sharedPath });
+  assert.deepEqual((await store.read()).value.global.tools, ["legacy-tool"]);
+  const canonical = JSON.parse(await readFile(sharedPath, "utf8"));
+  assert.equal(canonical.resourceDefaults.qtWebuiMigrations.webuiToolSkillState, true);
+  assert.equal(JSON.parse(await readFile(localPath, "utf8")).migrations, undefined);
+
+  canonical.resourceDefaults.tools.enabledTools = null;
+  await writeFile(sharedPath, JSON.stringify(canonical));
+  if (process.platform !== "win32") await chmod(directory, 0o700);
+  await writeFile(localPath, JSON.stringify({ global: { tools: ["must-not-resurrect"] }, models: {} }));
+  if (process.platform !== "win32") await chmod(directory, 0o500);
+  assert.equal((await store.read()).value.global.tools, null, "a later canonical clear remains authoritative without a local marker write");
+});
+
+test("resource reads leave malformed, oversized, and partially invalid legacy files untouched", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-invalid-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cases = [
+    ["malformed", "{not json\n", /not valid JSON/],
+    ["oversized", "x".repeat(LIMITS.maxResourcesFileBytes + 1), /exceeds/],
+    ["partial", JSON.stringify({ global: { tools: "bad", sampling: { temperature: 0.4 } }, models: {} }), /tools must be a list/],
+  ];
+  for (const [name, contents, expectedProblem] of cases) {
+    const directory = path.join(root, name);
+    await mkdir(directory, { recursive: true });
+    const localPath = path.join(directory, "resources.json");
+    const sharedPath = path.join(root, `${name}-settings.json`);
+    await writeFile(localPath, contents);
+    const result = await createResourceStore({ directory, sharedPath }).read();
+    assert(result.problems.some((problem) => expectedProblem.test(problem)), `${name} reports its validation problem`);
+    assert.equal(await readFile(localPath, "utf8"), contents, `${name} storage is not rewritten merely by opening resources`);
+    await assert.rejects(readFile(sharedPath, "utf8"), (error) => error.code === "ENOENT", `${name} does not persist a migration marker`);
+  }
+});
+
+test("exact-model profile limits fail before migration or direct writes report a misleading commit", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-limit-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const saturatedProfiles = Array.from({ length: 512 }, (_, index) => ({
+    provider: "provider",
+    modelId: `model-${index}`,
+    tools: { enabledTools: ["read"] },
+    skills: { enabledSkills: null },
+  }));
+
+  const migrationDirectory = path.join(root, "migration");
+  await mkdir(migrationDirectory, { recursive: true });
+  const migrationShared = path.join(root, "migration-settings.json");
+  const saturatedSettings = { version: 8, resourceDefaults: { tools: { enabledTools: null }, skills: { enabledSkills: null }, modelProfiles: saturatedProfiles } };
+  await writeFile(migrationShared, JSON.stringify(saturatedSettings));
+  await writeFile(path.join(migrationDirectory, "resources.json"), JSON.stringify({
+    global: {},
+    models: { "legacy/extra": { tools: ["legacy-tool"] } },
+  }));
+  await assert.rejects(createResourceStore({ directory: migrationDirectory, sharedPath: migrationShared }).read(), (error) => error.code === "limit_exceeded");
+  assert.deepEqual(JSON.parse(await readFile(migrationShared, "utf8")), saturatedSettings, "failed migration writes neither a profile nor its completion marker");
+
+  const directDirectory = path.join(root, "direct");
+  await mkdir(directDirectory, { recursive: true });
+  const directShared = path.join(root, "direct-settings.json");
+  await writeFile(directShared, JSON.stringify(saturatedSettings));
+  await writeFile(path.join(directDirectory, "resources.json"), JSON.stringify({ migrations: { webuiToolSkillState: true }, models: {} }));
+  const direct = createResourceStore({ directory: directDirectory, sharedPath: directShared });
+  await assert.rejects(direct.update("model", { provider: "provider", modelId: "extra" }, "skills", []), (error) => error.code === "limit_exceeded");
+  assert.deepEqual(JSON.parse(await readFile(directShared, "utf8")), saturatedSettings, "a saturated direct update leaves canonical settings unchanged");
+});
+
+test("canonical model identities remain distinct when providers and model IDs contain slashes", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-tuples-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sharedPath = path.join(directory, "webui-settings.json");
+  await writeFile(sharedPath, JSON.stringify({
+    version: 8,
+    resourceDefaults: {
+      tools: { enabledTools: null },
+      skills: { enabledSkills: null },
+      qtWebuiMigrations: { webuiToolSkillState: true },
+      modelProfiles: [
+        { provider: "custom/acme", modelId: "model/one", tools: { enabledTools: ["read"] }, skills: { enabledSkills: null } },
+        { provider: "custom", modelId: "acme/model/one", tools: { enabledTools: ["bash"] }, skills: { enabledSkills: null } },
+      ],
+    },
+  }));
+  await writeFile(path.join(directory, "resources.json"), JSON.stringify({
+    migrations: { webuiToolSkillState: true },
+    models: { "regular/model/with/slash": { sampling: { seed: 7 } } },
+  }));
+  const store = createResourceStore({ directory, sharedPath });
+  const state = await store.read();
+  assert.deepEqual(state.value.models[resourceModelKey("custom/acme", "model/one")].tools, ["read"]);
+  assert.deepEqual(state.value.models[resourceModelKey("custom", "acme/model/one")].tools, ["bash"]);
+  assert.deepEqual(state.value.models[resourceModelKey("regular", "model/with/slash")].sampling, { seed: 7 }, "legacy local sampling remains readable");
+
+  const committed = await store.update("model", { provider: "custom/acme", modelId: "model/one" }, "skills", []);
+  assert.deepEqual(committed.value.models[resourceModelKey("custom/acme", "model/one")].skills, []);
+  const sampled = await store.update("model", { provider: "custom/acme", modelId: "model/one" }, "sampling", { temperature: 0.2 });
+  assert.deepEqual(sampled.value.models[resourceModelKey("custom/acme", "model/one")].sampling, { temperature: 0.2 });
+  const local = JSON.parse(await readFile(path.join(directory, "resources.json"), "utf8"));
+  assert.deepEqual(local.models[resourceModelKey("custom/acme", "model/one")].sampling, { temperature: 0.2 }, "slash-bearing providers use an unambiguous local tuple key");
+});
+
+test("resource updates return their committed snapshot and read canonical state before local sampling writes", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "qt-webui-resource-commit-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sharedPath = path.join(directory, "webui-settings.json");
+  const store = createResourceStore({ directory, sharedPath });
+  const committed = await store.update("global", {}, "tools", ["read"]);
+  assert.deepEqual(committed.value.global.tools, ["read"]);
+  assert.equal(committed.sharedPath, sharedPath);
+
+  const invalidDirectory = path.join(directory, "invalid-local");
+  const invalidShared = path.join(directory, "invalid-settings.json");
+  await writeFile(invalidShared, "{bad json");
+  const invalid = createResourceStore({ directory: invalidDirectory, sharedPath: invalidShared });
+  await assert.rejects(invalid.update("global", {}, "sampling", { temperature: 0.3 }), /Cannot read Pi Web UI settings/);
+  await assert.rejects(readFile(path.join(invalidDirectory, "resources.json"), "utf8"), (error) => error.code === "ENOENT", "sampling is not committed before canonical preflight succeeds");
 });
 
 test("canonical tool writes preserve configured names that are temporarily unavailable", async (t) => {

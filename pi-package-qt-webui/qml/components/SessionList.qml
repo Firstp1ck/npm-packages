@@ -153,6 +153,9 @@ Rectangle {
             "active": tab ? tab.active === true : false,
             "ready": tab ? tab.ready === true : false,
             "statusKind": tab ? String(tab.statusKind || "stopped") : "saved",
+            "statusText": tab ? String(tab.statusText || "") : "",
+            "activityState": tab ? String(tab.activityState || "idle") : "",
+            "needsInput": tab ? Number(tab.needsInput || 0) : 0,
             "current": tab ? String(tab.id) === activeTabId : false,
             "openOnly": false
         })
@@ -188,6 +191,9 @@ Rectangle {
                 active: tab.active === true,
                 ready: tab.ready === true,
                 statusKind: String(tab.statusKind || "stopped"),
+                statusText: String(tab.statusText || ""),
+                activityState: String(tab.activityState || "idle"),
+                needsInput: Number(tab.needsInput || 0),
                 current: String(tab.id) === activeTabId,
                 openOnly: true
             })
@@ -207,12 +213,35 @@ Rectangle {
         return count
     }
 
+    function activityStateFor(session) {
+        const state = String(session.activityState || "")
+        if (state === "blocked") return "blocked"
+        if (state === "working") return "working"
+        if (state === "done") return "done"
+        return "idle"
+    }
+
+    function conditionDescription(session) {
+        const conditions = []
+        if (session.statusKind === "error") {
+            const detail = String(session.statusText || "").trim()
+            conditions.push(detail.length > 0 ? "error: " + detail : "error")
+        } else if (!session.ready) {
+            conditions.push("starting")
+        }
+        // A blocked row already says that input is pending; repeating it adds noise for screen readers.
+        if (Number(session.needsInput || 0) > 0 && activityStateFor(session) !== "blocked") conditions.push("needs input")
+        return conditions.join(", ")
+    }
+
     function statusFor(session) {
         if (!session.open) return "saved · " + shortPath(session.cwd)
-        if (session.active) return "working · " + shortPath(session.cwd)
-        if (session.statusKind === "error") return "error · " + shortPath(session.cwd)
-        if (!session.ready) return "starting · " + shortPath(session.cwd)
-        return "open · " + shortPath(session.cwd)
+        return activityStateFor(session) + " · " + shortPath(session.cwd)
+    }
+
+    function statusTooltip(session) {
+        const condition = conditionDescription(session)
+        return statusFor(session) + (condition.length > 0 ? "\n" + condition : "")
     }
 
     function openRow(session) {
@@ -386,6 +415,7 @@ Rectangle {
                 required property var modelData
                 readonly property bool keyboardCursor: index === workingList.currentIndex && workingList.activeFocus
                 readonly property string ageText: sessionList.sessionAgeLabel(modelData)
+                readonly property string conditionText: sessionList.conditionDescription(modelData)
                 width: workingList.width
                 height: 66
                 radius: sessionList.theme.radiusSmall
@@ -394,8 +424,13 @@ Rectangle {
                 border.color: sessionList.theme.interactiveBorder(modelData.current, keyboardCursor)
                 Accessible.role: Accessible.ListItem
                 Accessible.name: modelData.title + (ageText.length > 0 ? ", " + ageText : "") + ", " + sessionList.statusFor(modelData)
+                    + (conditionText.length > 0 ? ", " + conditionText : "")
                 Accessible.selected: modelData.current
                 Accessible.onPressAction: sessionList.openRow(modelData)
+
+                ToolTip.visible: modelData.open && workingRowMouseArea.containsMouse
+                ToolTip.text: sessionList.statusTooltip(modelData)
+                ToolTip.delay: 500
 
                 MouseArea {
                     id: workingRowMouseArea
@@ -449,8 +484,9 @@ Rectangle {
                             height: 12
                             radius: 0
                             color: workingRow.modelData.statusKind === "error" ? sessionList.theme.destructive
-                                : workingRow.modelData.active ? sessionList.theme.runningForeground
-                                : workingRow.modelData.open && workingRow.modelData.ready ? sessionList.theme.readyForeground
+                                : sessionList.activityStateFor(workingRow.modelData) === "blocked" ? sessionList.theme.warning
+                                : sessionList.activityStateFor(workingRow.modelData) === "working" ? sessionList.theme.runningForeground
+                                : sessionList.activityStateFor(workingRow.modelData) === "done" ? sessionList.theme.readyForeground
                                 : sessionList.theme.muted
                         }
 

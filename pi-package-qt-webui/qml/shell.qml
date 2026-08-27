@@ -21,6 +21,7 @@ ShellRoot {
     readonly property var pickerDialog: pickerDialogItem
     readonly property var modelDropUp: modelDropUpItem
     readonly property var thinkingDropUp: thinkingDropUpItem
+    readonly property var statusOverlay: statusOverlayItem
     readonly property var composerItem: composer
     readonly property var sequencesDialog: sequencesDialogItem
     readonly property var attachmentEditor: attachmentEditorItem
@@ -56,8 +57,13 @@ ShellRoot {
     readonly property int workspaceRailMaximumWidth: Math.max(workspaceRailMinimumWidth, contentRoot.width - workspaceRailMinimumWidth)
     property real workspaceRailRequestedWidth: 0
 
-    // Metrics grouped by the publisher's own sections so related values share one frame.
+    // Metrics keep the publisher's sections inside the on-demand status overlay.
     readonly property var statusGroups: groupStatusChips(bridge.statusChips, bridge.statusEntries, bridge.usage)
+    readonly property int statusEntryCount: {
+        let count = 0
+        for (const group of statusGroups) count += group.entries.length
+        return count
+    }
 
     signal linkOpenResult(string url, var response)
 
@@ -1548,6 +1554,24 @@ ShellRoot {
                                         onClicked: bridge.updateSetting("compactTranscript", !bridge.compactTranscript)
                                     }
 
+                                    AppButton {
+                                        id: statusButton
+                                        visible: root.statusEntryCount > 0
+                                        theme: appTheme
+                                        variant: "ghost"
+                                        active: statusOverlayItem.opened
+                                        text: "Status " + root.statusEntryCount + (statusOverlayItem.opened ? " ▲" : " ▼")
+                                        accessibleName: (statusOverlayItem.opened ? "Hide" : "Show") + " session details, " + root.statusEntryCount + " entries"
+                                        accessibleDescription: "Shows Pi, Git, usage, and extension status without sending a prompt"
+                                        padding: 4
+                                        leftPadding: 8
+                                        rightPadding: 8
+                                        onClicked: {
+                                            if (statusOverlayItem.opened) statusOverlayItem.close()
+                                            else statusOverlayItem.present()
+                                        }
+                                    }
+
                                     }
 
                                     AppButton {
@@ -1570,24 +1594,6 @@ ShellRoot {
                                     }
                                 }
 
-                                Flow {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: childrenRect.height
-                                    visible: root.hasActiveSession && root.statusGroups.length > 0
-                                    spacing: 8
-                                    Accessible.role: Accessible.Grouping
-                                    Accessible.name: "Extension status"
-
-                                    Repeater {
-                                        model: root.statusGroups
-                                        delegate: StatusSegment {
-                                            required property var modelData
-                                            theme: appTheme
-                                            groupName: modelData.name
-                                            entries: modelData.entries
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
@@ -1617,6 +1623,15 @@ ShellRoot {
                 returnFocusItem: composerMenuButton
                 maximumWidth: 360
                 onPicked: value => root.composerMenuPicked(value)
+            }
+
+            StatusOverlay {
+                id: statusOverlayItem
+                theme: appTheme
+                boundsItem: contentRoot
+                anchorItem: statusButton
+                returnFocusItem: statusButton
+                groups: root.statusGroups
             }
 
             DropUpPicker {

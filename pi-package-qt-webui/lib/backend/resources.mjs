@@ -18,6 +18,7 @@ import { createJsonFileStore } from "./store.mjs";
 // as non-destructive migration input.
 
 const WEBUI_MIGRATION_KEY = "webuiToolSkillState";
+const CANONICAL_MIGRATIONS_KEY = "qtWebuiMigrations";
 
 function nameList(value, problems, label) {
   if (value === null || value === undefined) return null;
@@ -52,13 +53,42 @@ export function validateProfile(raw, problems = [], label = "profile") {
   };
 }
 
+export function resourceModelKey(provider, modelId) {
+  return JSON.stringify([provider, modelId]);
+}
+
+function legacyModelKey(provider, modelId) {
+  return `${provider}/${modelId}`;
+}
+
+function parsedStoredModelKey(key) {
+  if (typeof key !== "string") return null;
+  try {
+    const tuple = JSON.parse(key);
+    if (Array.isArray(tuple) && tuple.length === 2 && tuple.every((part) => typeof part === "string" && part.length > 0)) {
+      const [provider, modelId] = tuple;
+      if (provider.length <= LIMITS.maxProviderCharacters && modelId.length <= LIMITS.maxModelIdCharacters) {
+        return { provider, modelId, tuple: true };
+      }
+    }
+  } catch {
+    // Legacy Qt sampling profiles use provider/model keys and are parsed below.
+  }
+  const split = key.indexOf("/");
+  if (split <= 0 || split === key.length - 1) return null;
+  const provider = key.slice(0, split);
+  const modelId = key.slice(split + 1);
+  if (provider.length > LIMITS.maxProviderCharacters || modelId.length > LIMITS.maxModelIdCharacters) return null;
+  return { provider, modelId, tuple: false };
+}
+
 export function validateResources(raw) {
   const problems = [];
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const models = {};
   if (source.models && typeof source.models === "object" && !Array.isArray(source.models)) {
     for (const [key, value] of Object.entries(source.models)) {
-      if (typeof key !== "string" || !key.includes("/") || key.length > LIMITS.maxProviderCharacters + LIMITS.maxModelIdCharacters + 1) continue;
+      if (!parsedStoredModelKey(key)) continue;
       if (Object.keys(models).length >= LIMITS.maxModelProfiles) {
         problems.push(`more than ${LIMITS.maxModelProfiles} model profiles; extra entries were ignored`);
         break;
@@ -129,8 +159,31 @@ function selectionFrom(profile, resourceType) {
   return Array.isArray(value) ? [...value] : null;
 }
 
-function modelKey(provider, modelId) {
-  return `${provider}/${modelId}`;
+function sameSelection(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function assertExactModelSelection(resourceDefaults, provider, modelId, resourceType, expected) {
+  const actual = selectionFrom(exactModelProfile(resourceDefaults, provider, modelId), resourceType);
+  if (!sameSelection(actual, expected)) {
+    throw new ProtocolError("limit_exceeded", "Pi Web UI could not retain the exact-model resource profile within its supported profile limit");
+  }
+}
+
+function canonicalMigrationComplete(canonical) {
+  return canonical?.resourceDefaults?.[CANONICAL_MIGRATIONS_KEY]?.[WEBUI_MIGRATION_KEY] === true;
+}
+
+function localProfilesByIdentity(local) {
+  const profiles = new Map();
+  for (const [storedKey, profile] of Object.entries(local.value.models)) {
+    const parsed = parsedStoredModelKey(storedKey);
+    if (!parsed) continue;
+    const identity = resourceModelKey(parsed.provider, parsed.modelId);
+    const current = profiles.get(identity);
+    if (!current || parsed.tuple) profiles.set(identity, { profile, tuple: parsed.tuple });
+  }
+  return profiles;
 }
 
 export function createResourceStore({
@@ -142,46 +195,47 @@ export function createResourceStore({
   let migrationPromise = null;
 
   async function migrateLegacyProfiles(local) {
-    const canonical = await updateWebuiSettings((current) => {
-      let changed = false;
+    return updateWebuiSettings((current) => {
+      if (canonicalMigrationComplete(current)) return undefined;
       let resourceDefaults = current.resourceDefaults;
       const globalPatch = {};
       for (const resourceType of ["tools", "skills"]) {
         const selectionKey = resourceType === "tools" ? "enabledTools" : "enabledSkills";
         if (selectionFrom(resourceDefaults, resourceType) === null && local.value.global[resourceType] !== null) {
           globalPatch[resourceType] = { ...resourceDefaults[resourceType], [selectionKey]: [...local.value.global[resourceType]] };
-          changed = true;
         }
       }
       if (Object.keys(globalPatch).length > 0) resourceDefaults = { ...resourceDefaults, ...globalPatch };
 
       for (const [identity, legacy] of Object.entries(local.value.models)) {
-        const split = identity.indexOf("/");
-        if (split <= 0 || split === identity.length - 1) continue;
-        const provider = identity.slice(0, split);
-        const modelId = identity.slice(split + 1);
+        const parsed = parsedStoredModelKey(identity);
+        if (!parsed) continue;
+        const { provider, modelId } = parsed;
         for (const resourceType of ["tools", "skills"]) {
           const existing = exactModelProfile(resourceDefaults, provider, modelId);
           if (selectionFrom(existing, resourceType) !== null || legacy[resourceType] === null) continue;
-          resourceDefaults = {
-            ...resourceDefaults,
-            modelProfiles: setExactModelProfile(resourceDefaults, provider, modelId, resourceType, legacy[resourceType]),
-          };
-          changed = true;
+          const modelProfiles = setExactModelProfile(resourceDefaults, provider, modelId, resourceType, legacy[resourceType]);
+          const nextDefaults = { ...resourceDefaults, modelProfiles };
+          assertExactModelSelection(nextDefaults, provider, modelId, resourceType, legacy[resourceType]);
+          resourceDefaults = nextDefaults;
         }
       }
-      return changed ? { resourceDefaults } : undefined;
+      return {
+        resourceDefaults: {
+          ...resourceDefaults,
+          [CANONICAL_MIGRATIONS_KEY]: {
+            ...(resourceDefaults[CANONICAL_MIGRATIONS_KEY] || {}),
+            [WEBUI_MIGRATION_KEY]: true,
+          },
+        },
+      };
     }, sharedPath);
-
-    localStore.update((state) => {
-      state.migrations = { ...state.migrations, [WEBUI_MIGRATION_KEY]: true };
-      return state;
-    });
-    return canonical;
   }
 
   async function canonicalSettings(local) {
-    if (local.value.migrations[WEBUI_MIGRATION_KEY]) return readWebuiSettings(sharedPath);
+    if (local.value.migrations[WEBUI_MIGRATION_KEY] || local.problems.length > 0) return readWebuiSettings(sharedPath);
+    const current = await readWebuiSettings(sharedPath);
+    if (canonicalMigrationComplete(current)) return current;
     if (!migrationPromise) migrationPromise = migrateLegacyProfiles(local).finally(() => { migrationPromise = null; });
     return migrationPromise;
   }
@@ -193,23 +247,27 @@ export function createResourceStore({
       skills: selectionFrom(defaults, "skills"),
       sampling: { ...local.value.global.sampling },
     };
+    const localProfiles = localProfilesByIdentity(local);
     const canonicalProfiles = Array.isArray(defaults.modelProfiles) ? defaults.modelProfiles : [];
-    const identities = new Set(Object.keys(local.value.models));
-    for (const profile of canonicalProfiles) identities.add(modelKey(profile.provider, profile.modelId));
+    const identities = new Set(localProfiles.keys());
+    for (const profile of canonicalProfiles) identities.add(resourceModelKey(profile.provider, profile.modelId));
     const models = {};
     for (const identity of identities) {
-      const split = identity.indexOf("/");
-      const provider = split < 0 ? "" : identity.slice(0, split);
-      const modelId = split < 0 ? "" : identity.slice(split + 1);
+      const [provider, modelId] = JSON.parse(identity);
       const canonicalProfile = exactModelProfile(defaults, provider, modelId);
       models[identity] = {
         tools: selectionFrom(canonicalProfile, "tools"),
         skills: selectionFrom(canonicalProfile, "skills"),
-        sampling: { ...(local.value.models[identity]?.sampling || {}) },
+        sampling: { ...(localProfiles.get(identity)?.profile.sampling || {}) },
       };
     }
     return {
-      value: { version: 2, global, models, migrations: { [WEBUI_MIGRATION_KEY]: true } },
+      value: {
+        version: 2,
+        global,
+        models,
+        migrations: { [WEBUI_MIGRATION_KEY]: local.value.migrations[WEBUI_MIGRATION_KEY] || canonicalMigrationComplete(canonical) },
+      },
       problems: local.problems,
       path: local.path,
       sharedPath,
@@ -224,19 +282,24 @@ export function createResourceStore({
   async function profileFor(scope, provider, modelId) {
     const value = (await read()).value;
     if (scope === "global") return value.global;
-    if (scope === "model") return value.models[modelKey(provider, modelId)] ?? emptyProfile();
+    if (scope === "model") return value.models[resourceModelKey(provider, modelId)] ?? emptyProfile();
     throw new ProtocolError("invalid_request", "scope must be global or model");
   }
 
   // Tool/skill writes go through Pi Web UI's locked latest-snapshot updater. Sampling remains in
   // Qt WebUI's private store. visibleNames lets callers retain configured resources that are not
-  // currently loaded while replacing only the visible part of an enabled list.
+  // currently loaded while replacing only the visible part of an enabled list. Every successful
+  // update returns the exact combined snapshot produced by its commit, without a fallible reread.
   async function update(scope, { provider, modelId }, field, value, { visibleNames = null } = {}) {
     if (scope !== "global" && scope !== "model") throw new ProtocolError("invalid_request", "scope must be global or model");
     if (scope === "model" && (!provider || !modelId)) throw new ProtocolError("invalid_request", "a model profile needs the active model");
+    const local = localStore.read();
+    const canonical = await canonicalSettings(local);
     if (field === "sampling") {
-      localStore.update((state) => {
-        const key = modelKey(provider, modelId);
+      const written = localStore.update((state) => {
+        const tupleKey = resourceModelKey(provider, modelId);
+        const legacyKey = legacyModelKey(provider, modelId);
+        const key = scope === "model" && (provider.includes("/") || Object.hasOwn(state.models, tupleKey)) ? tupleKey : legacyKey;
         let profile = scope === "global" ? state.global : state.models[key];
         if (!profile) {
           if (Object.keys(state.models).length >= LIMITS.maxModelProfiles) throw new ProtocolError("limit_exceeded", `At most ${LIMITS.maxModelProfiles} model profiles can be saved`);
@@ -248,13 +311,12 @@ export function createResourceStore({
         if (scope === "model" && profileIsInherit(profile)) delete state.models[key];
         return state;
       });
-      return profileFor(scope, provider, modelId);
+      return combine({ ...written, problems: [] }, canonical);
     }
     if (field !== "tools" && field !== "skills") throw new ProtocolError("invalid_request", `unknown resource field ${field}`);
 
-    await canonicalSettings(localStore.read());
     const normalized = updateProfile(emptyProfile(), field, value)[field];
-    await updateWebuiSettings((current) => {
+    const committed = await updateWebuiSettings((current) => {
       const selectionKey = field === "tools" ? "enabledTools" : "enabledSkills";
       const currentProfile = scope === "global"
         ? current.resourceDefaults
@@ -268,13 +330,11 @@ export function createResourceStore({
       if (scope === "global") {
         return { resourceDefaults: { [field]: { [selectionKey]: enabledNames } } };
       }
-      return {
-        resourceDefaults: {
-          modelProfiles: setExactModelProfile(current.resourceDefaults, provider, modelId, field, enabledNames),
-        },
-      };
+      const modelProfiles = setExactModelProfile(current.resourceDefaults, provider, modelId, field, enabledNames);
+      assertExactModelSelection({ ...current.resourceDefaults, modelProfiles }, provider, modelId, field, enabledNames);
+      return { resourceDefaults: { modelProfiles } };
     }, sharedPath);
-    return profileFor(scope, provider, modelId);
+    return combine(local, committed);
   }
 
   return {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { readWebuiSettings } from "@firstpick/pi-package-webui/lib/git-workflow-preferences.mjs";
 import { LIMITS } from "../lib/backend/protocol.mjs";
 import { startBackend } from "./helpers/backend-client.mjs";
 
@@ -443,6 +444,112 @@ test("explicit model scope preserves Pi order, excludes unscoped models, and sta
   await backend.waitForEvent("run.end");
 });
 
+test("Pi Web UI and Qt WebUI read and write one canonical global and exact-model tool and skill state", async (t) => {
+  const backend = await readyBackend(t);
+  await writeFile(backend.webuiSettingsPath, JSON.stringify({
+    version: 8,
+    retained: { owner: "pi-webui" },
+    resourceDefaults: {
+      tools: { enabledTools: ["read", "temporarily-unavailable"] },
+      skills: { enabledSkills: ["review"] },
+      modelProfiles: [{
+        provider: "fixture-provider",
+        modelId: "fixture-model",
+        tools: { enabledTools: ["bash"] },
+        skills: { enabledSkills: [] },
+      }],
+    },
+  }));
+
+  const imported = await backend.send("resources_state");
+  assert.equal(imported.ok, true, JSON.stringify(imported));
+  assert.equal(imported.data.sharedPath, backend.webuiSettingsPath);
+  assert.deepEqual(imported.data.profiles.global.tools, ["read", "temporarily-unavailable"]);
+  assert.deepEqual(imported.data.profiles.global.skills, ["review"]);
+  assert.deepEqual(imported.data.profiles.model.tools, ["bash"]);
+  assert.deepEqual(imported.data.profiles.model.skills, []);
+  assert.deepEqual(imported.data.effective.tools, ["bash"]);
+  assert.deepEqual(imported.data.effective.skills, []);
+
+  const importedApply = (await backend.readCapture())
+    .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+    .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)))
+    .findLast((request) => request.action === "apply");
+  assert.deepEqual(importedApply.payload.effective.tools, ["bash"], "unavailable configured tools stay persisted but are not sent to Pi");
+
+  const globalTools = await backend.send("tools_set", { scope: "global", enabledTools: ["write"] });
+  assert.deepEqual(globalTools.data.profiles.global.tools, ["write", "temporarily-unavailable"], "a Qt save preserves unavailable canonical names");
+  const inheritedModelSkills = await backend.send("skills_set", { scope: "model", enabledSkills: null });
+  assert.deepEqual(inheritedModelSkills.data.profiles.model.skills, null);
+  assert.deepEqual(inheritedModelSkills.data.effective.skills, ["review"]);
+  const emptyModelTools = await backend.send("tools_set", { scope: "model", enabledTools: [] });
+  assert.deepEqual(emptyModelTools.data.profiles.model.tools, []);
+  assert.deepEqual(emptyModelTools.data.effective.tools, [], "an empty list remains an intentional none selection");
+
+  const canonical = await readWebuiSettings(backend.webuiSettingsPath);
+  assert.deepEqual(canonical.retained, { owner: "pi-webui" });
+  assert.deepEqual(canonical.resourceDefaults.tools.enabledTools, ["write", "temporarily-unavailable"]);
+  const exact = canonical.resourceDefaults.modelProfiles.find((profile) => profile.provider === "fixture-provider" && profile.modelId === "fixture-model");
+  assert.deepEqual(exact.tools.enabledTools, []);
+  assert.equal(exact.skills.enabledSkills, null);
+
+  const inheritedModelTools = await backend.send("tools_set", { scope: "model", enabledTools: null });
+  assert.equal(inheritedModelTools.data.profiles.model.tools, null);
+  assert.deepEqual(inheritedModelTools.data.effective.tools, ["write", "temporarily-unavailable"]);
+  assert.equal((await readWebuiSettings(backend.webuiSettingsPath)).resourceDefaults.modelProfiles.length, 0, "clearing both fields removes the all-inherit model profile canonically");
+  const finalApply = (await backend.readCapture())
+    .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+    .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)))
+    .findLast((request) => request.action === "apply");
+  assert.deepEqual(finalApply.payload.effective.tools, ["write"], "the runtime receives only currently loaded canonical names");
+});
+
+test("resource commits reconcile helper state to unrelated canonical changes merged by the latest-snapshot commit", async (t) => {
+  const backend = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_NOTIFY_DELAY_MS: "120" } });
+  const canonical = {
+    version: 8,
+    resourceDefaults: {
+      tools: { enabledTools: null },
+      skills: { enabledSkills: null },
+      modelProfiles: [],
+      qtWebuiMigrations: { webuiToolSkillState: true },
+    },
+  };
+  await writeFile(backend.webuiSettingsPath, JSON.stringify(canonical));
+  assert.equal((await backend.send("resources_state")).data.available, true);
+  await writeFile(backend.capturePath, "");
+
+  const pending = backend.send("tools_set", { scope: "global", enabledTools: ["read"] });
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const commands = await backend.readCapture();
+    const applyStarted = commands.some((command) => command.type === "prompt"
+      && command.message.startsWith("/qt-webui-helper ")
+      && JSON.parse(command.message.slice("/qt-webui-helper ".length)).action === "apply");
+    if (applyStarted) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const observed = await backend.readCapture();
+  assert(observed.some((command) => command.type === "prompt" && command.message.includes('"action":"apply"')), "the prospective helper apply begins before the concurrent write");
+
+  canonical.resourceDefaults.skills.enabledSkills = ["review"];
+  await writeFile(backend.webuiSettingsPath, JSON.stringify(canonical));
+  const committed = await pending;
+  assert.equal(committed.ok, true, JSON.stringify(committed));
+  assert.deepEqual(committed.data.effective.tools, ["read"]);
+  assert.deepEqual(committed.data.effective.skills, ["review"], "the result uses the latest canonical snapshot rather than the preflight read");
+  assert.deepEqual(committed.data.sampling.applied, {});
+
+  const applications = (await backend.readCapture())
+    .filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "))
+    .map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length)))
+    .filter((request) => request.action === "apply");
+  assert.equal(applications.length, 2, "a changed committed effective state triggers one bounded reconciliation apply");
+  assert.equal(applications[0].payload.effective.skills, null);
+  assert.deepEqual(applications[1].payload.effective.skills, ["review"]);
+  assert.deepEqual((await readWebuiSettings(backend.webuiSettingsPath)).resourceDefaults.skills.enabledSkills, ["review"], "the locked write preserves the concurrent unrelated field");
+});
+
 test("resource profiles preserve inheritance and unsupported sampling while applying exact effective payloads", async (t) => {
   const backend = await readyBackend(t);
   const initial = await backend.send("resources_state");
@@ -489,6 +596,10 @@ test("resource profiles preserve inheritance and unsupported sampling while appl
   assert.deepEqual(stored.global.sampling, { temperature: 0.6, top_k: 77 });
   assert.deepEqual(stored.models["fixture-provider/fixture-model"].sampling, { temperature: 0.2, seed: 9 });
   assert.equal(JSON.stringify(stored).includes("session"), false, "session overrides stay in Pi history, not resources.json");
+  const canonical = await readWebuiSettings(initial.data.sharedPath);
+  assert.deepEqual(canonical.resourceDefaults.tools.enabledTools, ["read", "bash"]);
+  assert.deepEqual(canonical.resourceDefaults.skills.enabledSkills, ["brave-search"]);
+  assert.equal(JSON.stringify(canonical.resourceDefaults).includes("sampling"), false, "sampling remains Qt-local");
 
   const helperPrompts = (await backend.readCapture()).filter((command) => command.type === "prompt" && command.message.startsWith("/qt-webui-helper "));
   const payloads = helperPrompts.map((command) => JSON.parse(command.message.slice("/qt-webui-helper ".length))).filter((entry) => entry.action === "apply").map((entry) => entry.payload);
@@ -520,8 +631,9 @@ test("resource commits avoid post-commit helper reads and report apply, persiste
   assert.equal(committedCalls.length, 2, "commit uses state plus validated apply result, with no post-commit helper round trip");
 
   const persistenceFailure = await readyBackend(t);
-  const resourcesPath = path.join(persistenceFailure.temporary, "config", "qt-webui", "resources.json");
-  await mkdir(resourcesPath, { recursive: true });
+  await persistenceFailure.send("resources_state");
+  await writeFile(persistenceFailure.capturePath, "");
+  await writeFile(`${persistenceFailure.webuiSettingsPath}.lock`, "blocked");
   const notSaved = await persistenceFailure.send("tools_set", { scope: "global", enabledTools: ["read"] });
   assert.equal(notSaved.error.code, "internal_error");
   const persistenceCalls = (await persistenceFailure.readCapture())
@@ -530,9 +642,10 @@ test("resource commits avoid post-commit helper reads and report apply, persiste
   assert.deepEqual(persistenceCalls.map((entry) => entry.action), ["state", "apply", "apply"]);
   assert.deepEqual(persistenceCalls.at(-1).payload.effective.tools, null, "persistence failure rolls the helper back to the validated prior state");
 
-  const rollbackFailure = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_FAIL_AT: "3" } });
-  const blockedPath = path.join(rollbackFailure.temporary, "config", "qt-webui", "resources.json");
-  await mkdir(blockedPath, { recursive: true });
+  const rollbackFailure = await readyBackend(t, { env: { QT_WEBUI_FIXTURE_HELPER_FAIL_AT: "5" } });
+  await rollbackFailure.send("resources_state");
+  await writeFile(rollbackFailure.capturePath, "");
+  await writeFile(`${rollbackFailure.webuiSettingsPath}.lock`, "blocked");
   const inconsistent = await rollbackFailure.send("tools_set", { scope: "global", enabledTools: ["read"] });
   assert.equal(inconsistent.error.code, "internal_error");
   assert.match(inconsistent.error.message, /rollback failed/i);

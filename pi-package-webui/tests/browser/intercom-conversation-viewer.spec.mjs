@@ -144,55 +144,71 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true }).catch(() => {});
 });
 
-test("the 32-conversation dense grid stays contained and opens the correct truncated conversation", async ({ page }) => {
+test("the 32-conversation strip reaches half the input and keeps overflow chats recognizable", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 760 });
   await page.goto(baseURL);
   const container = page.locator("#intercomConversationTags");
-  const tags = container.locator(":scope > .composer-intercom-tag");
-  const longTag = tags.filter({ hasText: longPeerName });
-  const longLabel = longTag.locator(".composer-intercom-tag-label");
+  const tags = container.locator(":scope > .composer-intercom-tag[data-intercom-conversation-id]");
+  const overflow = container.locator(":scope > .composer-intercom-tag.overflow");
+  const menu = container.locator(":scope > .composer-intercom-overflow-menu");
 
   await expect(tags).toHaveCount(expectedConversationCount);
-  await expect(container).toHaveClass(/\bdense\b/);
-  for (let index = 0; index < expectedConversationCount; index += 1) await expect(tags.nth(index)).toBeVisible();
+  await expect(overflow).toBeVisible();
+  const hiddenCount = Number((await overflow.textContent())?.slice(1));
+  assert.ok(hiddenCount > 0 && hiddenCount < expectedConversationCount, `the desktop strip should keep some complete tags visible and hide the rest (${hiddenCount})`);
 
   const layout = await container.evaluate((element) => {
     const containerRect = element.getBoundingClientRect();
-    const tagRects = [...element.querySelectorAll(":scope > .composer-intercom-tag")].map((tag) => tag.getBoundingClientRect());
+    const inputRect = document.querySelector("#promptInput").getBoundingClientRect();
+    const visibleRects = [...element.querySelectorAll(":scope > .composer-intercom-tag:not([hidden])")].map((tag) => tag.getBoundingClientRect());
+    const visibleConversationRects = [...element.querySelectorAll(":scope > .composer-intercom-tag[data-intercom-conversation-id]:not([hidden])")].map((tag) => tag.getBoundingClientRect());
+    const overflowRect = element.querySelector(":scope > .composer-intercom-tag.overflow").getBoundingClientRect();
+    const firstConversationRect = visibleConversationRects[0];
     return {
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
+      containerWidth: containerRect.width,
+      inputWidth: inputRect.width,
       rootFontSize: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
-      widths: tagRects.map((rect) => rect.width),
-      rowTops: [...new Set(tagRects.map((rect) => Math.round(rect.top)))],
-      allContained: tagRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
+      widths: visibleConversationRects.map((rect) => rect.width),
+      rowCenters: visibleRects.map((rect) => rect.top + rect.height / 2),
+      firstConversationRightGap: containerRect.right - firstConversationRect.right,
+      firstConversationLeft: firstConversationRect.left,
+      overflowLeft: overflowRect.left,
+      allContained: visibleRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
     };
   });
-  assert.ok(layout.allContained, "every desktop conversation tag should remain within the tag container");
-  assert.ok(layout.clientWidth <= (17 * layout.rootFontSize) + 0.5, `the desktop conversation tag group should stay within 17rem (${layout.clientWidth}px)`);
-  assert.ok(layout.scrollWidth <= layout.clientWidth, `the desktop tag grid should not overflow horizontally (${layout.scrollWidth} > ${layout.clientWidth})`);
-  assert.ok(Math.min(...layout.widths) >= 44, `every dense desktop target should be at least 44px wide (minimum ${Math.min(...layout.widths)})`);
-  assert.ok(layout.rowTops.length > 1, "the 32-conversation desktop fixture should wrap into multiple rows");
+  assert.ok(layout.containerWidth <= layout.inputWidth / 2 + 1, `the desktop tag strip should stop at the input midpoint (${layout.containerWidth} > ${layout.inputWidth / 2})`);
+  assert.ok(layout.containerWidth >= layout.inputWidth * 0.45, `the desktop tag strip should use the available half-width instead of the old compact cap (${layout.containerWidth} < ${layout.inputWidth * 0.45})`);
+  assert.ok(layout.allContained, "every visible desktop conversation tag should stay within the measured strip");
+  assert.ok(Math.max(...layout.rowCenters) - Math.min(...layout.rowCenters) <= 1, "visible conversations and +X should remain vertically aligned on one row");
+  assert.ok(layout.firstConversationRightGap <= 1, `the newest conversation should start at the right edge (${layout.firstConversationRightGap}px gap)`);
+  assert.ok(layout.firstConversationLeft > layout.overflowLeft, "older conversations and +X should extend left toward the input midpoint");
+  assert.ok(Math.min(...layout.widths) >= 44, `visible desktop conversation targets should remain recognizable (minimum ${Math.min(...layout.widths)}px)`);
+  assert.ok(Math.max(...layout.widths) <= 13 * layout.rootFontSize + 1, `direct conversation tags should stay within 13rem (maximum ${Math.max(...layout.widths)}px)`);
 
-  await expect(longTag).toHaveCount(1);
-  const fullVisualLabel = await longLabel.textContent();
-  assert.ok(fullVisualLabel?.includes(longPeerName), "the long label fixture should retain its full DOM text");
-  await expect(longTag).toHaveAttribute("aria-label", `Open agent conversation ${fullVisualLabel}`);
-  await expect(longTag).toHaveAttribute("title", `${fullVisualLabel} · 1 message`);
-  const truncation = await longLabel.evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth }));
-  assert.ok(truncation.scrollWidth > truncation.clientWidth, `the long label should be visually truncated (${truncation.scrollWidth} <= ${truncation.clientWidth})`);
+  await overflow.click();
+  await expect(menu).toBeVisible();
+  await expect(overflow).toHaveAttribute("aria-expanded", "true");
+  const hiddenItems = menu.locator(":scope > .composer-intercom-overflow-menu-item:not([hidden])");
+  await expect(hiddenItems).toHaveCount(hiddenCount);
+  const longMenuItem = hiddenItems.filter({ hasText: longPeerName });
+  await expect(longMenuItem).toHaveCount(1);
+  await expect(longMenuItem).toBeVisible();
+  const fullVisualLabel = await longMenuItem.locator(".composer-intercom-tag-label").textContent();
+  assert.ok(fullVisualLabel?.includes(longPeerName), "the overflow menu should retain the full long conversation label in the DOM");
+  await expect(longMenuItem).toHaveAttribute("aria-label", `Open agent conversation ${fullVisualLabel}`);
+  await expect(longMenuItem).toHaveAttribute("title", `${fullVisualLabel} · 1 message`);
 
-  await longTag.click();
+  await longMenuItem.click();
   await expect(page.locator("#intercomConversationDialog")).toBeVisible();
   await expect(page.locator("#intercomConversationParticipants")).toContainText(`${longPeerName} (${longPeerId})`);
   await expect(page.locator("#intercomConversationTranscript")).toContainText("Long-label conversation selected correctly");
   await page.locator("#intercomConversationCloseButton").click();
-  await expect(longTag).toBeFocused();
+  await expect(overflow).toBeFocused();
 });
 
 test("conversation tag opens a safe chat dialog, refreshes, and restores focus", async ({ page }) => {
   await page.goto(baseURL);
-  const tags = page.locator("#intercomConversationTags .composer-intercom-tag");
+  const tags = page.locator("#intercomConversationTags > .composer-intercom-tag[data-intercom-conversation-id]");
   const tag = tags.filter({
     has: page.locator(".composer-intercom-tag-label").filter({ hasText: /↔ Browser Peer \(peer-browser\)$/ }),
   });
@@ -261,7 +277,7 @@ test("conversation tag opens a safe chat dialog, refreshes, and restores focus",
   await expect(stableTagLabel).toHaveAttribute("data-stable-visual-marker", "retained");
 });
 
-test("conversation tags remain reachable through the narrow composer disclosure", async ({ page }) => {
+test("conversation overflow remains reachable through the narrow composer disclosure", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 760 });
   await page.goto(baseURL);
   const more = page.locator("#composerActionsButton");
@@ -269,39 +285,46 @@ test("conversation tags remain reachable through the narrow composer disclosure"
   await more.focus();
   await more.press("Enter");
   const tags = page.locator("#intercomConversationTags");
-  const tagButtons = tags.locator(":scope > .composer-intercom-tag");
-  const tag = tagButtons.filter({
-    has: page.locator(".composer-intercom-tag-label").filter({ hasText: /↔ Browser Peer \(peer-browser\)$/ }),
-  });
+  const tagButtons = tags.locator(":scope > .composer-intercom-tag[data-intercom-conversation-id]");
+  const overflow = tags.locator(":scope > .composer-intercom-tag.overflow");
   await expect(tags).toBeVisible();
   await expect(tagButtons).toHaveCount(expectedConversationCount);
-  for (let index = 0; index < expectedConversationCount; index += 1) {
-    await expect(tagButtons.nth(index)).toBeVisible();
-    await expect(tagButtons.nth(index)).toHaveCSS("min-height", "44px");
-  }
+  await expect(overflow).toBeVisible();
+  await expect(overflow).toHaveCSS("min-height", "44px");
+
   const layout = await tags.evaluate((element) => {
     const containerRect = element.getBoundingClientRect();
-    const tagRects = [...element.querySelectorAll(":scope > .composer-intercom-tag")].map((button) => button.getBoundingClientRect());
+    const contextStyle = getComputedStyle(element.parentElement);
+    const contextContentWidth = element.parentElement.clientWidth
+      - Number.parseFloat(contextStyle.paddingLeft)
+      - Number.parseFloat(contextStyle.paddingRight);
+    const visibleRects = [...element.querySelectorAll(":scope > .composer-intercom-tag:not([hidden])")].map((button) => button.getBoundingClientRect());
     return {
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-      widths: tagRects.map((rect) => rect.width),
-      heights: tagRects.map((rect) => rect.height),
-      rowTops: [...new Set(tagRects.map((rect) => Math.round(rect.top)))],
-      allContained: tagRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
+      containerWidth: containerRect.width,
+      contextContentWidth,
+      widths: visibleRects.map((rect) => rect.width),
+      heights: visibleRects.map((rect) => rect.height),
+      rowCenters: visibleRects.map((rect) => rect.top + rect.height / 2),
+      allContained: visibleRects.every((rect) => rect.left >= containerRect.left - 0.5 && rect.right <= containerRect.right + 0.5),
     };
   });
-  assert.ok(layout.allContained, "every narrow conversation tag should remain within the tag container");
-  assert.ok(layout.scrollWidth <= layout.clientWidth, `the narrow tag grid should not overflow horizontally (${layout.scrollWidth} > ${layout.clientWidth})`);
-  assert.ok(Math.min(...layout.widths) >= 44, `every narrow touch target should be at least 44px wide (minimum ${Math.min(...layout.widths)})`);
-  assert.ok(Math.min(...layout.heights) >= 44, `every narrow touch target should be at least 44px high (minimum ${Math.min(...layout.heights)})`);
-  assert.ok(layout.rowTops.length > 1, "the 32-conversation narrow fixture should wrap into multiple rows");
-  const clippedLabels = await tagButtons.locator(".composer-intercom-tag-label").evaluateAll((labels) => labels.filter((label) => label.scrollWidth > label.clientWidth).length);
-  assert.ok(clippedLabels > 0, "dense narrow labels should be allowed to truncate visually");
-  await tag.focus();
-  await tag.press("Enter");
+  assert.ok(layout.containerWidth >= layout.contextContentWidth - 1, `the narrow conversation strip should use the full disclosed row (${layout.containerWidth} < ${layout.contextContentWidth})`);
+  assert.ok(layout.allContained, "every visible narrow conversation tag should stay within the tag container");
+  assert.ok(Math.min(...layout.widths) >= 44, `every visible narrow touch target should be at least 44px wide (minimum ${Math.min(...layout.widths)})`);
+  assert.ok(Math.min(...layout.heights) >= 44, `every visible narrow touch target should be at least 44px high (minimum ${Math.min(...layout.heights)})`);
+  assert.ok(Math.max(...layout.rowCenters) - Math.min(...layout.rowCenters) <= 1, "narrow conversation tags should stay vertically aligned on one row before disclosure");
+
+  const hiddenCount = Number((await overflow.textContent())?.slice(1));
+  await overflow.click();
+  const hiddenItems = tags.locator(":scope > .composer-intercom-overflow-menu > .composer-intercom-overflow-menu-item:not([hidden])");
+  await expect(hiddenItems).toHaveCount(hiddenCount);
+  for (let index = 0; index < hiddenCount; index += 1) await expect(hiddenItems.nth(index)).toHaveCSS("min-height", "44px");
+  const longMenuItem = hiddenItems.filter({ hasText: longPeerName });
+  await expect(longMenuItem).toBeVisible();
+  await longMenuItem.focus();
+  await longMenuItem.press("Enter");
   await expect(page.locator("#intercomConversationDialog")).toBeVisible();
-  await expect(page.locator("#intercomConversationParticipants")).toContainText("Browser Peer (peer-browser)");
+  await expect(page.locator("#intercomConversationParticipants")).toContainText(`${longPeerName} (${longPeerId})`);
   await expect(page.locator("#intercomConversationCloseButton")).toBeVisible();
 });
 

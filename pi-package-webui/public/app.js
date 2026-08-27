@@ -6634,18 +6634,173 @@ function intercomConversationSummarySignature(conversations) {
   ]));
 }
 
+let intercomConversationTagLayoutFrame = 0;
+let intercomConversationTagResizeObserver = null;
+let intercomConversationOverflowOpen = false;
+
+function setIntercomConversationOverflowOpen(open, { focusMenu = false, restoreFocus = false } = {}) {
+  const container = elements.intercomConversationTags;
+  const overflow = container?.querySelector("button.composer-intercom-tag.overflow");
+  const menu = container?.querySelector(".composer-intercom-overflow-menu");
+  if (!container || !overflow || !menu) {
+    intercomConversationOverflowOpen = false;
+    return;
+  }
+
+  const availableItems = [...menu.querySelectorAll("button:not([hidden])")];
+  const expanded = Boolean(open && !overflow.hidden && availableItems.length);
+  intercomConversationOverflowOpen = expanded;
+  container.classList.toggle("overflow-open", expanded);
+  overflow.setAttribute("aria-expanded", expanded ? "true" : "false");
+  menu.hidden = !expanded;
+
+  if (expanded && focusMenu) availableItems[0]?.focus();
+  else if (!expanded && restoreFocus) overflow.focus();
+}
+
+function fitIntercomConversationTags() {
+  const container = elements.intercomConversationTags;
+  if (!container || container.hidden) return;
+  const tags = [...container.querySelectorAll(":scope > button.composer-intercom-tag:not(.overflow)")];
+  const overflow = container.querySelector("button.composer-intercom-tag.overflow");
+  const menuItems = [...container.querySelectorAll(".composer-intercom-overflow-menu-item")];
+  if (!tags.length || !overflow || menuItems.length !== tags.length) return;
+
+  const availableWidth = container.clientWidth;
+  if (availableWidth <= 0) return;
+
+  for (const tag of tags) tag.hidden = false;
+  overflow.hidden = false;
+
+  const containerStyle = getComputedStyle(container);
+  const gap = Number.parseFloat(containerStyle.columnGap || containerStyle.gap) || 0;
+  const tagWidths = tags.map((tag) => tag.getBoundingClientRect().width);
+  const overflowWidths = new Map();
+  const maxOverflowDigits = String(tags.length).length;
+  for (let digits = 1; digits <= maxOverflowDigits; digits += 1) {
+    overflow.textContent = `+${"0".repeat(digits)}`;
+    overflowWidths.set(digits, overflow.getBoundingClientRect().width);
+  }
+  let visibleCount = 0;
+
+  for (let count = tags.length; count >= 0; count -= 1) {
+    const hiddenCount = tags.length - count;
+    const itemCount = count + (hiddenCount ? 1 : 0);
+    const tagsWidth = tagWidths.slice(0, count).reduce((total, width) => total + width, 0);
+    const overflowWidth = hiddenCount ? overflowWidths.get(String(hiddenCount).length) || 0 : 0;
+    const requiredWidth = tagsWidth + overflowWidth + Math.max(0, itemCount - 1) * gap;
+    if (requiredWidth <= availableWidth + 0.5) {
+      visibleCount = count;
+      break;
+    }
+  }
+
+  tags.forEach((tag, index) => { tag.hidden = index >= visibleCount; });
+  menuItems.forEach((item, index) => { item.hidden = index < visibleCount; });
+  const hiddenCount = tags.length - visibleCount;
+  overflow.hidden = hiddenCount === 0;
+  if (hiddenCount) {
+    const label = `Show ${hiddenCount} more agent conversation${hiddenCount === 1 ? "" : "s"}`;
+    overflow.textContent = `+${hiddenCount}`;
+    overflow.title = `${label}.`;
+    overflow.setAttribute("aria-label", label);
+    if (intercomConversationOverflowOpen) setIntercomConversationOverflowOpen(true);
+  } else {
+    setIntercomConversationOverflowOpen(false);
+  }
+}
+
+function scheduleIntercomConversationTagLayout() {
+  if (intercomConversationTagLayoutFrame) return;
+  intercomConversationTagLayoutFrame = requestAnimationFrame(() => {
+    intercomConversationTagLayoutFrame = 0;
+    fitIntercomConversationTags();
+  });
+}
+
+function installIntercomConversationTagResizeHandling() {
+  const container = elements.intercomConversationTags;
+  if (!container) return;
+  if (typeof ResizeObserver === "function") {
+    intercomConversationTagResizeObserver = new ResizeObserver(scheduleIntercomConversationTagLayout);
+    intercomConversationTagResizeObserver.observe(container);
+    if (container.parentElement) intercomConversationTagResizeObserver.observe(container.parentElement);
+  } else {
+    window.addEventListener("resize", scheduleIntercomConversationTagLayout, { passive: true });
+  }
+  container.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !intercomConversationOverflowOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setIntercomConversationOverflowOpen(false, { restoreFocus: true });
+  });
+  container.addEventListener("focusout", () => {
+    queueMicrotask(() => {
+      if (intercomConversationOverflowOpen && !container.contains(document.activeElement)) setIntercomConversationOverflowOpen(false);
+    });
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (intercomConversationOverflowOpen && !container.contains(event.target)) setIntercomConversationOverflowOpen(false);
+  });
+}
+
+function updateIntercomConversationTag(tag, conversation) {
+  const label = intercomConversationLabel(conversation);
+  tag.setAttribute("aria-label", `Open agent conversation ${label}`);
+  tag.title = `${label} · ${conversation.messageCount} message${conversation.messageCount === 1 ? "" : "s"}`;
+  const visualSignature = JSON.stringify([label, conversation.messageCount]);
+  if (tag.dataset.intercomVisualSignature === visualSignature) return;
+  const children = [make("span", "composer-intercom-tag-icon", "↔"), make("span", "composer-intercom-tag-label", label)];
+  if (conversation.messageCount > 0) children.push(make("span", "composer-intercom-tag-count", String(conversation.messageCount)));
+  tag.replaceChildren(...children);
+  tag.dataset.intercomVisualSignature = visualSignature;
+}
+
 function renderIntercomConversationTags(tabId = activeTabId) {
   const container = elements.intercomConversationTags;
   if (!container) return;
   const conversations = intercomConversationSummariesByTab.get(tabId) || [];
-  const existingTags = new Map([...container.querySelectorAll(".composer-intercom-tag[data-intercom-conversation-id]")]
+  if (!conversations.length) {
+    intercomConversationOverflowOpen = false;
+    container.classList.remove("overflow-open");
+    container.replaceChildren();
+    container.hidden = true;
+    return;
+  }
+
+  let overflow = container.querySelector("button.composer-intercom-tag.overflow");
+  if (!overflow) {
+    overflow = make("button", "composer-intercom-tag overflow", `+${conversations.length}`);
+    overflow.type = "button";
+    overflow.hidden = true;
+    overflow.setAttribute("aria-haspopup", "dialog");
+    overflow.setAttribute("aria-expanded", "false");
+    overflow.setAttribute("aria-controls", "intercomConversationOverflowMenu");
+    overflow.addEventListener("click", () => {
+      const opening = !intercomConversationOverflowOpen;
+      setIntercomConversationOverflowOpen(opening, { focusMenu: opening });
+    });
+  }
+  let menu = container.querySelector(".composer-intercom-overflow-menu");
+  if (!menu) {
+    menu = make("div", "composer-intercom-overflow-menu");
+    menu.id = "intercomConversationOverflowMenu";
+    menu.hidden = true;
+    menu.setAttribute("role", "dialog");
+    menu.setAttribute("aria-label", "More agent conversations");
+  }
+  container.append(overflow, menu);
+
+  const existingTags = new Map([...container.querySelectorAll(":scope > .composer-intercom-tag[data-intercom-conversation-id]")]
+    .map((tag) => [tag.dataset.intercomConversationId, tag]));
+  const existingMenuItems = new Map([...menu.querySelectorAll(".composer-intercom-overflow-menu-item[data-intercom-conversation-id]")]
     .map((tag) => [tag.dataset.intercomConversationId, tag]));
   const orderedTags = [];
+  const orderedMenuItems = [];
   const seenConversationIds = new Set();
   for (const conversation of conversations) {
     if (seenConversationIds.has(conversation.id)) continue;
     seenConversationIds.add(conversation.id);
-    const label = intercomConversationLabel(conversation);
     let tag = existingTags.get(conversation.id);
     if (tag) existingTags.delete(conversation.id);
     else {
@@ -6656,24 +6811,41 @@ function renderIntercomConversationTags(tabId = activeTabId) {
       tag.setAttribute("aria-controls", "intercomConversationDialog");
       tag.addEventListener("click", () => openIntercomConversation(tag.dataset.intercomConversationId));
     }
-    tag.setAttribute("aria-label", `Open agent conversation ${label}`);
-    tag.title = `${label} · ${conversation.messageCount} message${conversation.messageCount === 1 ? "" : "s"}`;
-    const visualSignature = JSON.stringify([label, conversation.messageCount]);
-    if (tag.dataset.intercomVisualSignature !== visualSignature) {
-      const children = [make("span", "composer-intercom-tag-icon", "↔"), make("span", "composer-intercom-tag-label", label)];
-      if (conversation.messageCount > 0) children.push(make("span", "composer-intercom-tag-count", String(conversation.messageCount)));
-      tag.replaceChildren(...children);
-      tag.dataset.intercomVisualSignature = visualSignature;
-    }
+    updateIntercomConversationTag(tag, conversation);
     orderedTags.push(tag);
+
+    let menuItem = existingMenuItems.get(conversation.id);
+    if (menuItem) existingMenuItems.delete(conversation.id);
+    else {
+      menuItem = make("button", "composer-intercom-tag composer-intercom-overflow-menu-item");
+      menuItem.type = "button";
+      menuItem.dataset.intercomConversationId = conversation.id;
+      menuItem.setAttribute("aria-haspopup", "dialog");
+      menuItem.setAttribute("aria-controls", "intercomConversationDialog");
+      menuItem.addEventListener("click", () => {
+        const conversationId = menuItem.dataset.intercomConversationId;
+        setIntercomConversationOverflowOpen(false);
+        overflow.focus();
+        openIntercomConversation(conversationId);
+      });
+    }
+    updateIntercomConversationTag(menuItem, conversation);
+    orderedMenuItems.push(menuItem);
   }
-  container.classList.toggle("dense", orderedTags.length > 8);
+
   for (const staleTag of existingTags.values()) staleTag.remove();
-  const currentTags = [...container.querySelectorAll(":scope > .composer-intercom-tag")];
+  for (const staleItem of existingMenuItems.values()) staleItem.remove();
+  const currentTags = [...container.querySelectorAll(":scope > .composer-intercom-tag[data-intercom-conversation-id]")];
   if (currentTags.length !== orderedTags.length || orderedTags.some((tag, index) => currentTags[index] !== tag)) {
-    for (const tag of orderedTags) container.append(tag);
+    for (const tag of orderedTags) container.insertBefore(tag, overflow);
   }
-  container.hidden = orderedTags.length === 0;
+  const currentMenuItems = [...menu.querySelectorAll(":scope > .composer-intercom-overflow-menu-item")];
+  if (currentMenuItems.length !== orderedMenuItems.length || orderedMenuItems.some((tag, index) => currentMenuItems[index] !== tag)) {
+    for (const menuItem of orderedMenuItems) menu.append(menuItem);
+  }
+  container.append(overflow, menu);
+  container.hidden = false;
+  scheduleIntercomConversationTagLayout();
 }
 
 async function refreshIntercomConversationSummaries(tabContext = activeTabContext()) {
@@ -51252,6 +51424,7 @@ restoreBusyPromptBehaviorSetting();
 syncMobileComposerDisclosureLayout();
 updateComposerModeButtons();
 installSessionSkillTagResizeHandling();
+installIntercomConversationTagResizeHandling();
 updateOptionalFeatureAvailability();
 renderOptionalFeatureMigrationSurface();
 refreshOptionalFeaturePackageStatuses({ announce: true });
