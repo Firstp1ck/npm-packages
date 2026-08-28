@@ -259,6 +259,8 @@ assert.match(findCaseBody(handleEvent, "tool_execution_end"), /claimToolBoundary
 assert.match(findFunctionBody(app, "scheduleSemanticReconcile"), /mergeSemanticReconcileRequest\(semanticReconcilePending, dirty, tabContext\)[\s\S]*?semanticReconcileFrame !== null\) return;/, "WS2a: semantic reconciliation must coalesce partitioned requests to one pending flush");
 assert.match(findFunctionBody(app, "mergeSemanticReconcileRequest"), /semanticReconcileContextKey\(tabContext\)[\s\S]*?pendingByContext\.set\(key, request\)/, "WS2a: semantic dirty flags must remain partitioned by tab generation");
 assert.match(flushSemanticReconcile, /if \(dirty\.workflow\) reconcileGitWorkflowContinuation\(tabContext\.tabId\);[\s\S]*?if \(!isCurrentTabContext\(tabContext\)\) continue;/, "WS2a: originating workflow settlement must run before stale active-DOM work no-ops");
+const reconcileGitWorkflowContinuation = findFunctionBody(app, "reconcileGitWorkflowContinuation");
+assert.match(reconcileGitWorkflowContinuation, /workflow\.step === "readmeGenerating"[\s\S]*?prepareGitInitFiles\(\{ afterReadmePrompt: true,[\s\S]*?workflow\.step === "gitignoreGenerating"[\s\S]*?prepareGitInitFiles\(\{ afterGitignorePrompt: true,/, "WS2a: settlement must continue README and .gitignore initialization after Pi finishes");
 for (const [caseLabel, flag] of [["agent_start", "state: true"], ["agent_end", "messages: true"], ["message_end", "messages: true"], ["agent_settled", "messages: true"]]) {
   assert.match(findCaseBody(handleEvent, caseLabel), new RegExp(`scheduleSemanticReconcile\\(\\{[\\s\\S]*?${flag}`), `WS2a: ${caseLabel} must reconcile chrome through the coalesced semantic scheduler`);
 }

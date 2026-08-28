@@ -25116,6 +25116,10 @@ function reconcileGitWorkflowContinuation(workflowTabId = activeTabId) {
     loadGitWorkflowBranchName({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
   } else if (workflow.step === "prGenerating") {
     loadGitWorkflowPr({ requireFresh: true, retries: 3, runId: workflow.runId, tabId: workflowTabId });
+  } else if (workflow.step === "readmeGenerating") {
+    prepareGitInitFiles({ afterReadmePrompt: true, runId: workflow.runId, tabId: workflowTabId });
+  } else if (workflow.step === "gitignoreGenerating") {
+    prepareGitInitFiles({ afterGitignorePrompt: true, runId: workflow.runId, tabId: workflowTabId });
   }
 }
 
