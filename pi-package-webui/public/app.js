@@ -101,6 +101,7 @@ const elements = {
   stickyUserPromptButton: $("#stickyUserPromptButton"),
   chat: $("#chat"),
   mainOutputLoading: $("#mainOutputLoading"),
+  mainOutputLoadingLabel: $("#mainOutputLoadingLabel"),
   runIndicatorHost: $("#runIndicatorHost"),
   chatSearchBar: $("#chatSearchBar"),
   chatSearchInput: $("#chatSearchInput"),
@@ -46186,9 +46187,15 @@ function mainOutputLoadingRequestIsCurrent(request) {
   return !!request?.tabContext && isCurrentTabContext(request.tabContext);
 }
 
+function currentMainOutputLoadingRequest() {
+  return [...mainOutputLoadingRequests].filter(mainOutputLoadingRequestIsCurrent).at(-1) || null;
+}
+
 function renderMainOutputLoading({ reveal = false } = {}) {
-  const active = [...mainOutputLoadingRequests].some(mainOutputLoadingRequestIsCurrent);
+  const request = currentMainOutputLoadingRequest();
+  const active = !!request;
   elements.chat?.setAttribute("aria-busy", active ? "true" : "false");
+  if (elements.mainOutputLoadingLabel) elements.mainOutputLoadingLabel.textContent = request?.label || "Loading your conversation…";
   clearTimeout(mainOutputLoadingRevealTimer);
   mainOutputLoadingRevealTimer = null;
   if (!elements.mainOutputLoading) return;
@@ -46196,21 +46203,27 @@ function renderMainOutputLoading({ reveal = false } = {}) {
     elements.mainOutputLoading.hidden = true;
     return;
   }
-  if (reveal) {
+  if (reveal || !elements.mainOutputLoading.hidden) {
     elements.mainOutputLoading.hidden = false;
     return;
   }
   mainOutputLoadingRevealTimer = setTimeout(() => {
     mainOutputLoadingRevealTimer = null;
-    if ([...mainOutputLoadingRequests].some(mainOutputLoadingRequestIsCurrent)) elements.mainOutputLoading.hidden = false;
+    if (currentMainOutputLoadingRequest()) elements.mainOutputLoading.hidden = false;
   }, MAIN_OUTPUT_LOADING_REVEAL_DELAY_MS);
 }
 
-function beginMainOutputLoading(tabContext) {
-  const request = { tabContext: { ...tabContext } };
+function beginMainOutputLoading(tabContext, label) {
+  const request = { tabContext: { ...tabContext }, label };
   mainOutputLoadingRequests.add(request);
   renderMainOutputLoading();
   return request;
+}
+
+function updateMainOutputLoading(request, label) {
+  if (!mainOutputLoadingRequests.has(request)) return;
+  request.label = label;
+  if (request === currentMainOutputLoadingRequest() && elements.mainOutputLoadingLabel) elements.mainOutputLoadingLabel.textContent = label;
 }
 
 function finishMainOutputLoading(request) {
@@ -46220,12 +46233,13 @@ function finishMainOutputLoading(request) {
 
 async function refreshMessages(tabContext = activeTabContext(), { authoritative = false } = {}) {
   if (!tabContext.tabId) return;
-  const loadingRequest = beginMainOutputLoading(tabContext);
+  const previousMessages = latestMessages;
+  const sessionKey = resolveMessagesSessionKey(tabContext.tabId);
+  const loadDelta = !authoritative && previousMessages.length > 1 && sessionKey === latestMessagesSessionKey;
+  const loadingRequest = beginMainOutputLoading(tabContext, loadDelta ? "Checking for new messages…" : "Loading conversation history…");
   try {
-    const previousMessages = latestMessages;
-    const sessionKey = resolveMessagesSessionKey(tabContext.tabId);
     let nextMessages = null;
-    if (!authoritative && previousMessages.length > 1 && sessionKey === latestMessagesSessionKey) {
+    if (loadDelta) {
       // Delta fetch with a one-message overlap: the last known message is
       // re-requested so retroactive changes are detected via mergeMessagesDelta.
       const response = await api(`/api/messages?since=${previousMessages.length - 1}`, { tabId: tabContext.tabId });
@@ -46233,10 +46247,12 @@ async function refreshMessages(tabContext = activeTabContext(), { authoritative 
       nextMessages = mergeMessagesDelta(previousMessages, response.data);
     }
     if (!nextMessages) {
+      updateMainOutputLoading(loadingRequest, "Loading conversation history…");
       const response = await api("/api/messages", { tabId: tabContext.tabId });
       if (!isCurrentTabContext(tabContext)) return;
       nextMessages = response.data?.messages || [];
     }
+    updateMainOutputLoading(loadingRequest, "Preparing your conversation…");
     latestMessages = nextMessages;
     latestMessagesSessionKey = sessionKey;
     cacheMessagesForTab(tabContext.tabId, latestMessages, latestMessagesSessionKey);

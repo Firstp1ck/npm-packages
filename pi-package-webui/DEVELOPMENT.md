@@ -51,7 +51,9 @@ node tests/http-endpoints-harness.test.mjs
 
 Every `refreshMessages(tabContext)` call acquires its own object token in `mainOutputLoadingRequests` before requesting a transcript snapshot or delta and releases that exact token in `finally`. Visibility is derived only from tokens whose copied tab context still matches the active tab generation. This prevents an old tab response or one of several overlapping refreshes from hiding the current request’s status.
 
-The transcript receives `aria-busy` immediately. The inline `#mainOutputLoading` status waits 120 ms before becoming visible, avoiding flashes on fast local responses while preserving polite assistive-technology state. It is a non-modal, pointer-transparent sibling of `#chat`; cached transcript content remains mounted and interactive. The global reduced-motion policy reduces its spinner to one effectively static iteration. Dedicated subagent output hides this main-transcript status.
+The transcript receives `aria-busy` immediately. The inline `#mainOutputLoading` status waits 120 ms before becoming visible, avoiding flashes on fast local responses while preserving polite assistive-technology state. It sits immediately before `#statusBar`, so the status appears above the Git footer instead of over the transcript. The newest active request supplies the visible label and updates it as the request checks for a delta, falls back to a complete transcript, and renders the result.
+
+The status remains non-modal and pointer-transparent. Cached transcript content and controls remain interactive while the in-flow status row is visible. The global reduced-motion policy reduces its spinner to one effectively static iteration. Dedicated subagent output hides this main-transcript status.
 
 Focused contributor validation:
 
@@ -60,7 +62,7 @@ node --check public/app.js
 node tests/main-output-loading-static.test.mjs
 ```
 
-The focused test protects DOM/ARIA semantics, tab-generation and overlap ownership, `try`/`finally` cleanup, non-modal styling, reduced motion, Sidebar placement, dedicated-subagent hiding, documentation, and browser/PWA cache revisions.
+The focused test protects DOM/ARIA semantics, plain-language stage labels, tab-generation and overlap ownership, `try`/`finally` cleanup, non-modal styling, reduced motion, placement above the footer in standard and Sidebar layouts, dedicated-subagent hiding, documentation, and browser/PWA cache revisions.
 
 ## Fenced code syntax highlighting
 

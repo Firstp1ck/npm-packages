@@ -5571,6 +5571,7 @@ button.subagent-gate-attempt:focus-visible {
   body.terminal-tabs-left .main-output-surface,
   body.terminal-tabs-left .run-indicator-host,
   body.terminal-tabs-left .feedback-tray,
+  body.terminal-tabs-left .main-output-loading,
   body.terminal-tabs-left .statusbar,
   body.terminal-tabs-left .context-meter-bar,
   body.terminal-tabs-left .git-workflow-panel,
@@ -5585,14 +5586,14 @@ button.subagent-gate-attempt:focus-visible {
   body.terminal-tabs-left .subagent-terminal-view { grid-row: 1 / -1; }
   body.terminal-tabs-left .chat-search-bar { grid-row: 3; }
   body.terminal-tabs-left .main-output-surface { grid-row: 4; }
-  body.terminal-tabs-left .main-output-loading { top: 0.75rem; }
   body.terminal-tabs-left .run-indicator-host { grid-row: 5; }
   body.terminal-tabs-left .feedback-tray { grid-row: 6; }
-  body.terminal-tabs-left .statusbar { grid-row: 7; }
-  body.terminal-tabs-left .context-meter-bar { grid-row: 8; }
-  body.terminal-tabs-left .git-workflow-panel { grid-row: 9; }
+  body.terminal-tabs-left .main-output-loading { grid-row: 7; }
+  body.terminal-tabs-left .statusbar { grid-row: 8; }
+  body.terminal-tabs-left .context-meter-bar { grid-row: 9; }
+  body.terminal-tabs-left .git-workflow-panel { grid-row: 10; }
   body.terminal-tabs-left .composer,
-  body.terminal-tabs-left .composer-remote-mic-consent { grid-row: 10; }
+  body.terminal-tabs-left .composer-remote-mic-consent { grid-row: 11; }
   body.terminal-tabs-left .side-panel-button-chevron { transform: scaleX(-1); }
 
   body.terminal-tabs-left.terminal-tabs-sidebar-start .chat-panel {
@@ -5622,6 +5623,7 @@ button.subagent-gate-attempt:focus-visible {
   body.terminal-tabs-left.terminal-tabs-sidebar-start .main-output-surface,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .run-indicator-host,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .feedback-tray,
+  body.terminal-tabs-left.terminal-tabs-sidebar-start .main-output-loading,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .statusbar,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .context-meter-bar,
   body.terminal-tabs-left.terminal-tabs-sidebar-start .git-workflow-panel,
@@ -8310,16 +8312,15 @@ button.git-workflow-step:hover:not(:disabled) {
 }
 .main-output-loading[hidden] { display: none !important; }
 .main-output-loading {
-  position: absolute;
   z-index: 13;
-  top: 0.55rem;
-  left: 50%;
   display: inline-flex;
+  flex: 0 0 auto;
+  align-self: center;
   align-items: center;
   gap: 0.48rem;
-  max-width: calc(100% - 1.2rem);
-  margin: 0;
-  transform: translateX(-50%);
+  width: fit-content;
+  max-width: calc(100% - 2rem);
+  margin: 0.35rem 1rem 0.3rem;
   padding: 0.42rem 0.7rem;
   pointer-events: none;
   user-select: none;
@@ -13075,6 +13076,7 @@ body:not(.mobile-keyboard-open) .composer-input-row:has(.composer-workflow-mode-
 body.subagent-terminal-active .workspace-dashboard,
 body.subagent-terminal-active .widget-area,
 body.subagent-terminal-active .main-output-surface,
+body.subagent-terminal-active .main-output-loading,
 body.subagent-terminal-active .feedback-tray,
 body.subagent-terminal-active .jump-to-latest-button,
 body.subagent-terminal-active .statusbar,

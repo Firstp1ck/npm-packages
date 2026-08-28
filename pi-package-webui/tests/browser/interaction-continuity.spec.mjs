@@ -229,19 +229,25 @@ test("main output shows non-blocking inline feedback while transcript data loads
     const loading = page.locator("#mainOutputLoading");
     const chat = page.locator("#chat");
     await expect(loading).toBeVisible();
-    await expect(loading).toContainText("Loading agent output…");
+    await expect(loading).toContainText("Loading conversation history…");
     await expect(loading).toHaveCSS("pointer-events", "none");
     await expect(chat).toHaveAttribute("aria-busy", "true");
     await expect(page.locator("#promptInput")).toBeEnabled();
     assert.equal(await page.evaluate(() => document.querySelectorAll("dialog:modal").length), 0, "loading feedback should not open a popup");
     const loadingChatBounds = await chat.boundingBox();
-    assert.ok(loadingChatBounds, "the transcript should have measurable bounds while loading");
+    const loadingBounds = await loading.boundingBox();
+    const footerBounds = await page.locator("#statusBar").boundingBox();
+    assert.ok(loadingChatBounds && loadingBounds && footerBounds, "the transcript, loading status, and footer should have measurable bounds");
+    assert.ok(loadingBounds.y + loadingBounds.height <= footerBounds.y, "the loading status should sit above the Git footer status");
 
     releaseMessages();
     await expect(loading).toBeHidden();
     await expect(chat).toHaveAttribute("aria-busy", "false");
     const settledChatBounds = await chat.boundingBox();
-    assert.deepEqual(settledChatBounds, loadingChatBounds, "showing or hiding loading feedback must not move or resize the transcript");
+    assert.ok(settledChatBounds, "the settled transcript should have measurable bounds");
+    assert.equal(settledChatBounds.x, loadingChatBounds.x, "the loading row should not move the transcript horizontally");
+    assert.equal(settledChatBounds.width, loadingChatBounds.width, "the loading row should not resize the transcript horizontally");
+    assert.ok(settledChatBounds.height >= loadingChatBounds.height, "the transcript may reclaim the loading row after the request settles");
   } finally {
     releaseMessages?.();
     await page.unroute(messagesPattern);

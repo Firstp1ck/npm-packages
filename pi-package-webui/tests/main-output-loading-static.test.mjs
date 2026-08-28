@@ -22,40 +22,45 @@ function sourceBetween(startMarker, endMarker, label) {
 
 assert.match(
   html,
-  /class="main-output-surface">[\s\S]*?id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>[\s\S]*?main-output-loading-spinner[\s\S]*?Loading agent output…[\s\S]*?<div id="chat" class="chat" aria-live="polite" aria-busy="false">/,
-  "the main output surface should own an accessible loading status over the transcript",
+  /id="feedbackTray"[\s\S]*?<div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>[\s\S]*?main-output-loading-spinner[\s\S]*?id="mainOutputLoadingLabel">Loading conversation history…<\/span>[\s\S]*?<div id="statusBar" class="statusbar"/,
+  "the accessible loading status should sit immediately above the Git footer status",
 );
 assert.doesNotMatch(html, /<dialog[^>]+id="mainOutputLoading"/, "loading feedback must not use a popup dialog");
-assert.match(app, /mainOutputLoading: \$\("#mainOutputLoading"\)/, "the browser should bind the inline status element");
+assert.match(app, /mainOutputLoading: \$\("#mainOutputLoading"\)[\s\S]*mainOutputLoadingLabel: \$\("#mainOutputLoadingLabel"\)/, "the browser should bind the inline status and its detail label");
 assert.match(app, /const mainOutputLoadingRequests = new Set\(\);[\s\S]*MAIN_OUTPUT_LOADING_REVEAL_DELAY_MS = 120/, "loading requests should have bounded concurrent ownership and a short anti-flicker delay");
 
 const loadingHelpers = sourceBetween("function mainOutputLoadingRequestIsCurrent(", "\nasync function refreshMessages(", "main output loading helpers");
 assert.match(loadingHelpers, /isCurrentTabContext\(request\.tabContext\)/, "only the active tab generation should control visible loading feedback");
+assert.match(loadingHelpers, /filter\(mainOutputLoadingRequestIsCurrent\)\.at\(-1\)/, "the newest active request should supply the displayed operation");
 assert.match(loadingHelpers, /setAttribute\("aria-busy", active \? "true" : "false"\)/, "the transcript should expose request state immediately to assistive technology");
+assert.match(loadingHelpers, /mainOutputLoadingLabel\.textContent = request\?\.label/, "the live status should name the current operation");
 assert.match(loadingHelpers, /setTimeout\([\s\S]*MAIN_OUTPUT_LOADING_REVEAL_DELAY_MS/, "visible animation should be delayed to avoid flashing on fast requests");
 assert.match(loadingHelpers, /mainOutputLoadingRequests\.add\(request\)/, "overlapping requests should receive independent tokens");
+assert.match(loadingHelpers, /function updateMainOutputLoading\([\s\S]*request\.label = label/, "an active request should be able to report its next stage");
 assert.match(loadingHelpers, /mainOutputLoadingRequests\.delete\(request\)/, "settled requests should release only their own token");
 assert.doesNotMatch(loadingHelpers, /showModal|alert\(|confirm\(/, "main output loading must remain non-modal");
 
 const refreshMessages = sourceBetween("async function refreshMessages(", "\nasync function refreshModels(", "refreshMessages");
-assert.match(refreshMessages, /const loadingRequest = beginMainOutputLoading\(tabContext\);\s*try \{/, "message fetches should begin loading before awaiting transcript data");
+assert.match(refreshMessages, /beginMainOutputLoading\(tabContext, loadDelta \? "Checking for new messages…" : "Loading conversation history…"\)/, "message fetches should distinguish delta checks from complete transcript loads");
+assert.match(refreshMessages, /updateMainOutputLoading\(loadingRequest, "Loading conversation history…"\)[\s\S]*api\("\/api\/messages"/, "delta fallback should report that it is loading the complete transcript");
+assert.match(refreshMessages, /updateMainOutputLoading\(loadingRequest, "Preparing your conversation…"\)[\s\S]*renderMessages\(latestMessages\)/, "the status should report transcript rendering after data arrives");
 assert.match(refreshMessages, /finally \{\s*finishMainOutputLoading\(loadingRequest\);\s*\}/, "success, failure, and stale responses should all clear their request token");
 assert.match(app, /activeTabId = nextTabId;\s*renderMainOutputLoading\(\);/, "tab changes should immediately reconcile stale and current request visibility");
 
 assert.match(css, /\.main-output-loading\[hidden\] \{ display: none !important; \}/, "hidden loading feedback should not render");
-assert.match(css, /\.main-output-surface \{[\s\S]*?position: relative;[\s\S]*?flex: 1 1 auto;[\s\S]*?min-height: 0;/, "the transcript and loading status should share one stable layout surface");
-assert.match(css, /\.main-output-loading \{[\s\S]*?position: absolute;[\s\S]*?left: 50%;[\s\S]*?transform: translateX\(-50%\);[\s\S]*?pointer-events: none;/, "the loading status should overlay the transcript without changing its layout");
+assert.match(css, /\.main-output-surface \{[\s\S]*?position: relative;[\s\S]*?flex: 1 1 auto;[\s\S]*?min-height: 0;/, "the transcript should retain its flexible layout surface");
+assert.match(css, /\.main-output-loading \{[\s\S]*?flex: 0 0 auto;[\s\S]*?align-self: center;[\s\S]*?width: fit-content;[\s\S]*?pointer-events: none;/, "the loading status should use a compact in-flow row above the footer");
 assert.match(css, /\.main-output-loading \{[\s\S]*?font-size: var\(--text-xs\)/, "the loading status should remain compact");
 assert.match(css, /\.main-output-loading-spinner \{[\s\S]*?animation: main-output-loading-spin 780ms linear infinite/, "the status should include a visible spinner animation");
 assert.match(css, /@keyframes main-output-loading-spin/, "the spinner should have a local animation contract");
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation-duration: 1ms !important;[\s\S]*?animation-iteration-count: 1 !important;/, "the existing reduced-motion policy should stop repeated spinner motion");
-assert.match(css, /body\.terminal-tabs-left \.main-output-surface \{ grid-row: 4; \}/, "sidebar tab placement should keep the stable output surface in the transcript grid row");
-assert.match(css, /body\.subagent-terminal-active \.main-output-surface,/, "the main output surface should stay hidden in the dedicated subagent view");
+assert.match(css, /body\.terminal-tabs-left \.main-output-surface \{ grid-row: 4; \}[\s\S]*body\.terminal-tabs-left \.main-output-loading \{ grid-row: 7; \}[\s\S]*body\.terminal-tabs-left \.statusbar \{ grid-row: 8; \}/, "sidebar tab placement should keep the loading row directly above the footer");
+assert.match(css, /body\.subagent-terminal-active \.main-output-surface,[\s\S]*body\.subagent-terminal-active \.main-output-loading,/, "dedicated subagent output should hide the main transcript and its loading status");
 
-assert.match(html, /styles\.css\?v=145/, "the stylesheet cache query should advance");
-assert.match(html, /app\.js\?v=177/, "the app cache query should advance");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v145"/, "the PWA cache identity should advance with browser assets");
-assert.match(readme, /Loading agent output/, "user documentation should describe the visible loading feedback");
+assert.match(html, /styles\.css\?v=146/, "the stylesheet cache query should advance");
+assert.match(html, /app\.js\?v=178/, "the app cache query should advance");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v146"/, "the PWA cache identity should advance with browser assets");
+assert.match(readme, /Loading conversation history/, "user documentation should describe the plain-language loading feedback");
 assert.match(development, /main output loading/i, "developer documentation should preserve the request-ownership contract");
 
 console.log("main output loading static tests passed");

@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=145" />
+    <link rel="stylesheet" href="/styles.css?v=146" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -297,10 +297,6 @@
           <button id="chatSearchCloseButton" class="chat-search-button" type="button" aria-label="Close search" title="Close (Escape)">✕</button>
         </div>
         <div class="main-output-surface">
-          <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
-            <span class="main-output-loading-spinner" aria-hidden="true"></span>
-            <span>Loading agent output…</span>
-          </div>
           <div id="chat" class="chat" aria-live="polite" aria-busy="false">
             <button id="stickyUserPromptButton" class="sticky-user-prompt-button" type="button" aria-controls="chat" hidden></button>
           </div>
@@ -310,6 +306,10 @@
         <div id="feedbackTray" class="feedback-tray" aria-live="polite" hidden>
           <span id="feedbackTraySummary">No action feedback queued.</span>
           <button id="sendFeedbackButton" type="button">Send &amp; create LEARNING</button>
+        </div>
+        <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
+          <span class="main-output-loading-spinner" aria-hidden="true"></span>
+          <span id="mainOutputLoadingLabel">Loading conversation history…</span>
         </div>
         <div id="statusBar" class="statusbar" aria-live="polite"></div>
         <section id="contextMeterBar" class="context-meter-bar" aria-live="polite"></section>
@@ -1889,7 +1889,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=177">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=178">
       (() => {
         "use strict";
 
