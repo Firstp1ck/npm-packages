@@ -321,6 +321,8 @@ Install `@firstpick/pi-extension-git-guided-workflow` to make `/git-guided-workf
 
 Browser generation accepts only RPC-capable extension provenance for `/git-staged-msg`, `/git-branch-name`, and `/pr`. A separately installed same-named prompt template is not a fallback for the native path.
 
+Publishing a repository with no remote requires GitHub CLI (`gh`) to be installed and authenticated. Guided Git derives the GitHub repository name from the local Git root directory, asks you to type `public` or `private`, then shows a final confirmation before it creates the repository, adds `origin`, and pushes. The command uses your system Git and GitHub CLI configuration.
+
 The launcher refuses immediately while the originating tab is running, compacting context, or has pending messages; it does not queue Guided Git for later. If the command does not open the workflow, confirm that the tab is idle, has no queued messages, and lists `/git-guided-workflow`, `/git-staged-msg`, `/git-branch-name`, and `/pr` as extension commands. Restart or reload the Pi tab after installing or updating the extension. Retrying after an uncertain activation is a manual decision; WebUI does not retry it automatically.
 
 ## Guided Git generation profiles

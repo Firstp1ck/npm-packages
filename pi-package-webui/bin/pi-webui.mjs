@@ -8736,7 +8736,7 @@ function applyGitHubPublicationFailure(payload) {
     payload.code = "AUTH";
     payload.hint = "GitHub CLI is not authenticated. Run 'gh auth login' in a terminal, then retry.";
   } else if (/name already exists on this account|repository .+ already exists/.test(text)) {
-    payload.hint = "A GitHub repository with this name already exists for the authenticated account. Choose another repository name and retry.";
+    payload.hint = "A GitHub repository with this directory name already exists for the authenticated account. Add that repository as a remote, or rename the local directory before retrying.";
   }
   return payload;
 }
@@ -8887,21 +8887,22 @@ async function handleGitWorkflowRequest(pathname, body = {}, tabOrCwd = options.
           payload.data.protectedBranch = protectedBranch;
           payload.data.forceWithLease = forceWithLease;
           if (remote) payload.data.remote = remote;
+          else payload.data.repoName = path.basename(root);
         }
         return applyGitSyncFailure(payload, { push: true });
       }
       case "/api/git-workflow/publish": {
-        const repoName = cleanGitHubRepoName(body.repoName);
+        const root = await getGitRoot(cwd);
+        const repoName = cleanGitHubRepoName(path.basename(root));
         const visibility = String(body.visibility || "").trim();
         if (visibility !== "public" && visibility !== "private") throw makeHttpError(400, "visibility must be 'public' or 'private'");
         requireConfirmed(body, `Publishing GitHub repository ${repoName} as ${visibility}`);
-        const root = await getGitRoot(cwd);
         const remotes = await gitRemoteNames(root);
         if (remotes.length) throw makeHttpError(409, "GitHub publication requires a repository with no configured remotes. Existing remotes are not changed or repaired.");
         const branch = await currentGitBranch(root);
         const protectedBranch = PROTECTED_GIT_BRANCHES.has(branch);
         const payload = applyGitHubPublicationFailure(gitWorkflowCommandPayload(await runGitHubWorkflowCommand(
-          ["repo", "create", repoName, `--${visibility}`, "--source", root, "--remote", "origin", "--push"],
+          ["repo", "create", repoName, `--${visibility}`, "--source", ".", "--remote", "origin", "--push"],
           { cwd: root, timeoutMs: 15 * 60 * 1000 },
         )));
         if (payload.ok) Object.assign(payload.data, { repoName, visibility, remote: "origin", branch, protectedBranch });

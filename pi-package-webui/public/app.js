@@ -34714,13 +34714,6 @@ function cleanGitPublishVisibilityInput(value) {
   return visibility;
 }
 
-function promptGitPublishRepoName(tabId = activeTabId) {
-  const targetTab = tabs.find((tab) => tab.id === tabId) || activeTab();
-  const value = window.prompt("GitHub repository name to create", defaultGitInitRepoName(targetTab));
-  if (value === null) return null;
-  return cleanGitHubRepoNameInput(value);
-}
-
 function promptGitPublishVisibility(repoName) {
   const value = window.prompt(`Visibility for GitHub repository ${repoName} — type public or private (no default)`, "");
   if (value === null) return null;
@@ -34733,18 +34726,17 @@ async function publishGitWorkflowRepository(tabId, failure) {
   if (!workflow) return false;
   const runId = workflow.runId;
   const branch = failure?.data?.branch || gitFooterCurrentBranch() || "the current branch";
+  const targetTab = tabs.find((tab) => tab.id === tabId) || activeTab();
+  const repoName = cleanGitHubRepoNameInput(failure?.data?.repoName || defaultGitInitRepoName(targetTab));
   const publishRequested = await appConfirmText([
     failure?.message || "git push found no configured push destination.",
     "",
-    "Publish this repository to GitHub with the authenticated GitHub CLI (gh) account instead?",
-    "Nothing is created until you choose a name, choose visibility explicitly, and confirm the final summary.",
-  ].join("\n"), { affected: "A new GitHub repository and the origin remote", confirmLabel: "Choose publication details", danger: false });
+    `Publish this repository to GitHub as ${repoName} with the authenticated GitHub CLI (gh) account?`,
+    "The repository name comes from the local Git root directory. Nothing is created until you choose visibility explicitly and confirm the final summary.",
+  ].join("\n"), { affected: "A new GitHub repository and the origin remote", confirmLabel: "Choose visibility", danger: false });
   if (!publishRequested) return false;
-  let repoName;
   let visibility;
   try {
-    repoName = promptGitPublishRepoName(tabId);
-    if (!repoName) return false;
     visibility = promptGitPublishVisibility(repoName);
     if (!visibility) return false;
   } catch (error) {
@@ -34763,7 +34755,7 @@ async function publishGitWorkflowRepository(tabId, failure) {
   ].join("\n"), { affected: `New ${visibility} GitHub repository ${repoName}`, confirmLabel: "Publish repository" });
   if (!confirmed) return false;
   setGitWorkflow({ step: "pushing", busy: true, error: "", output: `Creating ${visibility} GitHub repository ${repoName} and pushing ${branch}…` }, { tabId });
-  const result = await gitWorkflowRequest("/api/git-workflow/publish", { body: { repoName, visibility, confirmed: true }, runId, tabId });
+  const result = await gitWorkflowRequest("/api/git-workflow/publish", { body: { visibility, confirmed: true }, runId, tabId });
   if (!result) return true;
   setGitWorkflow({
     step: "done",

@@ -190,7 +190,9 @@ Launch detected development servers, tests, builds, scripts, and project-defined
 
 Run `/git-guided-workflow` in the browser composer or use the **Guided Git workflow** button. The extension starts the workflow in the originating tab without sending a repository path, diff, or Git data in its activation request. Browser generation requires the extension-owned RPC commands and does not fall back to same-named prompt templates.
 
-Move through review, staging, commit-message generation, commit, push, and pull-request steps with explicit confirmations. In **Guided Git Setup**, you can optionally choose a fallback model and its own reasoning effort. If the primary model reaches a final generation failure, Guided Git tries the fallback once, reports the change in the workflow, and restores the tab’s prior model and effort afterward. Large staged diffs use multiple model requests; a fallback attempt sends the complete staged evidence again to the configured fallback provider and can nearly double the request count and cost. Validation failures, cancellation, Git command failures, and a stopped Pi process do not trigger fallback.
+Move through review, staging, commit-message generation, commit, push, and pull-request steps with explicit confirmations. If a repository has no remote, choose public or private visibility and confirm publication. Guided Git uses the local Git root directory name, runs the authenticated system `gh` command, adds `origin`, and pushes the current branch.
+
+In **Guided Git Setup**, you can optionally choose a fallback model and its own reasoning effort. If the primary model reaches a final generation failure, Guided Git tries the fallback once, reports the change in the workflow, and restores the tab’s prior model and effort afterward. Large staged diffs use multiple model requests; a fallback attempt sends the complete staged evidence again to the configured fallback provider and can nearly double the request count and cost. Validation failures, cancellation, Git command failures, and a stopped Pi process do not trigger fallback.
 
 #### Git branch picker
 

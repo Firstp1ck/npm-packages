@@ -1995,28 +1995,24 @@ try {
     assert.equal(pushWithoutRemote.body?.code, "NO_REMOTE", "remote-less push should have a stable recovery code");
     assert.match(String(pushWithoutRemote.body?.hint || ""), /publish this repository|add a Git remote/i);
     assert.match(String(pushWithoutRemote.body?.data?.stderr || ""), /No configured push destination/i, "classified failures should preserve process output");
+    assert.equal(pushWithoutRemote.body?.data?.repoName, path.basename(cwd), "remote-less push should report the local Git root directory name for publication");
 
     const unconfirmedPublish = await request("127.0.0.1", "/api/git-workflow/publish", {
       method: "POST",
-      body: { tab: tabId, repoName: "pi-webui-http-harness", visibility: "private" },
+      body: { tab: tabId, repoName: "client-selected-name", visibility: "private" },
     });
     assert.equal(unconfirmedPublish.status, 200);
     assert.equal(unconfirmedPublish.body?.ok, false, "publication should require exact server-side confirmation");
     assert.match(String(unconfirmedPublish.body?.error || ""), /confirmed: true/);
+    assert.match(String(unconfirmedPublish.body?.error || ""), new RegExp(`GitHub repository ${path.basename(cwd)} as private`), "publication confirmation should use the server-derived Git root directory name");
+    assert.doesNotMatch(String(unconfirmedPublish.body?.error || ""), /client-selected-name/, "publication should ignore client-supplied repository names");
 
     const invalidVisibilityPublish = await request("127.0.0.1", "/api/git-workflow/publish", {
       method: "POST",
-      body: { tab: tabId, repoName: "pi-webui-http-harness", visibility: "internal", confirmed: true },
+      body: { tab: tabId, visibility: "internal", confirmed: true },
     });
     assert.equal(invalidVisibilityPublish.body?.ok, false, "publication should reject visibility outside public/private");
     assert.match(String(invalidVisibilityPublish.body?.error || ""), /visibility must be 'public' or 'private'/);
-
-    const invalidNamePublish = await request("127.0.0.1", "/api/git-workflow/publish", {
-      method: "POST",
-      body: { tab: tabId, repoName: "invalid repository name", visibility: "public", confirmed: true },
-    });
-    assert.equal(invalidNamePublish.body?.ok, false, "publication should reuse GitHub repository-name validation");
-    assert.match(String(invalidNamePublish.body?.error || ""), /Invalid GitHub repository name/);
     assert.equal(runGitFixture(["remote"], cwd, "guarded publication requests must not configure a remote"), "");
 
     const initialWorktrees = await request("127.0.0.1", `/api/git-worktrees?tab=${encodeURIComponent(tabId)}`);

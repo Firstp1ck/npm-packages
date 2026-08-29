@@ -794,6 +794,8 @@ For an existing repository, the workflow can:
 5. Use the preferred generated short/long message, a generated single-file default such as `updated file.txt`, or a manual **Commit input** message.
 6. Show an optional pre-commit verification reminder, then require explicit confirmation before push and PR delivery actions.
 
+A push with no configured remote returns the validated Git root directory name to the browser. Publication asks only for `public` or `private` visibility and a final confirmation. The server ignores client-supplied repository names, derives the name again from the Git root, and runs `gh repo create <directory-name> --public|--private --source=. --remote=origin --push` from that root. The child process inherits the Web UI server's Git and GitHub CLI environment and configuration. Existing remotes still block this recovery path.
+
 The saved setup includes:
 
 - one required primary generation profile reused for commit messages, branch names, and PR descriptions, plus an optional different fallback profile with its own effort;

@@ -20,13 +20,18 @@ assert.match(
 );
 assert.match(
   server,
-  /case "\/api\/git-workflow\/publish": \{[\s\S]*cleanGitHubRepoName\(body\.repoName\)[\s\S]*visibility !== "public" && visibility !== "private"[\s\S]*requireConfirmed\(body,[\s\S]*getGitRoot\(cwd\)[\s\S]*gitRemoteNames\(root\)[\s\S]*remotes\.length[\s\S]*currentGitBranch\(root\)/,
-  "the server must validate name/visibility/confirmation and refuse existing-remote repair before publication",
+  /case "\/api\/git-workflow\/publish": \{[\s\S]*const root = await getGitRoot\(cwd\);[\s\S]*cleanGitHubRepoName\(path\.basename\(root\)\)[\s\S]*visibility !== "public" && visibility !== "private"[\s\S]*requireConfirmed\(body,[\s\S]*gitRemoteNames\(root\)[\s\S]*remotes\.length[\s\S]*currentGitBranch\(root\)/,
+  "the server must derive and validate the Git root directory name, validate visibility/confirmation, and refuse existing-remote repair before publication",
+);
+assert.doesNotMatch(
+  server,
+  /case "\/api\/git-workflow\/publish": \{[\s\S]*?cleanGitHubRepoName\(body\.repoName\)[\s\S]*?case "\/api\/git-workflow\/create-pr"/,
+  "publication must not trust a client-selected repository name",
 );
 assert.match(
   server,
-  /runGitHubWorkflowCommand\(\s*\["repo", "create", repoName, `--\$\{visibility\}`, "--source", root, "--remote", "origin", "--push"\],[\s\S]*timeoutMs: 15 \* 60 \* 1000/,
-  "publication must run the approved non-interactive gh repo create command through the bounded workflow runner",
+  /runGitHubWorkflowCommand\(\s*\["repo", "create", repoName, `--\$\{visibility\}`, "--source", "\.", "--remote", "origin", "--push"\],[\s\S]*\{ cwd: root, timeoutMs: 15 \* 60 \* 1000/,
+  "publication must run gh repo create from the Git root so system GitHub CLI configuration adds origin and pushes",
 );
 assert.match(
   server,
@@ -34,7 +39,7 @@ assert.match(
   "successful publication must extend the process envelope with the approved metadata",
 );
 assert.match(server, /payload\.code = "AUTH";[\s\S]*gh auth login/, "gh authentication failures should receive an actionable AUTH hint");
-assert.match(server, /name already exists on this account\|repository \.\+ already exists[\s\S]*Choose another repository name/, "safe name-conflict output should receive a retry hint");
+assert.match(server, /name already exists on this account\|repository \.\+ already exists[\s\S]*rename the local directory before retrying/, "name conflicts should explain how the directory-derived name can be changed");
 assert.match(server, /GH_PROMPT_DISABLED: process\.env\.GH_PROMPT_DISABLED \|\| "1"/, "gh publication must inherit disabled interactive prompts");
 
 console.log("guided git publication backend static tests passed");
