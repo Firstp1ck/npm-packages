@@ -478,6 +478,7 @@ const elements = {
   textPromptTitle: $("#textPromptTitle"),
   textPromptSummary: $("#textPromptSummary"),
   textPromptInput: $("#textPromptInput"),
+  textPromptSelect: $("#textPromptSelect"),
   textPromptError: $("#textPromptError"),
   textPromptCancelButton: $("#textPromptCancelButton"),
   textPromptConfirmButton: $("#textPromptConfirmButton"),
@@ -7970,9 +7971,10 @@ function confirmDiscardEdits({ what = "unsaved edits", target = "" } = {}) {
   });
 }
 
-// Application text prompt (replaces blocking window.prompt): resolves with the entered string,
-// or null when cancelled. `validate` may return an error message to keep the dialog open.
+// Application value prompt (replaces blocking window.prompt): resolves with the entered value,
+// or null when cancelled. Text prompts may validate and keep the dialog open.
 let activeTextPromptResolve = null;
+let textPromptMode = "text";
 
 function appPromptText({ title = "Enter a value", summary = "", defaultValue = "", placeholder = "", confirmLabel = "OK", validate = null, selectRange = null } = {}) {
   const dialog = elements.textPromptDialog;
@@ -7981,11 +7983,14 @@ function appPromptText({ title = "Enter a value", summary = "", defaultValue = "
     return Promise.resolve(value === null ? null : String(value));
   }
   if (activeTextPromptResolve) finishTextPrompt(null);
+  textPromptMode = "text";
   elements.textPromptTitle.textContent = title;
   elements.textPromptSummary.textContent = summary;
   elements.textPromptSummary.hidden = !summary;
+  elements.textPromptInput.hidden = false;
   elements.textPromptInput.value = defaultValue;
   elements.textPromptInput.placeholder = placeholder;
+  if (elements.textPromptSelect) elements.textPromptSelect.hidden = true;
   elements.textPromptError.hidden = true;
   elements.textPromptError.textContent = "";
   elements.textPromptConfirmButton.textContent = confirmLabel;
@@ -8003,6 +8008,51 @@ function appPromptText({ title = "Enter a value", summary = "", defaultValue = "
   });
 }
 
+function appPromptSelect({ title = "Choose an option", summary = "", options = [], placeholder = "Choose…", confirmLabel = "Continue" } = {}) {
+  const normalizedOptions = options
+    .map((option) => ({ value: String(option?.value ?? ""), label: String(option?.label ?? option?.value ?? "") }))
+    .filter((option) => option.value && option.label);
+  const dialog = elements.textPromptDialog;
+  if (!dialog?.showModal || !elements.textPromptSelect) {
+    const lines = normalizedOptions.map((option, index) => `${index + 1}. ${option.label}`);
+    const choice = window.prompt([title, summary, ...lines].filter(Boolean).join("\n"), "");
+    if (choice === null) return Promise.resolve(null);
+    const selected = normalizedOptions[Number.parseInt(String(choice), 10) - 1];
+    return Promise.resolve(selected?.value || null);
+  }
+  if (activeTextPromptResolve) finishTextPrompt(null);
+  textPromptMode = "select";
+  elements.textPromptTitle.textContent = title;
+  elements.textPromptSummary.textContent = summary;
+  elements.textPromptSummary.hidden = !summary;
+  elements.textPromptInput.hidden = true;
+  const select = elements.textPromptSelect;
+  select.hidden = false;
+  select.replaceChildren();
+  const placeholderOption = document.createElement("option");
+  placeholderOption.value = "";
+  placeholderOption.textContent = placeholder;
+  placeholderOption.disabled = true;
+  placeholderOption.selected = true;
+  select.append(placeholderOption);
+  for (const option of normalizedOptions) {
+    const element = document.createElement("option");
+    element.value = option.value;
+    element.textContent = option.label;
+    select.append(element);
+  }
+  select.value = "";
+  elements.textPromptError.hidden = true;
+  elements.textPromptError.textContent = "";
+  elements.textPromptConfirmButton.textContent = confirmLabel;
+  textPromptValidator = (value) => value ? "" : "Choose an option.";
+  return new Promise((resolve) => {
+    activeTextPromptResolve = resolve;
+    dialog.showModal();
+    queueMicrotask(() => select.focus());
+  });
+}
+
 let textPromptValidator = null;
 
 function finishTextPrompt(value) {
@@ -8014,12 +8064,13 @@ function finishTextPrompt(value) {
 }
 
 function submitTextPrompt() {
-  const value = String(elements.textPromptInput?.value ?? "");
+  const control = textPromptMode === "select" ? elements.textPromptSelect : elements.textPromptInput;
+  const value = String(control?.value ?? "");
   const problem = textPromptValidator ? textPromptValidator(value) : "";
   if (problem) {
     elements.textPromptError.textContent = String(problem);
     elements.textPromptError.hidden = false;
-    elements.textPromptInput?.focus();
+    control?.focus();
     return;
   }
   finishTextPrompt(value);
@@ -34709,13 +34760,22 @@ async function commitGitWorkflow(variant, tabId = gitWorkflowActionTabId()) {
 function cleanGitPublishVisibilityInput(value) {
   const visibility = String(value ?? "").trim().toLowerCase();
   if (visibility !== "public" && visibility !== "private") {
-    throw new Error("Repository visibility must be typed as exactly 'public' or 'private'. There is no default; nothing was published.");
+    throw new Error("Repository visibility must be selected as 'public' or 'private'; nothing was published.");
   }
   return visibility;
 }
 
-function promptGitPublishVisibility(repoName) {
-  const value = window.prompt(`Visibility for GitHub repository ${repoName} — type public or private (no default)`, "");
+async function promptGitPublishVisibility(repoName) {
+  const value = await appPromptSelect({
+    title: "Choose repository visibility",
+    summary: `GitHub repository: ${repoName}`,
+    options: [
+      { value: "public", label: "Public" },
+      { value: "private", label: "Private" },
+    ],
+    placeholder: "Choose visibility…",
+    confirmLabel: "Continue",
+  });
   if (value === null) return null;
   return cleanGitPublishVisibilityInput(value);
 }
@@ -34737,7 +34797,7 @@ async function publishGitWorkflowRepository(tabId, failure) {
   if (!publishRequested) return false;
   let visibility;
   try {
-    visibility = promptGitPublishVisibility(repoName);
+    visibility = await promptGitPublishVisibility(repoName);
     if (!visibility) return false;
   } catch (error) {
     addEvent(error.message || String(error), "error");
