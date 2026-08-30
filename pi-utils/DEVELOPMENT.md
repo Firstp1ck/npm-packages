@@ -46,6 +46,10 @@ Shared helper utilities used by `@firstpick/pi-extension-*` packages.
 - `withExtensionWorkingIndicator(ctx, initialMessage, run, options?)`
 - `appendDisplayChunk(lines, chunk)` / `outputLinesFromDisplay(lines)` / `formatElapsed(startMs)`
 - `createLocalWikiEngine(config)`
+- `@firstpick/pi-utils/resource-management`: resource normalization, scope resolution, model profiles, and locked shared defaults
+- `@firstpick/pi-utils/scoped-resource-command`: shared Session, Global, and Model command flow
+- `@firstpick/pi-utils/tui-resource-selector`: searchable multi-resource selector
+- `@firstpick/pi-utils/tui-model-profile-selector`: searchable exact-model profile picker
 
 `createExtensionWorkingIndicator` renders a reusable extension-owned spinner using `ctx.ui.setWidget` plus footer `setStatus`, so it works inside slash-command handlers where Pi's built-in model-streaming working row is not shown.
 

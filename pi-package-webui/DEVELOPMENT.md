@@ -4,19 +4,13 @@ Contributor-only implementation, API, architecture, testing, and maintenance inf
 
 [Back to README](README.md) · [Advanced user technical reference](TECHNICAL.md)
 
-## TUI tool and skill selector
+## Tool and skill command ownership
 
-`index.ts` keeps resource scope resolution and persistence in `registerTuiResourceController`. After the user chooses Session, Global, or Model scope, `lib/tui-resource-selector.mjs` owns the shared searchable list used by both `/tools` and `/skills`. Its interaction follows Pi's `/scoped-models` selector: arrows navigate, Enter toggles, the `app.models.enableAll`, `app.models.clearAll`, and `app.models.save` bindings perform bulk actions and save, and Escape or Ctrl+C cancels. Bulk actions affect only filtered resources while search is active.
-
-For Model scope, `lib/tui-model-profile-selector.mjs` searches provider, exact ID, and display name. It returns the selected model object directly rather than reconstructing a model from its rendered label. The picker opens at the active model when possible and marks models with a resource-specific profile.
+WebUI does not register TUI `/tools` or `/skills` commands. The standalone `@firstpick/pi-extension-tools` and `@firstpick/pi-extension-setup-skills` packages own those commands and their Session, Global, and Model selector flow. Shared profile resolution, locking, and TUI selector components live in `@firstpick/pi-utils`. Browser-native tool and skill controls continue through `webui-rpc-helper.mjs` and the WebUI HTTP routes against the same saved state.
 
 Focused contributor validation:
 
 ```bash
-node --check lib/tui-resource-selector.mjs
-node --check lib/tui-model-profile-selector.mjs
-node tests/tui-resource-selector.test.mjs
-node tests/tui-model-profile-selector.test.mjs
 node tests/resource-tui-extension.test.mjs
 ```
 
@@ -279,7 +273,7 @@ Compact mode keeps live output lightweight, coalesces sustained live DOM/scroll 
 - Optional Natural Conversation Mode shell for the standalone `@firstpick/pi-package-natural-conversation` package: when `/talk` (or `/voice`/`/conversation`) is loaded in the active Pi tab, Web UI shows per-tab Start/End controls, a read-only voice-mode chip, and backend guards that keep thinking `off` while blocking unsafe Web UI actions.
 - Browser voice loop for Natural Conversation Mode (`public/voice-conversation.mjs`): while the mode is active in a tab, the browser's Web Speech APIs listen for speech, send final transcripts as normal prompts, and speak Pi's final answers. The microphone pauses while answers are spoken (echo prevention), speech during final-output streaming becomes a steering interruption, speech during tool execution is queued until the tool phase ends, and silence after a spoken question sends a single structured silence event. Remote (non-localhost) sessions keep the microphone off until the per-tab `Allow remote microphone streaming` consent is granted; only text transcripts ever reach the Pi host on the browser-default path. Opt-in server-side fallback routes are available for local/Groq/OpenAI STT and local/OpenAI TTS when configured with server-side env vars; remote/LAN raw-audio STT fallback uploads require explicit per-request consent.
 - Browser-native Pi dialogs for `/model`, `/settings`, `/summary-setup`, `/safety-guard-setup`, `/git-workflow-setup`, `/theme`, `/fork`, `/clone`, `/name`, `/resume`, `/tree`, `/login`, `/logout`, `/scoped-models`, `/tools`, and `/skills`, plus an on-demand `/summary` Markdown overlay and native-command adapter output for `/copy`, `/session`, `/new`, `/compact`, `/reload`, and `/export`. Safety Guard Setup includes the opt-in auto-review toggle and active-tab authenticated model/supported-thinking selectors; auto-review remains off by default, and enabled saves reject unavailable selections.
-- Runtime `/tools` and `/skills` selectors backed by the hidden Web UI RPC helper, with explicit **Session only**, **Global default**, and exact **Model default** scopes. Session choices persist on the current branch and take precedence; global defaults are inherited by future sessions without rewriting existing branches. Disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags. Responsive fitting keeps visible and hidden tag sets disjoint; the `+X` disclosure renders the hidden set in an upward, bounded popup and preserves selection, outside-dismissal, `Escape`, and focus-return behavior.
+- Browser-native tool and skill selectors backed by the hidden Web UI RPC helper, with explicit **Session only**, **Global default**, and exact **Model default** scopes. Session choices persist on the current branch and take precedence; global defaults are inherited by future sessions without rewriting existing branches. Disabled skills are removed from the system prompt, and tracked `SKILL.md` files can be opened/edited from skill tags. Responsive fitting keeps visible and hidden tag sets disjoint; the `+X` disclosure renders the hidden set in an upward, bounded popup and preserves selection, outside-dismissal, `Escape`, and focus-return behavior.
 - Session resume into a newly created terminal tab, metadata rename, and localhost-only safe delete with active/open-tab/session-directory guards.
 - Model, thinking, session, workspace, theme, optional-feature, Codex usage, optional Remote WebUI, update/restart/stop, event, notification, thinking-visibility, terminal-tab-layout, and custom-background controls in collapsible side-panel sections.
 - A side-panel **Git** section mirrors the repositories represented by every open terminal tab/group. Repository cards are shown directly—without session-name parent disclosures—and always use the Git-root or cwd basename as their title. One repository can be expanded at a time. First/stale expansion refreshes local status after a five-minute cache window, while live filesystem updates use a debounced server watcher and SSE invalidation to refresh visible repositories without periodic Git polling or an automatic network `git fetch`. Its compact Changes tree groups conflicted, staged, modified, and untracked paths with additions/deletions; right-click a repository, folder, or file (or press Shift+F10/the Context Menu key) for View Diff, refresh, stage/unstage, and confirmed discard/delete actions. History lists the latest 30 commits and opens bounded read-only commit diffs.
@@ -660,17 +654,17 @@ Product screenshots are maintained in the [user-facing README](README.md#feature
 
 ### Tools setup
 
-- **What it is:** Browser and native TUI `/tools` selectors for active and available Pi tools.
+- **What it is:** A browser selector for active and available Pi tools. The standalone tools extension owns the TUI `/tools` command.
 - **What you can do:** Search or toggle tools, pin the current session branch, save a global default, configure an exact provider/model profile, or return a scope to inherited behavior. A successful model change immediately recomputes unpinned tools.
 
 ### Skills setup
 
-- **What it is:** Browser and native TUI `/skills` selectors for skills discovered in the active Pi session.
+- **What it is:** A browser selector for skills discovered in the active Pi session. The standalone skills extension owns the TUI `/skills` command.
 - **What you can do:** Find skills by name or description, pin the current session branch, save a global default, configure an exact provider/model profile, or return a scope to inherited behavior. A successful model change immediately recomputes unpinned skills while preserving `disableModelInvocation` filtering and explicit disabled-skill blocking.
 
 Session-specific tool and skill choices are independent and always win when their branch is resumed or selected in `/tree`. Exact model profiles are keyed by case-sensitive provider/model ID pairs and are stored as an array under settings-envelope version 8. Each profile contains nullable tool and skill selections: `null` inherits, while an empty array explicitly enables none. Legacy branch entries remain explicit pins; version-2 branch entries add `explicit` and `inherit` modes. Global and exact-model defaults are stored in the private Pi Web UI settings file (normally `~/.pi/webui/settings.json`) and do not mutate an explicit current session.
 
-`index.ts` owns resource lifecycle only in TUI mode, while `webui-rpc-helper.mjs` owns it in RPC mode. Both capture or resolve an immutable runtime fallback, recompute on session/tree/model events, and fence asynchronous model changes before applying them. HTTP model-profile writes validate the exact authenticated model and update the latest locked settings snapshot so concurrent writers and temporarily unavailable names are preserved.
+`webui-rpc-helper.mjs` owns the browser session's resource lifecycle in RPC mode. It captures or resolves an immutable runtime fallback, recomputes on session/tree/model events, and fences asynchronous model changes before applying them. HTTP model-profile writes validate the exact authenticated model and update the latest locked settings snapshot so concurrent writers and temporarily unavailable names are preserved.
 
 `@firstpick/pi-package-qt-webui` consumes this package as the canonical tool/skill state owner. Its backend imports `webuiSettingsFile()`, `readWebuiSettings()`, `updateWebuiSettings()`, and the resource-selection helpers rather than copying the settings schema or lock protocol. Qt global and exact-model writes therefore merge into the same `resourceDefaults`, and its Pi helper uses the same `webui-tools-config` and `webui-skills-config` version-2 branch entries for session explicit/inherit state. Qt-only sampling remains outside this contract. Each Qt resource-state request reads the latest shared settings; there is no direct process-to-process synchronization.
 
@@ -758,9 +752,9 @@ Optional companions:
 - `@firstpick/pi-extension-workflows` — `/workflow` runtime with non-blocking Web UI subprocess-output widgets.
 - `@firstpick/pi-extension-feature-system-prompt` — feature-request classification and routing, with lightweight/complex decisions shown in the Web UI composer.
 - `@firstpick/pi-extension-safety-guard` — configurable guardrails for dangerous bash commands and protected file edits, with native `/safety-guard-setup` controls.
-- `@firstpick/pi-extension-setup-skills` — TUI `/skills` setup command alongside WebUI-native skill toggles.
+- `@firstpick/pi-extension-setup-skills` — sole owner of the TUI `/skills` setup command; WebUI keeps separate browser-native skill controls.
 - `@firstpick/pi-extension-todo-progress` — todo-progress rendering.
-- `@firstpick/pi-extension-tools` — TUI `/tools` active-tool manager alongside WebUI-native tool toggles.
+- `@firstpick/pi-extension-tools` — sole owner of the TUI `/tools` active-tool manager; WebUI keeps separate browser-native tool controls.
 - `@firstpick/pi-package-remote-webui` — `/remote` trusted-LAN QR helper plus the optional browser controls for opening/closing LAN access and Remote PIN auth.
 - `@firstpick/pi-extension-git-footer-status` — richer extension-owned git/footer status, including the structured Web UI footer payload. The Claude Usage panel consumes its live Anthropic response-header snapshot when available and keeps the standalone Claude CLI endpoint as an explicit/fallback refresh path.
 - `@firstpick/pi-extension-stats` — stats commands and status data.

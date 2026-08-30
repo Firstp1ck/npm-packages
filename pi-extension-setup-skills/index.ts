@@ -1,10 +1,12 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DefaultPackageManager, DynamicBorder, getAgentDir, getSettingsListTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Skill } from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, DynamicBorder, formatSkillsForPrompt, getAgentDir, getSettingsListTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Key, matchesKey, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { getAgentSettingsPath, readJsonIfExists, writeJsonFile } from "@firstpick/pi-utils";
+import { branchResourceDirective, readResourceDefaults, resolveResourceSelection } from "@firstpick/pi-utils/resource-management";
+import { registerScopedResourceCommand } from "@firstpick/pi-utils/scoped-resource-command";
 
 type PackageEntry = string | { source?: string; skills?: string[]; extensions?: string[]; prompts?: string[]; [key: string]: unknown };
 type SettingsShape = { packages?: PackageEntry[]; skills?: string[]; [key: string]: unknown };
@@ -17,9 +19,10 @@ type SkillCandidate = {
   enablePath: string;
   packageSource?: string;
   packageSkillName?: string;
+  disableModelInvocation: boolean;
 };
 
-function collectSkillFilesFromDir(root: string, includeRootMarkdown = true): string[] {
+export function collectSkillFilesFromDir(root: string, includeRootMarkdown = true): string[] {
   if (!existsSync(root)) return [];
   const out: string[] = [];
 
@@ -60,14 +63,15 @@ function collectSkillFilesFromDir(root: string, includeRootMarkdown = true): str
   return out;
 }
 
-function parseSkill(path: string): { name: string; description: string } | undefined {
+function parseSkill(path: string): { name: string; description: string; disableModelInvocation: boolean } | undefined {
   const text = readFileSync(path, "utf8");
   const frontmatter = text.match(/^---\s*\n([\s\S]*?)\n---/);
   if (!frontmatter) return undefined;
   const name = frontmatter[1].match(/^name:\s*(.+)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "");
   const description = frontmatter[1].match(/^description:\s*(.+)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, "") ?? "";
+  const disableModelInvocation = frontmatter[1].match(/^disable-model-invocation:\s*(.+)$/m)?.[1]?.trim() === "true";
   if (!name) return undefined;
-  return { name, description };
+  return { name, description, disableModelInvocation };
 }
 
 function packageSource(entry: PackageEntry): string | undefined {
@@ -78,10 +82,10 @@ function resolvePackageInstallDir(source: string, packageManager: DefaultPackage
   return packageManager.getInstalledPath(source, "user");
 }
 
-async function collectPackageSkillFiles(packageDir: string, packageManager: DefaultPackageManager): Promise<string[]> {
+export async function collectPackageSkillFiles(packageDir: string, packageManager: DefaultPackageManager): Promise<string[]> {
   if (!existsSync(packageDir)) return [];
   const resolved = await packageManager.resolveExtensionSources([packageDir], { temporary: true });
-  return resolved.skills.filter((resource) => resource.enabled).map((resource) => resource.path).sort();
+  return resolved.skills.map((resource) => resource.path).sort();
 }
 
 async function discoverPackageSkills(
@@ -356,45 +360,170 @@ async function selectSkills(
   });
 }
 
-export default function setupSkillsExtension(pi: ExtensionAPI): void {
-  pi.registerCommand("skills", {
-    description: "Enable/disable local Pi skills with a multi-selection list",
-    handler: async (_args, ctx) => {
-      const settingsPath = getAgentSettingsPath();
-      let settings: SettingsShape;
-      try {
-        settings = readJsonIfExists<SettingsShape>(settingsPath, {});
-      } catch (error) {
-        ctx.ui.notify(`Could not read ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`, "error");
-        return;
-      }
+const CUSTOM_TYPE = "webui-skills-config";
 
-      const candidates = await discoverCandidates(settings, ctx.cwd);
-      if (candidates.length === 0) {
-        ctx.ui.notify("No skills found.", "warning");
-        return;
-      }
+type SkillsState = {
+  version?: number;
+  mode?: "explicit" | "inherit";
+  enabledSkills?: string[];
+  disabledSkills?: string[];
+};
 
-      const initial = candidates.map((candidate) => isEnabled(candidate, settings));
-      const selected = await selectSkills(ctx, candidates, initial);
-      if (!selected) {
-        ctx.ui.notify("Skill setup cancelled.", "info");
-        return;
-      }
+function lastBranchConfig(ctx: ExtensionContext): SkillsState | undefined {
+  let found: SkillsState | undefined;
+  for (const entry of ctx.sessionManager.getBranch()) {
+    if (entry.type === "custom" && entry.customType === CUSTOM_TYPE) found = entry.data as SkillsState;
+  }
+  return found;
+}
 
-      try {
-        writeJsonFile(settingsPath, applySelection(settings, candidates, selected));
-      } catch (error) {
-        ctx.ui.notify(`Could not write ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`, "error");
-        return;
-      }
-
-      const changed = candidates.filter((_, i) => initial[i] !== selected[i]).length;
-      ctx.ui.notify(`Skill setup saved (${changed} changed).`, "info");
-      if (changed > 0 && ctx.hasUI) {
-        const reload = await ctx.ui.select("Reload Pi now to apply skill changes?", ["Yes", "No"]);
-        if (reload === "Yes") await ctx.reload();
-      }
+function candidateAsSkill(candidate: SkillCandidate): Skill {
+  return {
+    name: candidate.name,
+    description: candidate.description,
+    filePath: candidate.skillPath,
+    baseDir: dirname(candidate.skillPath),
+    sourceInfo: {
+      path: candidate.skillPath,
+      source: candidate.packageSource ?? "auto",
+      scope: candidate.skillPath.includes(`${sep}.pi${sep}`) ? "project" : "user",
+      origin: candidate.packageSource ? "package" : "top-level",
     },
+    disableModelInvocation: candidate.disableModelInvocation,
+  } as Skill;
+}
+
+function stripSkillFrontmatter(content: string): string {
+  return content.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+export default function setupSkillsExtension(pi: ExtensionAPI): void {
+  let catalog: SkillCandidate[] = [];
+  let enabledSkills: Set<string> | null = null;
+  let legacyDisabledSkills = new Set<string>();
+  let runtimeBaseline: string[] | undefined;
+  let tuiActive = false;
+  let generation = 0;
+
+  const runtimeSkillNames = () => runtimeBaseline ??= pi.getCommands()
+    .filter((command) => command.source === "skill" && command.name.startsWith("skill:"))
+    .map((command) => command.name.slice("skill:".length));
+
+  async function refreshCatalog(ctx: ExtensionContext): Promise<void> {
+    const settings = readJsonIfExists<SettingsShape>(getAgentSettingsPath(), {});
+    catalog = await discoverCandidates(settings, ctx.cwd);
+  }
+
+  const isSkillEnabled = (name: string): boolean => enabledSkills instanceof Set
+    ? enabledSkills.has(name)
+    : runtimeSkillNames().includes(name) && !legacyDisabledSkills.has(name);
+
+  async function recompute(ctx: ExtensionContext, model = ctx.model): Promise<boolean> {
+    const requestedKey = model?.provider && model?.id ? `${model.provider}\0${model.id}` : "";
+    const currentGeneration = ++generation;
+    let defaults;
+    try {
+      defaults = await readResourceDefaults();
+      await refreshCatalog(ctx);
+    } catch (error) {
+      ctx.ui.notify(`Skill defaults could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return false;
+    }
+    const currentKey = ctx.model?.provider && ctx.model?.id ? `${ctx.model.provider}\0${ctx.model.id}` : "";
+    if (currentGeneration !== generation || currentKey !== requestedKey) return false;
+
+    const directive = branchResourceDirective(lastBranchConfig(ctx), "skills");
+    legacyDisabledSkills = new Set();
+    if (directive.pinned && directive.legacyDisabledNames !== null) {
+      enabledSkills = null;
+      legacyDisabledSkills = new Set(directive.legacyDisabledNames);
+    } else {
+      const resolved = directive.pinned
+        ? { names: directive.names || [] }
+        : resolveResourceSelection(defaults, "skills", model?.provider, model?.id, runtimeSkillNames());
+      enabledSkills = resolved.names === null ? null : new Set(resolved.names);
+    }
+    return true;
+  }
+
+  registerScopedResourceCommand(pi, {
+    commandName: "skills",
+    resourceType: "skills",
+    resourceLabel: "Skills",
+    selectionKey: "enabledSkills",
+    customType: CUSTOM_TYPE,
+    getVisibleNames: async (ctx: ExtensionContext) => {
+      await refreshCatalog(ctx);
+      return catalog.map((candidate) => candidate.name);
+    },
+    getRuntimeNames: async () => runtimeSkillNames(),
+    getEnabledNames: async () => {
+      if (enabledSkills instanceof Set) return [...enabledSkills];
+      return runtimeSkillNames().filter((name) => !legacyDisabledSkills.has(name));
+    },
+    recompute,
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    tuiActive = ctx.mode === "tui";
+    if (!tuiActive) return;
+    runtimeBaseline ??= runtimeSkillNames();
+    await recompute(ctx);
+  });
+  pi.on("session_tree", async (_event, ctx) => {
+    if (tuiActive && ctx.mode === "tui") await recompute(ctx);
+  });
+  pi.on("model_select", async (event, ctx) => {
+    if (tuiActive && ctx.mode === "tui") await recompute(ctx, event.model);
+  });
+  pi.on("session_shutdown", () => {
+    tuiActive = false;
+    generation += 1;
+  });
+  pi.on("input", async (event, ctx) => {
+    if (!tuiActive || ctx.mode !== "tui") return { action: "continue" };
+    const match = String(event.text || "").trim().match(/^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/i);
+    if (!match) return { action: "continue" };
+    const name = match[1];
+    if (!isSkillEnabled(name)) {
+      ctx.ui.notify(`Skill /skill:${name} is disabled by /skills.`, "warning");
+      return { action: "handled" };
+    }
+    if (runtimeSkillNames().includes(name)) return { action: "continue" };
+    const candidate = catalog.find((skill) => skill.name === name);
+    if (!candidate) return { action: "continue" };
+    try {
+      const body = stripSkillFrontmatter(readFileSync(candidate.skillPath, "utf8"));
+      const skillBlock = `<skill name="${escapeXml(name)}" location="${escapeXml(candidate.skillPath)}">\nReferences are relative to ${dirname(candidate.skillPath)}.\n\n${body}\n</skill>`;
+      return { action: "transform", text: match[2] ? `${skillBlock}\n\n${match[2]}` : skillBlock, images: event.images };
+    } catch (error) {
+      ctx.ui.notify(`Skill /skill:${name} could not be loaded: ${error instanceof Error ? error.message : String(error)}`, "error");
+      return { action: "handled" };
+    }
+  });
+  pi.on("before_agent_start", async (event) => {
+    if (!tuiActive) return undefined;
+    const runtimeSkills = Array.isArray(event.systemPromptOptions?.skills) ? event.systemPromptOptions.skills : [];
+    const skillsByName = new Map<string, Skill>(catalog.map((candidate) => [candidate.name, candidateAsSkill(candidate)]));
+    for (const skill of runtimeSkills) skillsByName.set(skill.name, skill);
+    const allSkills = [...skillsByName.values()];
+    const filtered = allSkills.filter((skill) => isSkillEnabled(skill.name) && !skill.disableModelInvocation);
+    const disabledNames = allSkills.filter((skill) => !isSkillEnabled(skill.name)).map((skill) => skill.name);
+    const nextSection = formatSkillsForPrompt(filtered);
+    let nextPrompt = event.systemPrompt;
+    if (nextPrompt.includes("<available_skills>")) {
+      nextPrompt = nextPrompt.replace(/\n?The following skills provide[\s\S]*?<\/available_skills>\n?/m, nextSection ? `\n${nextSection}\n` : "\n");
+    } else if (nextSection) {
+      nextPrompt = `${nextPrompt}\n\n${nextSection}`;
+    }
+    for (const name of disabledNames) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      nextPrompt = nextPrompt.replace(new RegExp(`\\n?  <skill>\\n    <name>${escaped}<\\/name>[\\s\\S]*?  <\\/skill>`, "g"), "");
+    }
+    return { systemPrompt: nextPrompt };
   });
 }

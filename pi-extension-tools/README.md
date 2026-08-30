@@ -1,20 +1,18 @@
 # Tools for Pi
 
-Turn Pi tools on or off from an interactive selector.
+Choose which tools Pi can use for a session, by default, or with a specific model.
 
 ![Interactive active-tool manager](https://unpkg.com/@firstpick/pi-extension-tools/images/tools_v0.1.2.png)
 
 ## What you can do
 
-- Shows every tool available to the current Pi session.
-- Lets you turn individual tools on or off.
-- Uses an interactive selector instead of manual settings edits.
-- Makes the new tool selection visible immediately.
-- Turns on tools from newly installed extensions automatically, and tells you which ones.
+- Lists every tool available to the current Pi session.
+- Saves a selection for the current session branch.
+- Sets a global default or an exact provider/model profile.
+- Applies model profiles when the active model changes.
+- Keeps WebUI and TUI resource choices in sync.
 
 ## Install
-
-Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-tools
@@ -24,20 +22,18 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-Run `/tools`, select the tools Pi should be allowed to use, and save. Use the selector again whenever the task needs a different tool set.
+Run `/tools`, then choose where the selection applies:
 
-- `/tools` — open a TUI to enable/disable individual tools, then press `Ctrl+S` to save or `q` to cancel.
-- `/tools list` — print active/inactive tools grouped by source extension.
-- `/tools enable <tool...>` — enable one or more tools.
-- `/tools disable <tool...>` — disable one or more tools.
-- `/tools reset` — enable all currently available tools.
+- **Session only** changes the current session branch.
+- **Global default** applies when no session or model selection overrides it.
+- **Model default** applies to one exact provider/model pair.
+
+In the resource list, type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+A` to enable matching tools, `Ctrl+X` to clear matching tools, and `Ctrl+S` to save. `Escape` cancels.
 
 ## Before you start
 
-Install an extension that ships tools and those tools work right away. They are switched on the first time Pi starts after the install, and a short message names them.
-
-Tools you switched off yourself stay off. The selector remembers your choices, so only genuinely new tools are turned on for you.
+This extension is the sole owner of the TUI `/tools` command. WebUI presents the same saved scopes in its browser interface without registering another command.
 
 ## Technical details
 
-See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-tools/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.
+See [TECHNICAL.md](TECHNICAL.md) for scope precedence, storage, compatibility, and troubleshooting information.

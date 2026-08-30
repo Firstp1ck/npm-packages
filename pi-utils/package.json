@@ -27,7 +27,11 @@
     "./release-log": "./src/release-log.ts",
     "./ui": "./src/ui/working-indicator.ts",
     "./ui/live-output": "./src/ui/live-output.ts",
-    "./local-wiki": "./src/local-wiki.ts"
+    "./local-wiki": "./src/local-wiki.ts",
+    "./resource-management": "./src/resource-management.mjs",
+    "./tui-resource-selector": "./src/tui-resource-selector.mjs",
+    "./tui-model-profile-selector": "./src/tui-model-profile-selector.mjs",
+    "./scoped-resource-command": "./src/scoped-resource-command.mjs"
   },
   "license": "MIT",
   "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-utils#readme",
@@ -48,10 +52,11 @@
   },
   "scripts": {
     "check": "npm test",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/initial-prompt-estimate-state.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/reusable-utils.test.mjs"
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/initial-prompt-estimate-state.test.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types tests/reusable-utils.test.mjs && node tests/resource-management.test.mjs && node tests/scoped-resource-command.test.mjs && node tests/tui-resource-selector.test.mjs && node tests/tui-model-profile-selector.test.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "files": [
     "index.ts",

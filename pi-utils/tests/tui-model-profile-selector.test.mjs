@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
-import { TuiModelProfileSelectorComponent } from "../lib/tui-model-profile-selector.mjs";
+import { TuiModelProfileSelectorComponent } from "../src/tui-model-profile-selector.mjs";
 
 const theme = {
   fg: (_color, text) => text,

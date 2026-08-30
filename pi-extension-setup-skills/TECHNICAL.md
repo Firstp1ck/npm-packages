@@ -1,67 +1,29 @@
-# Technical reference: Setup Skills for Pi
+# Technical reference: Skills for Pi
 
-Advanced user setup, configuration, compatibility, security, and troubleshooting information.
+Advanced user setup, configuration, compatibility, and troubleshooting information.
 
-[Back to the human-friendly README](README.md)
+[Back to README](README.md)
 
-Adds `/skills`, an interactive Pi UI for enabling/disabling skills.
+## Command
 
-![Interactive skill manager](https://unpkg.com/@firstpick/pi-extension-setup-skills/images/setup_skills_v0.1.3.png)
+`/skills` opens the scope chooser in Pi's interactive TUI:
 
-## Usage
+1. **Session only**
+2. **Global default**
+3. **Model default**
 
-```text
-/skills
-```
+Session choices take precedence over an exact case-sensitive provider/model profile. A model profile takes precedence over the global default, which takes precedence over Pi's runtime skill set. **Use inherited defaults** removes the selected override. An empty saved selection intentionally enables no skills.
 
-Controls:
+The selector discovers skills from Pi's standard user and project locations and configured Pi packages. It keeps saved names that are temporarily unavailable so reinstalling a package does not silently erase a profile.
 
-- `↑` / `↓`: navigate
-- `Enter` / `Space`: toggle selected skill
-- Type: search/filter
-- `Esc` or `q`: cancel
-- `Ctrl+S`: save
+## Runtime behavior
 
-The command updates Pi settings and prompts for `/reload` after changes.
+The extension applies scoped skill choices in TUI mode. It updates the skill list in the system prompt, blocks explicit invocation of disabled skills, and can expand a selected installed skill even when Pi's base settings did not register its native `/skill:name` command.
 
-## What it manages
+Model changes and session-tree navigation recompute inherited choices immediately. No reload is required after saving.
 
-The extension discovers skills from Pi's standard local locations and configured Pi packages:
+## Storage and WebUI compatibility
 
-- `~/.pi/agent/skills`
-- `~/.agents/skills`
-- project `.pi/skills`
-- project `.agents/skills`
-- skills exposed by entries in `settings.json` `packages`
+Global and model selections use the shared resource defaults in `~/.pi/webui/settings.json`. Session selections use `webui-skills-config` entries on the active session branch. WebUI reads and writes the same data, but it does not register the TUI `/skills` command.
 
-## How your selection is saved
-
-Skills are enabled by default. Saving records only the ones you switched off, which is what keeps later installs working.
-
-For local skills, each deselected skill is written to the `skills` array in `~/.pi/agent/settings.json` as a `-` entry holding its full path:
-
-```json
-{
-  "skills": ["-/home/you/.pi/agent/skills/example/SKILL.md"]
-}
-```
-
-For package-bundled skills, the package entry is preserved. When you keep every skill in a package, the entry carries no `skills` filter at all, so skills added by a later package update load on their own. When you switch one off, only that skill is excluded:
-
-```json
-{
-  "packages": [
-    { "source": "npm:example-package", "skills": ["-skills/example/SKILL.md"] }
-  ]
-}
-```
-
-Entries you added yourself, such as an extra skills directory, are left untouched. When no opt-outs remain, the `skills` key is removed rather than left empty.
-
-## Upgrading from earlier versions
-
-Earlier versions saved the opposite way: a blanket `"!**"` that switched every skill off, plus one `+` entry per enabled skill. That made each newly installed skill invisible until you opened `/skills` again, and it pinned a fixed skill list onto every package entry.
-
-The list still reads those older settings correctly, so your current enabled and disabled skills appear as you left them. The first save converts them: `"!**"` is dropped, `+` entries for skills you kept are no longer needed, and pinned package lists become exclusions. No manual migration is required.
-
-If you deliberately want a deny-all baseline, add `"!**"` back to the `skills` array by hand. Note that the next save from `/skills` removes it again.
+The extension preserves unrelated settings and uses the same settings lock protocol as WebUI when writing resource defaults.

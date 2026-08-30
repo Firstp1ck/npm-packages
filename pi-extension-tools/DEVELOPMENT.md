@@ -1,11 +1,11 @@
 # Development guide: Tools for Pi
 
-Contributor-only implementation, API, architecture, testing, and maintenance information.
+Contributor-only implementation, testing, and maintenance information.
 
 [Back to README](README.md) · [Advanced user technical reference](TECHNICAL.md)
 
-## Persistence design
+## Resource lifecycle
 
-The global `tools.json` file is the cross-session source of truth. The extension also writes custom entries to the current Pi session branch for branch-history and diagnostic compatibility. Startup precedence is global file, then current branch state, then Pi’s current active-tool set.
+The extension owns `/tools` and applies tool state only in TUI mode. `@firstpick/pi-utils/scoped-resource-command` owns the shared Session, Global, and Model command flow. `@firstpick/pi-utils/resource-management` owns profile resolution and compatible settings writes.
 
-Keep persistence changes backward compatible with existing `active` and `inactive` lists.
+Use `webui-tools-config` for session branch entries so WebUI and TUI resume the same explicit or inherited choice. Capture Pi's runtime tool baseline before applying a saved selection. Do not let WebUI register a second `/tools` command.

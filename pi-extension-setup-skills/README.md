@@ -1,20 +1,18 @@
-# Setup Skills for Pi
+# Skills for Pi
 
-Choose which local Pi skills are enabled from one interactive list.
+Choose which skills Pi can use for a session, by default, or with a specific model.
 
 ![Interactive skill manager](https://unpkg.com/@firstpick/pi-extension-setup-skills/images/setup_skills_v0.1.3.png)
 
 ## What you can do
 
-- Lists locally available skills in one selector.
-- Shows which skills are currently enabled.
-- Lets you enable or disable several skills together.
-- Saves the resulting skill selection for Pi.
-- Keeps skills you install later working, without a second trip through the list.
+- Lists installed skills, including skills disabled in Pi settings.
+- Saves a selection for the current session branch.
+- Sets a global default or an exact provider/model profile.
+- Applies model profiles when the active model changes.
+- Keeps WebUI and TUI resource choices in sync.
 
 ## Install
-
-Install it through Pi:
 
 ```bash
 pi install npm:@firstpick/pi-extension-setup-skills
@@ -24,22 +22,18 @@ Restart Pi if the package does not appear in your current session.
 
 ## How to use it
 
-Run `/skills`, select the skills you want available, and save the selection. Reopen it whenever you want to change the enabled set.
+Run `/skills`, then choose where the selection applies:
 
-- `/skills`
-- `↑` / `↓`: navigate
-- `Enter` / `Space`: toggle selected skill
-- Type: search/filter
-- `Esc` or `q`: cancel
-- `Ctrl+S`: save
-The command updates Pi settings and prompts for `/reload` after changes.
+- **Session only** changes the current session branch.
+- **Global default** applies when no session or model selection overrides it.
+- **Model default** applies to one exact provider/model pair.
+
+In the resource list, type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+A` to enable matching skills, `Ctrl+X` to clear matching skills, and `Ctrl+S` to save. `Escape` cancels.
 
 ## Before you start
 
-Skills are available unless you switch them off. Install a skill package and it works straight away, and the same is true for a skill you drop into `~/.pi/agent/skills`. Only the skills you deselect here are recorded, so nothing you install later goes missing.
-
-If you used an older version of this extension, your first save cleans up the settings it wrote back then. Your enabled and disabled skills stay exactly as they are.
+This extension is the sole owner of the TUI `/skills` command. WebUI presents the same saved scopes in its browser interface without registering another command.
 
 ## Technical details
 
-See [TECHNICAL.md](https://github.com/Firstp1ck/pi-coding-agent-forge/blob/main/pi-extension-setup-skills/TECHNICAL.md) for complete commands, configuration, compatibility, security, and troubleshooting information.
+See [TECHNICAL.md](TECHNICAL.md) for scope precedence, storage, compatibility, and troubleshooting information.

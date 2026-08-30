@@ -22,13 +22,21 @@
       "./index.ts"
     ]
   },
+  "dependencies": {
+    "@firstpick/pi-utils": "^0.2.7"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "test": "bun test"
   },
   "files": [
     "index.ts",
     "images",
     "README.md",
+    "TECHNICAL.md",
+    "DEVELOPMENT.md",
     "LICENSE"
   ]
 }
