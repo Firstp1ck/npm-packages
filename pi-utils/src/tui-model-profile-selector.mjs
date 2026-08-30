@@ -64,7 +64,7 @@ export class TuiModelProfileSelectorComponent extends Container {
 
   footer() {
     const position = this.filteredModels.length ? `${this.selectedIndex + 1}/${this.filteredModels.length}` : "0/0";
-    return this.theme.fg("dim", `  ↑/↓ navigate · Enter select · Ctrl+C clear/cancel · Esc cancel · ${position}`);
+    return this.theme.fg("dim", `  ↑/↓ navigate · Enter select · Esc Back · Ctrl+C Close · ${position}`);
   }
 
   refresh() {
@@ -152,12 +152,7 @@ export class TuiModelProfileSelectorComponent extends Container {
       return;
     }
     if (matchesKey(data, Key.ctrl("c"))) {
-      if (this.searchInput.getValue()) {
-        this.searchInput.setValue("");
-        this.refresh();
-      } else {
-        this.callbacks.onCancel();
-      }
+      (this.callbacks.onExit ?? this.callbacks.onCancel)();
       return;
     }
     if (matchesKey(data, Key.escape)) {
@@ -178,6 +173,7 @@ export async function selectTuiModelProfile(ctx, config) {
   return await ctx.ui.custom((tui, theme, _keybindings, done) => new TuiModelProfileSelectorComponent(config, theme, {
     onSelect: done,
     onCancel: () => done(undefined),
+    onExit: () => done(null),
     onRender: () => tui.requestRender(),
   }));
 }

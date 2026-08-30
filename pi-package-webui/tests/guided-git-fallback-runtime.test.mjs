@@ -34,6 +34,13 @@ function writeBranchArtifact() {
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "staged-branch-name.txt"), "feat/native-root-artifacts\\n");
 }
+function generationProfile(message) {
+  const prefix = "--firstpick-webui-generation-profile=";
+  const token = String(message || "").split(/\\s+/u).find((part) => part.startsWith(prefix));
+  if (!token) return null;
+  try { return JSON.parse(Buffer.from(token.slice(prefix.length), "base64url").toString("utf8")); }
+  catch { return null; }
+}
 function failNativeCommand(command, error, notificationError = error) {
   const commandName = String(command.message || "").split(/\\s+/u, 1)[0].replace(/^\\//u, "");
   send({
@@ -54,7 +61,16 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
   let command;
   try { command = JSON.parse(line); } catch { return; }
   if (!command?.id || !command?.type) return;
-  log({ type: command.type, modelId: command.modelId, level: command.level, message: command.message, activeModel: activeModel.id });
+  const profile = generationProfile(command.message);
+  log({
+    type: command.type,
+    modelId: command.modelId,
+    level: command.level,
+    message: command.message,
+    activeModel: activeModel.id,
+    generationModel: profile?.modelId,
+    generationThinkingLevel: profile?.thinkingLevel,
+  });
   const response = { type: "response", id: command.id, command: command.type, success: true };
   switch (command.type) {
     case "get_state":
@@ -84,7 +100,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
     case "prompt":
       if (scenario === "process-loss") process.exit(12);
       if (scenario === "concurrent" || scenario === "cancellation") await new Promise((resolve) => setTimeout(resolve, 150));
-      if (scenario === "provider-failure" && activeModel.id === "primary") {
+      if (scenario === "provider-failure" && profile?.modelId === "primary") {
         failNativeCommand(command, "FIRSTPICK_GUIDED_GIT_PROVIDER_FAILURE: active model generation failed", "The active model provider failed");
         send(response);
         break;
@@ -116,7 +132,7 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
       }
       if (!["unsafe-stale-artifact", "cancellation"].includes(scenario)) {
         if (String(command.message || "").startsWith("/git-branch-name")) writeBranchArtifact();
-        else writeCommitArtifacts(activeModel.id);
+        else writeCommitArtifacts(profile?.modelId || activeModel.id);
       }
       send({ ...response, data: { output: "native extension command completed" } });
       break;
@@ -238,7 +254,7 @@ try {
   await runScenario("success", async ({ request, readLog, cwd }) => {
     const result = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
     assert.equal(result.status, 200);
-    assert.equal(result.body.data.message, "/git-staged-msg en auto");
+    assert.match(result.body.data.message, /^\/git-staged-msg en auto --firstpick-webui-generation-profile=/u);
     assert.equal(result.body.data.fallbackUsed, false);
     assert.equal(await readFile(path.join(cwd, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat: primary native generation\n");
     const correlated = await request(`/api/git-workflow/message?generationId=${encodeURIComponent(result.body.data.generationId)}`);
@@ -246,9 +262,11 @@ try {
     const log = await readLog();
     assert.ok(log.some((entry) => entry.type === "get_commands"));
     assert.equal(log.filter((entry) => entry.type === "prompt").length, 1);
-    const primary = log.findIndex((entry) => entry.type === "set_model" && entry.modelId === "primary");
-    const restore = log.findIndex((entry) => entry.type === "set_model" && entry.modelId === "original");
-    assert.ok(primary >= 0 && restore > primary, "the active model must be restored after native artifact verification");
+    const prompt = log.find((entry) => entry.type === "prompt");
+    assert.equal(prompt.activeModel, "original", "generation must not change the parent session model");
+    assert.equal(prompt.generationModel, "primary");
+    assert.equal(prompt.generationThinkingLevel, "low");
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
   });
 
   await runScenario("oversized-success", async ({ request, readLog, cwd }) => {
@@ -261,9 +279,9 @@ try {
     assert.equal(correlated.status, 200);
     assert.equal(correlated.body.data.ready, true);
     const log = await readLog();
-    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary"]);
-    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 0);
-    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "original").length, 1);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.generationModel), ["primary"]);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["original"]);
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
   });
 
   await runScenario("nested-cwd", async ({ request, cwd, tabCwd }) => {
@@ -293,9 +311,10 @@ try {
     assert.equal(result.body.data.fallbackUsed, true);
     assert.equal(await readFile(path.join(cwd, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat: fallback native generation\n");
     const log = await readLog();
-    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary", "fallback"]);
-    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 1);
-    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "original").length, 1);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.generationModel), ["primary", "fallback"]);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.generationThinkingLevel), ["low", "off"]);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["original", "original"]);
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
   });
 
   for (const [scenario, kind, expectedError] of [
@@ -312,8 +331,9 @@ try {
       assert.match(result.body.error, expectedError);
       if (scenario === "above-capture-input") assert.doesNotMatch(result.body.error, /message files? to be refreshed/iu);
       const log = await readLog();
-      assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary"]);
-      assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 0);
+      assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.generationModel), ["primary"]);
+      assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["original"]);
+      assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
     });
   }
 
@@ -325,16 +345,18 @@ try {
     assert.equal(cancelled.body.data.cancelled, true);
     assert.notEqual((await generation).status, 200);
     const log = await readLog();
-    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary"]);
-    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 0);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.generationModel), ["primary"]);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["original"]);
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
   });
 
   await runScenario("process-loss", async ({ request, readLog }) => {
     const result = await request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } });
     assert.notEqual(result.status, 200);
     const log = await readLog();
-    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["primary"]);
-    assert.equal(log.filter((entry) => entry.type === "set_model" && entry.modelId === "fallback").length, 0);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.generationModel), ["primary"]);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["original"]);
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
   });
 
   await runScenario("prompt-only", async ({ request, readLog }) => {
@@ -342,7 +364,7 @@ try {
     assert.equal(result.status, 409);
     assert.match(result.body.error, /extension command.*Same-named prompt templates are not used/iu);
     const log = await readLog();
-    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "prompt").length, 0);
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level" || entry.type === "prompt").length, 0);
   });
 
   await runScenario("concurrent", async ({ request, readLog }) => {
@@ -351,7 +373,10 @@ try {
       request("/api/git-workflow/generate", { method: "POST", body: { kind: "commit" } }),
     ]);
     assert.deepEqual([left.status, right.status].sort((a, b) => a - b), [200, 409]);
-    assert.equal((await readLog()).filter((entry) => entry.type === "prompt").length, 1);
+    const log = await readLog();
+    assert.equal(log.filter((entry) => entry.type === "prompt").length, 1);
+    assert.deepEqual(log.filter((entry) => entry.type === "prompt").map((entry) => entry.activeModel), ["original"]);
+    assert.equal(log.filter((entry) => entry.type === "set_model" || entry.type === "set_thinking_level").length, 0);
   });
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });

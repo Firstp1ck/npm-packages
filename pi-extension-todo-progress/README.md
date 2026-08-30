@@ -25,9 +25,9 @@ Restart Pi if the package does not appear in your current session.
 
 Give Pi a request with several steps. The checklist appears automatically, tracks the active item, and clears after the completed response.
 
-- `/goal <one-sentence goal>` — set the current todo-progress goal directly.
-- `/goal` — open an interactive prompt to set the current todo-progress goal.
-- `/todo-progress-status` — show whether the widget is loaded, visible, and tracking a goal/list.
+- Use `/goal <one-sentence goal>` to set the current todo-progress goal and start the agent with it.
+- Use `/goal` to enter a goal in a prompt, then start the agent with it.
+- Use `/todo-progress-status` to check whether the widget is loaded, visible, and tracking a goal or list.
 
 ## Technical details
 

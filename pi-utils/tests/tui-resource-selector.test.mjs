@@ -10,6 +10,7 @@ const theme = {
 function createSelector(enabledResourceNames = ["alpha", "gamma"]) {
   const saved = [];
   let cancelled = 0;
+  let exited = 0;
   const selector = new TuiResourceSelectorComponent(
     {
       title: "Tools Configuration",
@@ -21,18 +22,32 @@ function createSelector(enabledResourceNames = ["alpha", "gamma"]) {
     {
       onSave: (selection) => saved.push(selection),
       onCancel: () => cancelled++,
+      onExit: () => exited++,
     },
   );
-  return { selector, saved, cancelled: () => cancelled };
+  return { selector, saved, cancelled: () => cancelled, exited: () => exited };
 }
 
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 
 {
+  const { selector } = createSelector();
+  const output = selector.render(100).join("\n");
+  const alphaRow = selector.render(100).find((line) => line.includes("alpha"));
+  const betaRow = selector.render(100).find((line) => line.includes("beta"));
+
+  assert.match(output, /Ctrl\+X Disable all · Ctrl\+A Enable all · Ctrl\+S save · Esc Back · Ctrl\+C Close/);
+  assert.doesNotMatch(output, /[✓✗]/);
+  assert.match(alphaRow, /alpha\s{2}enabled/);
+  assert.match(betaRow, /beta\s{3}disabled/);
+  assert.equal(alphaRow.indexOf("enabled"), betaRow.indexOf("disabled"), "status values should share one column");
+}
+
+{
   const { selector, saved } = createSelector();
   selector.handleInput("\x1b[B");
   selector.handleInput("\r");
-  assert.match(selector.render(100).join("\n"), /3\/3 enabled.*\(unsaved\)/);
+  assert.match(selector.render(100).join("\n"), /3\/3 enabled[\s\S]*\(unsaved\)/);
   selector.handleInput("\x13");
   assert.deepEqual(saved, [["alpha", "beta", "gamma"]], "Ctrl+S should save the current explicit selection");
 }
@@ -54,21 +69,20 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 }
 
 {
-  const { selector, cancelled } = createSelector();
+  const { selector, cancelled, exited } = createSelector();
   selector.handleInput("z");
   selector.handleInput("z");
   assert.match(selector.render(100).join("\n"), /No matching resources/);
   selector.handleInput("\x03");
-  assert.equal(selector.getSearchInput().getValue(), "", "Ctrl+C should clear a non-empty search before cancelling");
+  assert.equal(selector.getSearchInput().getValue(), "zz", "Ctrl+C should close without clearing search first");
   assert.equal(cancelled(), 0);
-  selector.handleInput("\x03");
-  assert.equal(cancelled(), 1, "Ctrl+C on an empty search should cancel");
+  assert.equal(exited(), 1, "Ctrl+C should close the setup flow directly");
 }
 
 {
   const { selector, cancelled } = createSelector();
   selector.handleInput("\x1b");
-  assert.equal(cancelled(), 1, "Escape should cancel without saving");
+  assert.equal(cancelled(), 1, "Escape should return without saving");
 }
 
 console.log("tui-resource-selector.test.mjs passed");

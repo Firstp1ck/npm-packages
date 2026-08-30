@@ -28,7 +28,7 @@ Run `/tools`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-In the resource list, type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+A` to enable matching tools, `Ctrl+X` to clear matching tools, and `Ctrl+S` to save. `Escape` cancels.
+In the resource list, each tool shows `enabled` or `disabled` in a separate status column. Type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
 
 ## Before you start
 

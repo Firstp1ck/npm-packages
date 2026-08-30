@@ -79,6 +79,7 @@ function createContext(root, options = {}) {
     mode: options.mode ?? "tui",
     hasUI: options.hasUI ?? true,
     model: options.model,
+    thinkingLevel: options.thinkingLevel,
     modelRegistry: options.modelRegistry ?? {},
     isIdle: () => options.idle ?? true,
     hasPendingMessages: () => options.pending ?? false,
@@ -175,6 +176,10 @@ function requestEvidence(request) {
 
 function chunkSummary(summary) {
   return summary;
+}
+
+function webuiGenerationProfileArgument(profile) {
+  return `--firstpick-webui-generation-profile=${Buffer.from(JSON.stringify({ version: 1, ...profile }), "utf8").toString("base64url")}`;
 }
 
 const validNativeCommitOutput = "<<<SHORT>>>\nfeat(core): handle large staged changes\n<<<LONG>>>\nfeat(core): handle large staged changes\n- feat: synthesize complete staged evidence\n<<<END>>>";
@@ -672,6 +677,153 @@ test("native RPC generation invokes the active model directly and writes correla
   assert.ok(harness.notifications.every(({ message }) => !/prompt template|parent-agent tools/u.test(message) || /No parent-agent tools or prompt template are used/u.test(message)));
 });
 
+test("WebUI generation uses its configured model without changing the parent session model or thinking level", async () => {
+  const root = await repository("native-rpc-isolated-model");
+  await stageTracked(root, "isolated generation model\n");
+  const parentModel = { id: "parent-session-model", provider: "parent-provider", reasoning: true };
+  const generationModel = { id: "git-writing-model", provider: "generation-provider", reasoning: true };
+  const calls = [];
+  const isolatedOutputs = [validNativeCommitOutput, "<<<BRANCH>>>\nfeat/use-isolated-generation\n<<<END_BRANCH>>>"];
+  const provider = {
+    streamSimple(model, request, options) {
+      calls.push({ model, request, options });
+      return { result: async () => assistantResponse(isolatedOutputs.shift()) };
+    },
+  };
+  const modelRegistry = {
+    find(providerId, modelId) {
+      return providerId === generationModel.provider && modelId === generationModel.id ? generationModel : undefined;
+    },
+    getProvider(providerId) {
+      return providerId === generationModel.provider ? provider : undefined;
+    },
+    async getApiKeyAndHeaders(model) {
+      assert.equal(model, generationModel);
+      return { ok: true, apiKey: "fixture-key", headers: { "x-fixture": "guided-git" }, env: { FIXTURE: "1" } };
+    },
+    async complete() {
+      throw new Error("isolated WebUI generation must not use the active-model completion path");
+    },
+  };
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "rpc",
+    model: parentModel,
+    thinkingLevel: "high",
+    modelRegistry,
+  });
+  const profile = webuiGenerationProfileArgument({
+    provider: generationModel.provider,
+    modelId: generationModel.id,
+    thinkingLevel: "low",
+  });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler(`en auto ${profile}`, harness.ctx);
+  await commands.get(BRANCH_GENERATION_COMMAND_NAME).handler(profile, harness.ctx);
+
+  assert.equal(harness.ctx.model, parentModel);
+  assert.equal(harness.ctx.thinkingLevel, "high");
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(({ model }) => model === generationModel));
+  assert.ok(calls.every(({ options }) => options.reasoning === "low"));
+  assert.equal(calls[0].options.apiKey, "fixture-key");
+  assert.deepEqual(calls[0].options.headers, { "x-fixture": "guided-git" });
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"), "feat(core): handle large staged changes\n");
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-branch-name.txt"), "utf8"), "feat/use-isolated-generation\n");
+  assert.ok(harness.notifications.some(({ message }) => /configured generation model/u.test(message)));
+});
+
+test("a private WebUI generation profile cannot override the active model in TUI mode", async () => {
+  const root = await repository("native-tui-reject-isolated-profile");
+  await stageTracked(root, "keep the active TUI model\n");
+  const parentModel = { id: "parent-tui-model", provider: "parent-provider", reasoning: true };
+  let registryCalls = 0;
+  const { commands } = extensionRegistration();
+  const harness = createContext(root, {
+    mode: "tui",
+    model: parentModel,
+    thinkingLevel: "high",
+    modelRegistry: {
+      find() { registryCalls += 1; return { id: "other-model", provider: "other-provider", reasoning: true }; },
+      getProvider() { registryCalls += 1; return undefined; },
+      async getApiKeyAndHeaders() { registryCalls += 1; return { ok: false, error: "must not authenticate" }; },
+      async complete() { registryCalls += 1; throw new Error("must not generate"); },
+    },
+  });
+  const profile = webuiGenerationProfileArgument({ provider: "other-provider", modelId: "other-model", thinkingLevel: "low" });
+
+  await commands.get(COMMIT_GENERATION_COMMAND_NAME).handler(`en auto ${profile}`, harness.ctx);
+
+  assert.equal(registryCalls, 0);
+  assert.equal(harness.ctx.model, parentModel);
+  assert.equal(harness.ctx.thinkingLevel, "high");
+  assert.ok(harness.notifications.some(({ message }) => /WebUI generation profile is invalid/u.test(message)));
+  await assert.rejects(readFile(path.join(root, "dev", "COMMIT", "staged-commit-short.txt"), "utf8"));
+});
+
+test("session shutdown releases isolated generation ownership when authentication ignores cancellation", async () => {
+  const root = await repository("native-rpc-isolated-auth-cancel");
+  await stageTracked(root, "cancel isolated authentication\n");
+  const generationModel = { id: "isolated-auth-model", provider: "isolated-provider", reasoning: true };
+  let authStartedResolve;
+  const authStarted = new Promise((resolve) => { authStartedResolve = resolve; });
+  let providerCalls = 0;
+  const modelRegistry = {
+    find(providerId, modelId) {
+      return providerId === generationModel.provider && modelId === generationModel.id ? generationModel : undefined;
+    },
+    getProvider(providerId) {
+      if (providerId !== generationModel.provider) return undefined;
+      return {
+        streamSimple() {
+          providerCalls += 1;
+          throw new Error("provider must not start after authentication cancellation");
+        },
+      };
+    },
+    async getApiKeyAndHeaders() {
+      authStartedResolve();
+      return await new Promise(() => {});
+    },
+    async complete() {
+      return assistantResponse("<<<BRANCH>>>\nfeat/after-auth-cancel\n<<<END_BRANCH>>>");
+    },
+  };
+  const { commands, handlers } = extensionRegistration();
+  const first = createContext(root, {
+    mode: "rpc",
+    model: { id: "parent-model", provider: "parent-provider" },
+    modelRegistry,
+  });
+  const profile = webuiGenerationProfileArgument({
+    provider: generationModel.provider,
+    modelId: generationModel.id,
+    thinkingLevel: "low",
+  });
+
+  const running = commands.get(COMMIT_GENERATION_COMMAND_NAME).handler(`en auto ${profile}`, first.ctx);
+  await authStarted;
+  await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "reload" }, first.ctx);
+  await assert.rejects(
+    Promise.race([
+      running,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("isolated auth cancellation did not settle")), 250)),
+    ]),
+    /cancelled/u,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(providerCalls, 0);
+
+  const second = createContext(root, {
+    mode: "rpc",
+    model: { id: "parent-model", provider: "parent-provider" },
+    modelRegistry,
+  });
+  await commands.get(BRANCH_GENERATION_COMMAND_NAME).handler("", second.ctx);
+  assert.equal(await readFile(path.join(root, "dev", "COMMIT", "staged-branch-name.txt"), "utf8"), "feat/after-auth-cancel\n");
+  assert.ok(second.notifications.every(({ message }) => !/generation is already active/u.test(message)));
+});
+
 test("native commit RPC analyzes every oversized staged chunk sequentially before one synthesis", async () => {
   const root = await repository("native-rpc-oversized-success");
   await stageTracked(root, oversizedStagedContent);
@@ -882,15 +1034,36 @@ test("native PR RPC generation writes the encoded branch artifact without prompt
   git(root, "add", "--", "pr.txt");
   git(root, "commit", "-m", "feat: add pull request content");
   let completeCalls = 0;
+  const isolatedCalls = [];
+  const parentModel = { id: "native-pr-model", provider: "test-provider" };
+  const generationModel = { id: "isolated-pr-model", provider: "isolated-provider", reasoning: true };
+  const directBody = "<<<PR_BODY>>>\n## Summary\n\nAdds native pull request generation.\n\n## Verification\n\nVerification was not supplied.\n<<<END_PR_BODY>>>";
+  const isolatedBody = "<<<PR_BODY>>>\n## Summary\n\nUses the configured pull request model independently.\n\n## Verification\n\nVerification was not supplied.\n<<<END_PR_BODY>>>";
   const { commands } = extensionRegistration();
   const harness = createContext(root, {
     mode: "rpc",
-    model: { id: "native-pr-model", provider: "test-provider" },
+    model: parentModel,
+    thinkingLevel: "high",
     modelRegistry: {
       async complete(_model, request) {
         completeCalls += 1;
         assert.match(request.systemPrompt, /reviewer-focused pull request description in German/u);
-        return assistantResponse("<<<PR_BODY>>>\n## Summary\n\nAdds native pull request generation.\n\n## Verification\n\nVerification was not supplied.\n<<<END_PR_BODY>>>");
+        return assistantResponse(directBody);
+      },
+      find(providerId, modelId) {
+        return providerId === generationModel.provider && modelId === generationModel.id ? generationModel : undefined;
+      },
+      getProvider(providerId) {
+        if (providerId !== generationModel.provider) return undefined;
+        return {
+          streamSimple(model, request, options) {
+            isolatedCalls.push({ model, request, options });
+            return { result: async () => assistantResponse(isolatedBody) };
+          },
+        };
+      },
+      async getApiKeyAndHeaders() {
+        return { ok: true, apiKey: "isolated-pr-key" };
       },
     },
   });
@@ -900,6 +1073,22 @@ test("native PR RPC generation writes the encoded branch artifact without prompt
   assert.equal(
     await readFile(path.join(root, "dev", "PR", "feat%2Fnative-pr.md"), "utf8"),
     "## Summary\n\nAdds native pull request generation.\n\n## Verification\n\nVerification was not supplied.\n",
+  );
+
+  const profile = webuiGenerationProfileArgument({
+    provider: generationModel.provider,
+    modelId: generationModel.id,
+    thinkingLevel: "low",
+  });
+  await commands.get(PR_GENERATION_COMMAND_NAME).handler(`de ${profile}`, harness.ctx);
+  assert.equal(isolatedCalls.length, 1);
+  assert.equal(isolatedCalls[0].model, generationModel);
+  assert.equal(isolatedCalls[0].options.reasoning, "low");
+  assert.equal(harness.ctx.model, parentModel);
+  assert.equal(harness.ctx.thinkingLevel, "high");
+  assert.equal(
+    await readFile(path.join(root, "dev", "PR", "feat%2Fnative-pr.md"), "utf8"),
+    "## Summary\n\nUses the configured pull request model independently.\n\n## Verification\n\nVerification was not supplied.\n",
   );
   await assert.rejects(readFile(path.join(root, "dev", "PR", "feat", "native-pr.md"), "utf8"));
 });

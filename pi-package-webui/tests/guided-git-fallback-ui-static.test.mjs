@@ -51,7 +51,7 @@ assert.match(app, /generationKind: "commit"[\s\S]*generationKind: "branch"[\s\S]
 assert.match(app, /branch-name\$\{query\}[\s\S]*pr-description\$\{query\}/, "branch and PR artifact reads should send their exact generation IDs");
 
 assert.match(readme, /fallback model and its own reasoning effort[\s\S]*tries the fallback once[\s\S]*stopped Pi process do not trigger fallback/i, "README should explain the optional fallback and essential limits");
-assert.match(technical, /## Guided Git generation profiles[\s\S]*strict one-retry policy[\s\S]*model and reasoning effort are restored[\s\S]*dead Pi process cannot run the fallback/i, "technical reference should document configuration and operational limits");
+assert.match(technical, /## Guided Git generation profiles[\s\S]*strict one-retry policy[\s\S]*active model and reasoning effort remain unchanged[\s\S]*dead Pi process cannot run the fallback/i, "technical reference should document configuration and operational limits");
 assert.match(development, /### Fallback browser\/runtime contract[\s\S]*fallbackUsed: true[\s\S]*webui_git_workflow_generation_fallback_started[\s\S]*never sends a retry/, "development guide should preserve the response/event and browser ownership contract");
 
 assert.match(html, /data-app-src="\/app\.js\?v=182"/, "the changed browser app should use the next query revision");

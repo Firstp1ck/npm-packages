@@ -10,7 +10,7 @@ Advanced user guidance for native generation, the Pi TUI workflow, WebUI activat
 - Node.js 22.19 or newer
 - Git available on `PATH`
 - A normal, non-bare Git worktree on an attached branch
-- An active model for generation commands
+- An active model for direct generation commands, or a valid configured model for browser-launched generation
 - A compatible WebUI RPC session for browser activation
 
 One extension provides the workflow launcher and all three generation commands. No additional prompt package is required.
@@ -39,7 +39,7 @@ The commands generate files only. They do not stage, commit, create or switch br
 
 ## Native generation and privacy
 
-Each generation command calls the active Pi model directly. It does not expand a slash-prompt template, send a parent-agent message, or enter an agent tool loop. The command shows the active provider and model before sending data.
+Each generation command calls its selected model directly. Commands invoked normally use the active Pi model. Browser-launched commands use the model saved in Guided Git Setup through an isolated provider request, without changing the parent tab's active model or reasoning effort. The command does not expand a slash-prompt template, send a parent-agent message, or enter an agent tool loop, and it shows the selected provider and model before sending data.
 
 Only the complete bounded context needed for the artifact is sent:
 
@@ -47,7 +47,7 @@ Only the complete bounded context needed for the artifact is sent:
 - branch generation sends the complete staged diff and may also send the validated generated commit files when both exist; and
 - PR generation sends the current branch/base identities, complete bounded commit list and diff, and an optional `.github/PULL_REQUEST_TEMPLATE.md`.
 
-Git content, filenames, commit text, templates, and generated chunk summaries are marked as untrusted data. They can still contain private information. Do not invoke generation unless sharing that context with the active model provider is acceptable.
+Git content, filenames, commit text, templates, and generated chunk summaries are marked as untrusted data. They can still contain private information. Do not invoke generation unless sharing that context with the selected model provider is acceptable.
 
 `/git-staged-msg` requires a complete valid UTF-8 staged diff and captures at most 16 MiB. At or below 1 MiB, it sends one direct request. Above 1 MiB, it divides the complete diff into UTF-8-safe chunks of at most 512 KiB and analyzes them sequentially. Each accepted summary is limited to 16 KiB and may use any non-empty safe plain-text presentation; delimiters and layout are guidance only. Chunk-summary requests also carry a 4,096-token provider output ceiling; commit synthesis and correction use an 8,192-token ceiling, with the byte parser remaining authoritative. The final synthesis sends the ordered summaries, not the full diff again. At the 16 MiB ceiling, UTF-8 boundary handling permits at most 33 analysis requests, followed by one synthesis request. The command reports this multi-request work before it starts and reports when analysis is complete.
 
@@ -108,7 +108,7 @@ Manual message entry uses Pi's native editor and needs no model. Optional TUI ge
 
 Push is available only while HEAD still equals the commit created by the workflow. The exact remote, branch, and immutable object-ID refspec are shown before confirmation. Force options are never used and uncertain push outcomes are never retried automatically.
 
-In a compatible WebUI RPC session, `/git-guided-workflow` emits a one-shot activation request for the originating tab. The activation runs no Git command, calls no model, and includes no repository path or Git data. Browser generation requires the three RPC-capable extension commands from this package; same-named prompt templates are not accepted as the native generation path. The WebUI temporarily selects its configured generation model and effort, invokes the native command, verifies the correlated artifact, and restores the prior profile.
+In a compatible WebUI RPC session, `/git-guided-workflow` emits a one-shot activation request for the originating tab. The activation runs no Git command, calls no model, and includes no repository path or Git data. Browser generation requires the three RPC-capable extension commands from this package; same-named prompt templates are not accepted as the native generation path. The WebUI passes its configured generation profile in a private extension-command argument. The extension validates that profile, invokes the selected provider independently, and writes the correlated artifact without switching or restoring the parent tab's active model or reasoning effort.
 
 ## Troubleshooting
 
@@ -118,7 +118,7 @@ Confirm that the originating tab is idle, has no queued messages, and lists `/gi
 
 ### Generation is unavailable
 
-Select an active model and confirm that the session is idle. For commit or branch generation, stage at least one change. If `/git-staged-msg` exceeds 16 MiB, `/git-branch-name` exceeds 1 MiB, `/pr` exceeds its 1 MiB combined cap, or required input is not UTF-8, reduce the input or write the artifact manually. If large-diff analysis fails partway through, fix the reported provider, cancellation, or invalid-summary problem and invoke the command again; no partial artifact is installed and completed summaries are not saved across commands.
+For a direct command, select an active model. For browser generation, verify the model saved in Guided Git Setup is still authenticated and available. Confirm that the session is idle. For commit or branch generation, stage at least one change. If `/git-staged-msg` exceeds 16 MiB, `/git-branch-name` exceeds 1 MiB, `/pr` exceeds its 1 MiB combined cap, or required input is not UTF-8, reduce the input or write the artifact manually. If large-diff analysis fails partway through, fix the reported provider, cancellation, or invalid-summary problem and invoke the command again; no partial artifact is installed and completed summaries are not saved across commands.
 
 ### PR generation cannot find a base
 

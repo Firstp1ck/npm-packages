@@ -10,6 +10,7 @@ const theme = {
 function createSelector(config) {
   const selected = [];
   let cancelled = 0;
+  let exited = 0;
   const selector = new TuiModelProfileSelectorComponent(
     {
       title: "Tools Model Profile",
@@ -21,9 +22,10 @@ function createSelector(config) {
     {
       onSelect: (model) => selected.push(model),
       onCancel: () => cancelled++,
+      onExit: () => exited++,
     },
   );
-  return { selector, selected, cancelled: () => cancelled };
+  return { selector, selected, cancelled: () => cancelled, exited: () => exited };
 }
 
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
@@ -77,17 +79,16 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 }
 
 {
-  const { selector, cancelled } = createSelector({
+  const { selector, cancelled, exited } = createSelector({
     models: [{ provider: "alpha", id: "one", name: "One" }],
     activeModelKey: "",
   });
   for (const character of "missing") selector.handleInput(character);
   assert.match(selector.render(100).join("\n"), /No matching models/);
   selector.handleInput("\x03");
-  assert.equal(selector.getSearchInput().getValue(), "", "Ctrl+C should clear search before cancelling");
+  assert.equal(selector.getSearchInput().getValue(), "missing", "Ctrl+C should close without clearing search first");
   assert.equal(cancelled(), 0);
-  selector.handleInput("\x03");
-  assert.equal(cancelled(), 1);
+  assert.equal(exited(), 1, "Ctrl+C should close the setup flow directly");
 }
 
 {
@@ -95,8 +96,9 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
     models: [{ provider: "alpha", id: "one", name: "One" }],
     activeModelKey: "",
   });
+  assert.match(selector.render(100).join("\n"), /Esc Back · Ctrl\+C Close/);
   selector.handleInput("\x1b");
-  assert.equal(cancelled(), 1, "Escape should cancel model profile selection");
+  assert.equal(cancelled(), 1, "Escape should return from model profile selection");
 }
 
 console.log("tui-model-profile-selector.test.mjs passed");

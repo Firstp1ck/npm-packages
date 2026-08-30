@@ -16,6 +16,7 @@ export class TuiResourceSelectorComponent extends Container {
     this.filteredResources = [...this.resources];
     this.selectedIndex = 0;
     this.maxVisible = 10;
+    this.statusColumnOffset = Math.max(0, ...this.resources.map((name) => name.length));
     this.isDirty = false;
     this._focused = false;
 
@@ -49,7 +50,7 @@ export class TuiResourceSelectorComponent extends Container {
   }
 
   footer() {
-    const text = `  Enter toggle · Ctrl+A all · Ctrl+X clear · Ctrl+S save · ${this.enabled.size}/${this.resources.length} enabled`;
+    const text = `  Enter toggle · Ctrl+X Disable all · Ctrl+A Enable all · Ctrl+S save · Esc Back · Ctrl+C Close · ${this.enabled.size}/${this.resources.length} enabled`;
     return this.isDirty ? `${this.theme.fg("dim", text)} ${this.theme.fg("warning", "(unsaved)")}` : this.theme.fg("dim", text);
   }
 
@@ -78,9 +79,12 @@ export class TuiResourceSelectorComponent extends Container {
       const name = this.filteredResources[index];
       const selected = index === this.selectedIndex;
       const prefix = selected ? this.theme.fg("accent", "→ ") : "  ";
-      const label = selected ? this.theme.fg("accent", name) : name;
-      const status = this.enabled.has(name) ? this.theme.fg("success", " ✓") : this.theme.fg("dim", " ✗");
-      this.listContainer.addChild(new Text(`${prefix}${label}${status}`, 0, 0));
+      const paddedName = name.padEnd(this.statusColumnOffset);
+      const label = selected ? this.theme.fg("accent", paddedName) : paddedName;
+      const status = this.enabled.has(name)
+        ? this.theme.fg("success", "enabled")
+        : this.theme.fg("dim", "disabled");
+      this.listContainer.addChild(new Text(`${prefix}${label}  ${status}`, 0, 0));
     }
 
     if (startIndex > 0 || endIndex < this.filteredResources.length) {
@@ -142,12 +146,7 @@ export class TuiResourceSelectorComponent extends Container {
       return;
     }
     if (matchesKey(data, Key.ctrl("c"))) {
-      if (this.searchInput.getValue()) {
-        this.searchInput.setValue("");
-        this.refresh();
-      } else {
-        this.callbacks.onCancel();
-      }
+      (this.callbacks.onExit ?? this.callbacks.onCancel)();
       return;
     }
     if (matchesKey(data, Key.escape)) {
@@ -168,6 +167,7 @@ export async function selectTuiResources(ctx, config) {
   return await ctx.ui.custom((tui, theme, _keybindings, done) => new TuiResourceSelectorComponent(config, theme, {
     onSave: done,
     onCancel: () => done(undefined),
+    onExit: () => done(null),
     onRender: () => tui.requestRender(),
   }));
 }

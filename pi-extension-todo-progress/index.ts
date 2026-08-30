@@ -493,7 +493,7 @@ export default function todoProgress(pi: ExtensionAPI) {
   pi.registerShortcut("ctrl+alt+k", { description: "Todo scroll up", handler: async (ctx) => { state.offset = Math.max(0, state.offset - 1); render(ctx, state); persistState(); } });
 
   pi.registerCommand("goal", {
-    description: "Set the todo-progress goal. Usage: /goal <one-sentence goal>",
+    description: "Set the todo-progress goal and start the agent. Usage: /goal <one-sentence goal>",
     handler: async (args, ctx) => {
       let goal = cleanGoalText(args);
 
@@ -517,7 +517,13 @@ export default function todoProgress(pi: ExtensionAPI) {
       state.goal = goal;
       render(ctx, state);
       persistState();
-      ctx.ui.notify(`Todo goal set: ${goal}`, "info");
+
+      const startsImmediately = ctx.isIdle();
+      pi.sendUserMessage(goal, { deliverAs: "followUp" });
+      ctx.ui.notify(
+        startsImmediately ? `Todo goal set and agent started: ${goal}` : `Todo goal set and queued: ${goal}`,
+        "info",
+      );
     },
   });
 

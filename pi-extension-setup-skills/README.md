@@ -28,7 +28,7 @@ Run `/skills`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-In the resource list, type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+A` to enable matching skills, `Ctrl+X` to clear matching skills, and `Ctrl+S` to save. `Escape` cancels.
+In the resource list, each skill shows `enabled` or `disabled` in a separate status column. Type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching skills, `Ctrl+A` to enable all matching skills, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
 
 ## Before you start
 

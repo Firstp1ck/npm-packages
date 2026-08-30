@@ -21,17 +21,13 @@ pr
 git-guided-workflow
 ```
 
-The three generation handlers parse arguments before repository or model work, require an interactive TUI or RPC surface, require an idle session and active model, and share one active-generation slot. The existing guided TUI command retains its Stage → Message → Commit → Push state machine.
+The three generation handlers parse arguments before repository or model work, require an interactive TUI or RPC surface, require an idle session, and share one active-generation slot. Normal invocations require the active model. WebUI invocations carry a private versioned generation profile that resolves a configured model independently. The existing guided TUI command retains its Stage → Message → Commit → Push state machine.
 
 ## Native model lifecycle
 
-A generation handler captures one immutable context, builds the corresponding `NativeModelRequest`, and calls:
+A generation handler captures one immutable context and builds the corresponding `NativeModelRequest`. A normal command completes that request through `ctx.modelRegistry.complete` with the active model. A WebUI command decodes a private base64url profile argument, validates its exact version, provider, model, and supported reasoning effort, resolves the configured model through `modelRegistry`, and calls that provider's `streamSimple` independently with registry-supplied authentication. It never assigns `ctx.model` or `ctx.thinkingLevel`, so the parent session profile needs no restoration.
 
-```text
-ctx.modelRegistry.complete(ctx.model, request, { signal, maxTokens })
-```
-
-It passes a request-specific provider output-token ceiling, concatenates text response parts only, rejects aborted/error responses, applies the relevant byte and safety checks, then passes the parsed value and the original context to the matching write helper. Chunk summaries use 4,096 output tokens, commit candidates and correction use 8,192, branch names use 128, and PR bodies use 32,768. The byte parsers remain authoritative because token-to-byte ratios vary by provider. It never calls `pi.sendUserMessage`, expands prompt templates, registers an LLM-callable helper tool, or asks an agent loop to inspect the repository.
+Both paths pass a request-specific provider output-token ceiling, concatenate text response parts only, reject aborted/error responses, apply the relevant byte and safety checks, then pass the parsed value and the original context to the matching write helper. Chunk summaries use 4,096 output tokens, commit candidates and correction use 8,192, branch names use 128, and PR bodies use 32,768. The byte parsers remain authoritative because token-to-byte ratios vary by provider. Neither path calls `pi.sendUserMessage`, expands prompt templates, registers an LLM-callable helper tool, or asks an agent loop to inspect the repository.
 
 Commit context acquisition passes `COMMIT_GENERATION_CAPTURE_MAX_BYTES` explicitly. At or below `COMMIT_GENERATION_DIRECT_MAX_BYTES`, the handler preserves the existing one-request `buildCommitModelRequest` path. Above that threshold it calls `partitionStagedDiff`, then loops over the returned chunks with `await` so only one `buildCommitChunkAnalysisModelRequest` completion is active at a time. `parseCommitChunkSummaryOutput` trims each response and accepts any non-empty bounded safe text; delimiter and layout guidance is not enforced. After all summaries are retained in order, one `buildCommitSynthesisModelRequest` completion produces the candidate commit output. No chunk-analysis result is persisted.
 
@@ -111,7 +107,7 @@ The exact JSON payload is:
 
 Do not add tab ID, cwd, repository path, Git data, preferences, model data, or a success claim. The WebUI transport envelope owns the originating tab.
 
-RPC activation calls `ctx.ui.setStatus` with the payload and immediately clears it. This is intentionally at-most-once. The browser requires RPC-capable extension provenance for all three native generation commands; a same-named prompt command is not a valid fallback. Browser-selected model and reasoning effort remain active while the extension command invokes `ctx.modelRegistry.complete`, after which the WebUI restores the prior profile and verifies the generation-correlated artifact.
+RPC activation calls `ctx.ui.setStatus` with the payload and immediately clears it. This is intentionally at-most-once. The browser requires RPC-capable extension provenance for all three native generation commands; a same-named prompt command is not a valid fallback. The browser passes its configured model and reasoning effort in a private command argument. The extension resolves that model and calls its provider independently through `streamSimple`; the parent session profile stays unchanged while WebUI verifies the generation-correlated artifact.
 
 The PR filename contract is encoded as one path segment. WebUI and extension code must both map `feat/native` to `dev/PR/feat%2Fnative.md`; do not independently reintroduce branch path separators.
 

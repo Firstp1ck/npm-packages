@@ -3124,14 +3124,25 @@ async function triggerSessionSummary(tab, { refresh = false } = {}) {
   }
 }
 
-function gitWorkflowGenerationPrompt(kind, preferences, commandName) {
+function gitWorkflowGenerationProfileArgument(profile) {
+  const payload = Buffer.from(JSON.stringify({
+    version: 1,
+    provider: profile.provider,
+    modelId: profile.modelId,
+    thinkingLevel: profile.thinkingLevel,
+  }), "utf8").toString("base64url");
+  return `--firstpick-webui-generation-profile=${payload}`;
+}
+
+function gitWorkflowGenerationPrompt(kind, preferences, commandName, profile) {
+  const generationProfile = gitWorkflowGenerationProfileArgument(profile);
   switch (kind) {
     case "commit":
-      return `/${commandName} ${preferences.commit.language} ${preferences.commit.scope}`;
+      return `/${commandName} ${preferences.commit.language} ${preferences.commit.scope} ${generationProfile}`;
     case "branch":
-      return `/${commandName}`;
+      return `/${commandName} ${generationProfile}`;
     case "pr":
-      return `/${commandName} ${preferences.commit.language}`;
+      return `/${commandName} ${preferences.commit.language} ${generationProfile}`;
     default:
       throw makeHttpError(400, "generation kind must be commit, branch, or pr");
   }
@@ -3210,37 +3221,6 @@ function publicGitWorkflowGenerationProfile(profile) {
     modelId: String(profile?.modelId || ""),
     thinkingLevel: String(profile?.thinkingLevel || ""),
   };
-}
-
-async function restoreGitWorkflowGenerationProfile(tab, expectedRecord = tab?.gitWorkflowGeneration) {
-  const record = expectedRecord && tab?.gitWorkflowGeneration === expectedRecord ? expectedRecord : null;
-  const restore = record?.restore || tab?.gitWorkflowGenerationRestore;
-  if (!restore) return;
-  if (record?.restorePromise) return record.restorePromise;
-  const operation = (async () => {
-    try {
-      if (!tab.rpc?.isRunning?.()) return;
-      if (restore.model?.provider && restore.model?.id) {
-        const modelResponse = await tab.rpc.send({ type: "set_model", provider: restore.model.provider, modelId: restore.model.id });
-        if (modelResponse.success === false) throw new Error(modelResponse.error || "Failed to restore model");
-      }
-      if (restore.thinkingLevel) {
-        const thinkingResponse = await setThinkingLevelForTab(tab, restore.thinkingLevel, { allowPending: false });
-        if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || "Failed to restore thinking level");
-      }
-      recordEvent({ type: "git_workflow_generation_profile_restored", tabId: tab.id, tabTitle: tab.title });
-    } catch (error) {
-      console.error(`[guided-git] failed to restore generation profile for ${record?.generationId || tab.id}: ${sanitizeError(error)}`);
-      recordEvent({ type: "git_workflow_generation_profile_restore_failed", tabId: tab.id, tabTitle: tab.title, error: boundedGitWorkflowGenerationError("Guided Git could not restore the previous model profile.") });
-    } finally {
-      if (!record || tab.gitWorkflowGeneration === record) {
-        tab.gitWorkflowGeneration = null;
-        tab.gitWorkflowGenerationRestore = null;
-      }
-    }
-  })();
-  if (record) record.restorePromise = operation;
-  return operation;
 }
 
 async function createGitWorkflowArtifactGeneration(tab, generationId, kind) {
@@ -3325,7 +3305,7 @@ async function finishGitWorkflowGeneration(tab, record, { successful }) {
     tab.gitWorkflowMessageGeneration = record.previousMessageGeneration;
   }
   markTabIdle(tab);
-  await restoreGitWorkflowGenerationProfile(tab, record);
+  if (tab.gitWorkflowGeneration === record) tab.gitWorkflowGeneration = null;
 }
 
 async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attempt) {
@@ -3341,15 +3321,7 @@ async function dispatchGitWorkflowGenerationAttempt(tab, record, profile, attemp
   record.promptAccepted = false;
   record.pendingSettlement = null;
   record.nativeCommandError = null;
-  if (record.currentModelKey !== `${profile.provider}/${profile.modelId}`) {
-    const modelResponse = await tab.rpc.send({ type: "set_model", provider: profile.provider, modelId: profile.modelId });
-    assertGitWorkflowGenerationOwnership(tab, record);
-    if (modelResponse.success === false) throw new Error(modelResponse.error || `Failed to select ${profile.provider}/${profile.modelId}`);
-    record.currentModelKey = `${profile.provider}/${profile.modelId}`;
-  }
-  const thinkingResponse = await setThinkingLevelForTab(tab, profile.thinkingLevel, { allowPending: false });
-  assertGitWorkflowGenerationOwnership(tab, record);
-  if (thinkingResponse.success === false) throw new Error(thinkingResponse.error || `Failed to select thinking level ${profile.thinkingLevel}`);
+  record.message = gitWorkflowGenerationPrompt(record.kind, record.preferences, record.nativeCommandName, profile);
 
   assertGitWorkflowGenerationOwnership(tab, record);
   markTabWorking(tab);
@@ -3452,7 +3424,7 @@ function consumeGitWorkflowGenerationEvent(tab, event, { finalError = false } = 
 }
 
 async function startGitWorkflowGeneration(tab, body = {}) {
-  if (tab.gitWorkflowGeneration || tab.gitWorkflowGenerationRestore) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
+  if (tab.gitWorkflowGeneration) throw makeHttpError(409, "A guided Git generation request is already active in this tab");
   const kind = String(body.kind || "").trim();
   if (!new Set(["commit", "branch", "pr"]).has(kind)) throw makeHttpError(400, "generation kind must be commit, branch, or pr");
 
@@ -3462,7 +3434,7 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     generationId: randomUUID(),
     kind,
     message: "",
-    restore: null,
+    preferences: null,
     previousMessageGeneration: tab.gitWorkflowMessageGeneration || null,
     messageGeneration: null,
     artifactGeneration: null,
@@ -3475,7 +3447,6 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     attemptRunStarted: false,
     promptAccepted: false,
     pendingSettlement: null,
-    currentModelKey: "",
     nativeCommandName: "",
     nativeCommandError: null,
     nativeGeneration: true,
@@ -3491,10 +3462,10 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     const preferences = await readGitWorkflowPreferences();
     assertGitWorkflowGenerationOwnership(tab, record);
     if (!isGitWorkflowSetupComplete(preferences)) throw makeHttpError(409, "Run /git-workflow-setup or open Guided Git Setup before generating Git text");
+    record.preferences = preferences;
     const nativeCommandName = await resolveGuidedGitNativeCommand(tab, kind);
     assertGitWorkflowGenerationOwnership(tab, record);
     record.nativeCommandName = nativeCommandName;
-    record.message = gitWorkflowGenerationPrompt(kind, preferences, nativeCommandName);
 
     const state = await currentSessionState(tab);
     assertGitWorkflowGenerationOwnership(tab, record);
@@ -3520,9 +3491,6 @@ async function startGitWorkflowGeneration(tab, body = {}) {
         )
       : null;
 
-    record.restore = { model: state.model || null, thinkingLevel: state.thinkingLevel || "off" };
-    record.currentModelKey = gitWorkflowModelKey(state.model);
-    tab.gitWorkflowGenerationRestore = record.restore;
     record.artifactGeneration = await createGitWorkflowArtifactGeneration(tab, record.generationId, kind);
     record.messageGeneration = kind === "commit" ? record.artifactGeneration : null;
     assertGitWorkflowGenerationOwnership(tab, record);
@@ -3546,8 +3514,7 @@ async function startGitWorkflowGeneration(tab, body = {}) {
     }
   } catch (error) {
     if (tab.gitWorkflowGeneration === record && !record.finishing) {
-      if (record.restore) await finishGitWorkflowGeneration(tab, record, { successful: false });
-      else tab.gitWorkflowGeneration = null;
+      await finishGitWorkflowGeneration(tab, record, { successful: false });
     }
     throw error;
   }
@@ -11524,7 +11491,6 @@ function attachRpcToTab(tab, rpc) {
         tab.gitWorkflowArtifactGeneration.successful = false;
       }
       tab.gitWorkflowGeneration = null;
-      tab.gitWorkflowGenerationRestore = null;
       tab.gitWorkflowMessageGeneration = null;
       clearPendingExtensionUiRequests(tab);
       clearExtensionStatuses(tab);
@@ -11563,7 +11529,6 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     pendingThinkingLevel: undefined,
     thinkingStreamRecovery: new ThinkingStreamRecovery(),
     gitWorkflowGeneration: null,
-    gitWorkflowGenerationRestore: null,
     gitWorkflowMessageGeneration: null,
     gitWorkflowArtifactGeneration: null,
     gitWorkflowFallbackLifecycle: null,

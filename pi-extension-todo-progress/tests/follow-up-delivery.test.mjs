@@ -33,6 +33,7 @@ function createHarness(extension, options = {}) {
   const entries = [];
   const notifications = [];
   const prompts = [];
+  const userMessages = [];
   const widgets = [];
   const inputAnswers = [...(options.inputAnswers || [])];
   const pi = {
@@ -44,6 +45,9 @@ function createHarness(extension, options = {}) {
     appendEntry(customType, data) {
       entries.push({ customType, data: structuredClone(data) });
     },
+    sendUserMessage(content, deliveryOptions) {
+      userMessages.push({ content, options: deliveryOptions });
+    },
     registerShortcut() {},
     registerCommand(name, command) {
       commands.set(name, command);
@@ -53,6 +57,7 @@ function createHarness(extension, options = {}) {
 
   const ctx = {
     hasUI: options.hasUI ?? false,
+    isIdle: () => options.isIdle ?? true,
     sessionManager: { getBranch: () => options.branch || [] },
     ui: {
       input: async (title, placeholder) => {
@@ -69,6 +74,7 @@ function createHarness(extension, options = {}) {
     entries,
     notifications,
     prompts,
+    userMessages,
     widgets,
     hasHandlers(type) {
       return (handlers.get(type) || []).length > 0;
@@ -98,7 +104,7 @@ function userMessage(text) {
   };
 }
 
-test("/goal sets a normalized goal from its argument and persists it", async () => {
+test("/goal sets a normalized goal, persists it, and starts the agent", async () => {
   const extension = await loadExtension();
   const harness = createHarness(extension);
 
@@ -106,8 +112,12 @@ test("/goal sets a normalized goal from its argument and persists it", async () 
 
   assert.match(await harness.injectedContext(), /Goal: Ship the release without regressions\./);
   assert.equal(harness.entries.at(-1)?.data?.goal, "Ship the release without regressions.");
+  assert.deepEqual(harness.userMessages, [{
+    content: "Ship the release without regressions.",
+    options: { deliverAs: "followUp" },
+  }]);
   assert.deepEqual(harness.notifications.at(-1), {
-    message: "Todo goal set: Ship the release without regressions.",
+    message: "Todo goal set and agent started: Ship the release without regressions.",
     level: "info",
   });
 });
@@ -147,6 +157,26 @@ test("argumentless /goal prompts, updates an active widget, and preserves its ch
   ]);
   assert.equal(harness.entries.at(-1)?.data?.goal, "Set the new goal.");
   assert.deepEqual(harness.entries.at(-1)?.data?.items, [{ text: "Keep this item", status: "partial" }]);
+  assert.deepEqual(harness.userMessages, [{
+    content: "Set the new goal.",
+    options: { deliverAs: "followUp" },
+  }]);
+});
+
+test("/goal queues the new goal when the agent is already running", async () => {
+  const extension = await loadExtension();
+  const harness = createHarness(extension, { isIdle: false });
+
+  await harness.command("goal", "Review the active change");
+
+  assert.deepEqual(harness.userMessages, [{
+    content: "Review the active change",
+    options: { deliverAs: "followUp" },
+  }]);
+  assert.deepEqual(harness.notifications.at(-1), {
+    message: "Todo goal set and queued: Review the active change",
+    level: "info",
+  });
 });
 
 test("argumentless /goal leaves state unchanged when cancelled or headless", async () => {
