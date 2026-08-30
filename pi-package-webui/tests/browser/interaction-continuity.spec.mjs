@@ -247,7 +247,7 @@ test("main output shows non-blocking inline feedback while transcript data loads
     assert.ok(settledChatBounds, "the settled transcript should have measurable bounds");
     assert.equal(settledChatBounds.x, loadingChatBounds.x, "the loading row should not move the transcript horizontally");
     assert.equal(settledChatBounds.width, loadingChatBounds.width, "the loading row should not resize the transcript horizontally");
-    assert.ok(settledChatBounds.height >= loadingChatBounds.height, "the transcript may reclaim the loading row after the request settles");
+    assert.equal(settledChatBounds.height, loadingChatBounds.height, "the loading overlay should not resize the transcript");
   } finally {
     releaseMessages?.();
     await page.unroute(messagesPattern);

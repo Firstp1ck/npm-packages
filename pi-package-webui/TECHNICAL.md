@@ -117,6 +117,8 @@ Text and image reads remain scoped to the active tab's working directory and its
 
 Every server start performs a bounded, read-only startup audit of optional companion packages. Missing, unregistered, or older companions appear in the Optional features panel without blocking the core Web UI. The Guided Git entry installs `@firstpick/pi-extension-git-guided-workflow`, which registers the launcher and native commit-message, branch-name, and pull-request generation commands as one Pi package.
 
+Prompt-impact indicators distinguish initial system-prompt text (`+`), conditional text that can appear while a session is running (`+...`), and packages with no measured system-prompt text (`-`). Bundled skill declarations count toward the package indicator. Tool schemas and ordinary user or tool messages are not counted.
+
 - **Migrate…** reviews and installs selected legacy companions.
 - **Later** dismisses the startup reminder while leaving migration available in settings.
 - **Retry failed** retries only failed package installs.

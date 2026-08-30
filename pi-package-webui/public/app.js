@@ -2806,6 +2806,7 @@ const APP_RUNNER_SEARCH_PATH_LIMIT = 24;
 const OPTIONAL_FEATURES = [
   {
     id: "bangCommandAutocomplete",
+    promptImpact: "none",
     label: "! command autocomplete",
     packageName: "@firstpick/pi-extension-bang-command-autocomplete",
     capabilityLabel: "/bang-status or /bang-refresh",
@@ -2813,6 +2814,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "fishUserBash",
+    promptImpact: "none",
     label: "Fish user bash",
     packageName: "@firstpick/pi-extension-fish-user-bash",
     capabilityLabel: "/user-bash-shell",
@@ -2820,6 +2822,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "btwCommand",
+    promptImpact: "none",
     label: "/btw side questions",
     packageName: "@firstpick/pi-extension-btw",
     capabilityLabel: "/btw or btw:output widget event",
@@ -2827,6 +2830,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "gitWorkflow",
+    promptImpact: "none",
     label: "Guided Git workflow",
     packageName: "@firstpick/pi-extension-git-guided-workflow",
     capabilityLabel: "/git-guided-workflow",
@@ -2835,6 +2839,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "releaseNpm",
+    promptImpact: "none",
     label: "NPM Release",
     packageName: "@firstpick/pi-extension-release-npm",
     capabilityLabel: "/release-npm",
@@ -2842,6 +2847,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "releaseAur",
+    promptImpact: "initial",
     label: "AUR Release",
     packageName: "@firstpick/pi-extension-release-aur",
     capabilityLabel: "/release-aur",
@@ -2849,6 +2855,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "aurReview",
+    promptImpact: "none",
     label: "Manual repository review",
     packageName: "@firstpick/pi-extension-aur-review",
     capabilityLabel: "/aur-review or aur-review:rpc widget event",
@@ -2856,6 +2863,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "workflows",
+    promptImpact: "initial",
     label: "Workflows",
     packageName: "@firstpick/pi-extension-workflows",
     capabilityLabel: "/workflow or workflow subprocess widget event",
@@ -2864,6 +2872,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "featureSystemPrompt",
+    promptImpact: "conditional",
     label: "Feature workflow routing",
     packageName: "@firstpick/pi-extension-feature-system-prompt",
     capabilityLabel: "feature-category or feature-decision-output status event",
@@ -2871,6 +2880,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "safetyGuard",
+    promptImpact: "none",
     label: "Safety guard",
     packageName: "@firstpick/pi-extension-safety-guard",
     capabilityLabel: "/safety-guard or /safety-guard-setup command",
@@ -2879,6 +2889,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "tuiSkillsCommand",
+    promptImpact: "none",
     label: "TUI Skills command",
     packageName: "@firstpick/pi-extension-setup-skills",
     capabilityLabel: "RPC /skills from setup-skills extension",
@@ -2887,6 +2898,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "todoProgressWidget",
+    promptImpact: "initial",
     label: "Todo progress widget",
     packageName: "@firstpick/pi-extension-todo-progress",
     capabilityLabel: "/todo-progress-status or todo-progress widget event",
@@ -2894,6 +2906,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "tuiToolsCommand",
+    promptImpact: "none",
     label: "TUI Tools command",
     packageName: "@firstpick/pi-extension-tools",
     capabilityLabel: "RPC /tools from tools extension",
@@ -2902,6 +2915,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "remoteWebui",
+    promptImpact: "none",
     label: "Remote WebUI",
     packageName: "@firstpick/pi-package-remote-webui",
     capabilityLabel: "/remote",
@@ -2909,6 +2923,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "questionnaire",
+    promptImpact: "initial",
     label: "Native questionnaires",
     packageName: "@firstpick/pi-package-questionnaire",
     capabilityLabel: "questionnaire tool in /tools",
@@ -2917,6 +2932,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "naturalConversation",
+    promptImpact: "conditional",
     label: "Natural Conversation",
     packageName: "@firstpick/pi-package-natural-conversation",
     capabilityLabel: "/talk, /voice, or /conversation",
@@ -2924,6 +2940,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "gitFooterStatus",
+    promptImpact: "none",
     label: "Git footer status",
     packageName: "@firstpick/pi-extension-git-footer-status",
     capabilityLabel: "/git-footer-refresh or git-footer-webui status event",
@@ -2931,6 +2948,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "statsCommand",
+    promptImpact: "none",
     label: "Stats dashboard",
     packageName: "@firstpick/pi-extension-stats",
     capabilityLabel: "/stats",
@@ -2938,6 +2956,7 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "codexFastMode",
+    promptImpact: "none",
     label: "Codex Fast mode",
     packageName: "@firstpick/pi-extension-codex-fast-mode",
     capabilityLabel: "/fast-mode",
@@ -2945,12 +2964,18 @@ const OPTIONAL_FEATURES = [
   },
   {
     id: "themeBundle",
+    promptImpact: "none",
     label: "Theme bundle",
     packageName: "@firstpick/pi-themes-bundle",
     capabilityLabel: "/api/themes returned themes",
     description: "Additional browser theme-picker and Pi theme resources.",
   },
 ];
+const OPTIONAL_FEATURE_PROMPT_IMPACTS = Object.freeze({
+  initial: Object.freeze({ symbol: "+", label: "Adds to the initial system prompt" }),
+  conditional: Object.freeze({ symbol: "+...", label: "Can add system-prompt text while the session is running" }),
+  none: Object.freeze({ symbol: "-", label: "No additional system-prompt text measured" }),
+});
 const OPTIONAL_FEATURE_BY_ID = new Map(OPTIONAL_FEATURES.map((feature) => [feature.id, feature]));
 // Optional features that arm a paid or stateful runtime mode must turn it off before the browser
 // stops managing them, so a stale mode can never keep spending credits after a Disable click.
@@ -41576,6 +41601,18 @@ function optionalFeatureWidgetHasSpecializedRenderer(key) {
   return key.startsWith("btw:") || key.startsWith("release-npm:") || key.startsWith("release-aur:") || key === AUR_REVIEW_RPC_WIDGET_KEY || key === "workflow:subprocess" || key === WORKFLOW_INSPECTOR_WIDGET_KEY;
 }
 
+function optionalFeaturePromptImpact(feature) {
+  return OPTIONAL_FEATURE_PROMPT_IMPACTS[feature?.promptImpact] || OPTIONAL_FEATURE_PROMPT_IMPACTS.none;
+}
+
+function renderOptionalFeaturePromptImpactBadge(feature) {
+  const impact = optionalFeaturePromptImpact(feature);
+  const badge = make("span", `optional-feature-prompt-impact ${feature?.promptImpact || "none"}`, impact.symbol);
+  badge.title = impact.label;
+  badge.setAttribute("aria-label", impact.label);
+  return badge;
+}
+
 function renderOptionalFeatureBatchToolbar() {
   const candidates = optionalFeatureBatchCandidates();
   const migratable = optionalFeatureMigrationCandidates();
@@ -41749,7 +41786,8 @@ function renderOptionalFeatureRow(feature) {
   const packageStatus = optionalFeaturePackageStatus(feature.id);
   const status = optionalFeatureStatus(feature.id);
   const row = make("div", `optional-feature-row ${status.className}`);
-  const tooltip = optionalFeatureTooltip(feature, status);
+  const impact = optionalFeaturePromptImpact(feature);
+  const tooltip = `${optionalFeatureTooltip(feature, status)}\nSystem prompt impact: ${impact.label}.`;
   row.dataset.tooltip = tooltip;
   row.setAttribute("aria-label", tooltip.replace(/\s+/g, " "));
   if (installing || accessChanging) row.setAttribute("aria-busy", "true");
@@ -41757,7 +41795,9 @@ function renderOptionalFeatureRow(feature) {
 
   const main = make("div", "optional-feature-main");
   const title = make("div", "optional-feature-title");
-  title.append(make("strong", undefined, feature.label), make("span", `optional-feature-pill ${status.className}`, status.label));
+  const statusTags = make("div", "optional-feature-status-tags");
+  statusTags.append(renderOptionalFeaturePromptImpactBadge(feature), make("span", `optional-feature-pill ${status.className}`, status.label));
+  title.append(make("strong", undefined, feature.label), statusTags);
   main.append(title);
   if (status.detail) {
     const detail = make("div", `optional-feature-detail ${status.className === "failed" ? "error" : ""}`.trim(), status.detail);

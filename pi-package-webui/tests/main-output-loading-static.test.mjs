@@ -22,8 +22,8 @@ function sourceBetween(startMarker, endMarker, label) {
 
 assert.match(
   html,
-  /id="feedbackTray"[\s\S]*?<div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>[\s\S]*?main-output-loading-spinner[\s\S]*?id="mainOutputLoadingLabel">Loading conversation history…<\/span>[\s\S]*?<div id="statusBar" class="statusbar"/,
-  "the accessible loading status should sit immediately above the Git footer status",
+  /id="feedbackTray"[\s\S]*?<div class="footer-status-host">[\s\S]*?<div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>[\s\S]*?main-output-loading-spinner[\s\S]*?id="mainOutputLoadingLabel">Loading conversation history…<\/span>[\s\S]*?<div id="statusBar" class="statusbar"/,
+  "the accessible loading status and Git footer should share an overlay host",
 );
 assert.doesNotMatch(html, /<dialog[^>]+id="mainOutputLoading"/, "loading feedback must not use a popup dialog");
 assert.match(app, /mainOutputLoading: \$\("#mainOutputLoading"\)[\s\S]*mainOutputLoadingLabel: \$\("#mainOutputLoadingLabel"\)/, "the browser should bind the inline status and its detail label");
@@ -49,17 +49,18 @@ assert.match(app, /activeTabId = nextTabId;\s*renderMainOutputLoading\(\);/, "ta
 
 assert.match(css, /\.main-output-loading\[hidden\] \{ display: none !important; \}/, "hidden loading feedback should not render");
 assert.match(css, /\.main-output-surface \{[\s\S]*?position: relative;[\s\S]*?flex: 1 1 auto;[\s\S]*?min-height: 0;/, "the transcript should retain its flexible layout surface");
-assert.match(css, /\.main-output-loading \{[\s\S]*?flex: 0 0 auto;[\s\S]*?align-self: center;[\s\S]*?width: fit-content;[\s\S]*?pointer-events: none;/, "the loading status should use a compact in-flow row above the footer");
+assert.match(css, /\.footer-status-host \{[\s\S]*?position: relative;[\s\S]*?flex: 0 0 auto;[\s\S]*?min-width: 0;/, "the Git footer should provide a stable positioning host");
+assert.match(css, /\.main-output-loading \{[\s\S]*?position: absolute;[\s\S]*?left: 50%;[\s\S]*?bottom: calc\(100% \+ 0\.3rem\);[\s\S]*?transform: translateX\(-50%\);[\s\S]*?pointer-events: none;/, "the loading status should overlay above the footer without entering layout flow");
 assert.match(css, /\.main-output-loading \{[\s\S]*?font-size: var\(--text-xs\)/, "the loading status should remain compact");
 assert.match(css, /\.main-output-loading-spinner \{[\s\S]*?animation: main-output-loading-spin 780ms linear infinite/, "the status should include a visible spinner animation");
 assert.match(css, /@keyframes main-output-loading-spin/, "the spinner should have a local animation contract");
 assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation-duration: 1ms !important;[\s\S]*?animation-iteration-count: 1 !important;/, "the existing reduced-motion policy should stop repeated spinner motion");
-assert.match(css, /body\.terminal-tabs-left \.main-output-surface \{ grid-row: 4; \}[\s\S]*body\.terminal-tabs-left \.main-output-loading \{ grid-row: 7; \}[\s\S]*body\.terminal-tabs-left \.statusbar \{ grid-row: 8; \}/, "sidebar tab placement should keep the loading row directly above the footer");
+assert.match(css, /body\.terminal-tabs-left \.main-output-surface \{ grid-row: 4; \}[\s\S]*body\.terminal-tabs-left \.footer-status-host \{ grid-row: 7; \}[\s\S]*body\.terminal-tabs-left \.context-meter-bar \{ grid-row: 8; \}/, "sidebar tab placement should keep the loading overlay anchored to the footer host");
 assert.match(css, /body\.subagent-terminal-active \.main-output-surface,[\s\S]*body\.subagent-terminal-active \.main-output-loading,/, "dedicated subagent output should hide the main transcript and its loading status");
 
-assert.match(html, /styles\.css\?v=146/, "the stylesheet cache query should advance");
-assert.match(html, /app\.js\?v=179/, "the app cache query should advance");
-assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v147"/, "the PWA cache identity should advance with browser assets");
+assert.match(html, /styles\.css\?v=152/, "the stylesheet cache query should advance");
+assert.match(html, /app\.js\?v=182/, "the app cache query should advance");
+assert.match(serviceWorker, /const CACHE_NAME = "pi-webui-pwa-v153"/, "the PWA cache identity should advance with browser assets");
 assert.match(readme, /Loading conversation history/, "user documentation should describe the plain-language loading feedback");
 assert.match(development, /main output loading/i, "developer documentation should preserve the request-ownership contract");
 

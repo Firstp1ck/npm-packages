@@ -12,7 +12,7 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="stylesheet" href="/styles.css?v=146" />
+    <link rel="stylesheet" href="/styles.css?v=152" />
     <script>
       // Public-only issue-bot runtime configuration. Keep disabled unless the gateway,
       // Turnstile site key, exact CORS origin, and private-report destination are approved.
@@ -307,11 +307,13 @@
           <span id="feedbackTraySummary">No action feedback queued.</span>
           <button id="sendFeedbackButton" type="button">Send &amp; create LEARNING</button>
         </div>
-        <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
-          <span class="main-output-loading-spinner" aria-hidden="true"></span>
-          <span id="mainOutputLoadingLabel">Loading conversation history…</span>
+        <div class="footer-status-host">
+          <div id="mainOutputLoading" class="main-output-loading" role="status" aria-live="polite" aria-atomic="true" aria-controls="chat" hidden>
+            <span class="main-output-loading-spinner" aria-hidden="true"></span>
+            <span id="mainOutputLoadingLabel">Loading conversation history…</span>
+          </div>
+          <div id="statusBar" class="statusbar" aria-live="polite"></div>
         </div>
-        <div id="statusBar" class="statusbar" aria-live="polite"></div>
         <section id="contextMeterBar" class="context-meter-bar" aria-live="polite"></section>
         <section id="gitWorkflowPanel" class="git-workflow-panel" aria-live="polite" hidden>
           <div class="git-workflow-header">
@@ -1890,7 +1892,7 @@
       </form>
     </dialog>
 
-    <script id="webuiBootLoader" data-app-src="/app.js?v=179">
+    <script id="webuiBootLoader" data-app-src="/app.js?v=182">
       (() => {
         "use strict";
 

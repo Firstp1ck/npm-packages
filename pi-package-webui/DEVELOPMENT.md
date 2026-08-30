@@ -51,9 +51,9 @@ node tests/http-endpoints-harness.test.mjs
 
 Every `refreshMessages(tabContext)` call acquires its own object token in `mainOutputLoadingRequests` before requesting a transcript snapshot or delta and releases that exact token in `finally`. Visibility is derived only from tokens whose copied tab context still matches the active tab generation. This prevents an old tab response or one of several overlapping refreshes from hiding the current request’s status.
 
-The transcript receives `aria-busy` immediately. The inline `#mainOutputLoading` status waits 120 ms before becoming visible, avoiding flashes on fast local responses while preserving polite assistive-technology state. It sits immediately before `#statusBar`, so the status appears above the Git footer instead of over the transcript. The newest active request supplies the visible label and updates it as the request checks for a delta, falls back to a complete transcript, and renders the result.
+The transcript receives `aria-busy` immediately. The inline `#mainOutputLoading` status waits 120 ms before becoming visible, avoiding flashes on fast local responses while preserving polite assistive-technology state. It shares `.footer-status-host` with `#statusBar` and is positioned absolutely above the footer, so showing it does not resize the transcript. The newest active request supplies the visible label and updates it as the request checks for a delta, falls back to a complete transcript, and renders the result.
 
-The status remains non-modal and pointer-transparent. Cached transcript content and controls remain interactive while the in-flow status row is visible. The global reduced-motion policy reduces its spinner to one effectively static iteration. Dedicated subagent output hides this main-transcript status.
+The status remains non-modal and pointer-transparent. Cached transcript content and controls remain interactive while the overlay is visible. The global reduced-motion policy reduces its spinner to one effectively static iteration. Dedicated subagent output hides this main-transcript status.
 
 Focused contributor validation:
 
@@ -678,6 +678,7 @@ Session-specific tool and skill choices are independent and always win when thei
 
 - **What it is:** A Pi package manager for Web UI-aware extensions, prompts, themes, and optional dashboards. Optional companions are separate from the Web UI core install.
 - **What you can do:** See whether each companion is enabled, disabled, registered, local, migratable, missing, conflicting, or updateable; use separate **Enable/Disable** and **Setup** actions for configurable loaded companions; open browser-native Skills Setup and Tools Setup from the loaded TUI command companion rows; keep per-row Install/Update actions; restore previous companions through one combined confirmation; use panel-level **Install all** or section-level **Install missing** for missing/unregistered packages only; and recover partial failures with **Retry failed** or **Copy commands**. Native questionnaires read and update the active session's real `questionnaire` tool state through direct **Enable/Disable** controls and do not expose a separate setup action. Batches run sequentially through Pi, continue after individual failures, and auto-restart an idle affected tab while deferring **Restart tab** when it is busy.
+- **Prompt-impact metadata:** The checked baseline is `reports/pi-default-system-prompt-evaluation.md` at the repository root. `OPTIONAL_FEATURES[].promptImpact` stores the browser indicator class. Package-level bundled skill declarations count as initial prompt text; tool schemas and ordinary user or tool messages stay outside this indicator.
 
 ### `/btw` side questions
 
