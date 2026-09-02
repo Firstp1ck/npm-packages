@@ -1,0 +1,38 @@
+{
+  "name": "@firstpick/pi-skill-frontend-design",
+  "version": "0.1.0",
+  "description": "Portable Agent Skill for designing distinctive web interfaces with brief-specific visual direction, typography, layout, motion, and interface copy.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Firstp1ck/pi-coding-agent-forge/tree/main/pi-skill-frontend-design#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Firstp1ck/pi-coding-agent-forge.git",
+    "directory": "pi-skill-frontend-design"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "skill",
+    "agent-skill",
+    "frontend",
+    "web-design",
+    "ui-design",
+    "typography"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "test": "node --test tests/skill-contract.test.mjs"
+  },
+  "files": [
+    "skills/frontend-design/SKILL.md",
+    "README.md",
+    "TECHNICAL.md",
+    "DEVELOPMENT.md",
+    "LICENSE"
+  ]
+}

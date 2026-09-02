@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>The proof before the polish | HTML report design example</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1220;
+      --panel: #121c2d;
+      --panel-2: #18253a;
+      --text: #e8eef8;
+      --muted: #a9b7cb;
+      --line: #2b3b55;
+      --green: #50d890;
+      --yellow: #f7c65c;
+      --red: #ff7373;
+      --blue: #65b5ff;
+      --code: #07101c;
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --shadow: 0 14px 36px rgb(0 0 0 / 22%);
+      --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      --body: system-ui, -apple-system, "Segoe UI", sans-serif;
+      --utility: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(rgb(101 181 255 / 3%) 1px, transparent 1px),
+        linear-gradient(90deg, rgb(101 181 255 / 3%) 1px, transparent 1px),
+        radial-gradient(circle at 12% 0%, #142848 0, transparent 35rem),
+        var(--bg);
+      background-size: 32px 32px, 32px 32px, auto, auto;
+      color: var(--text);
+      font: 16px/1.65 var(--body);
+    }
+    a { color: var(--blue); text-underline-offset: .2em; }
+    a:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--yellow);
+      outline-offset: 4px;
+      border-radius: 3px;
+    }
+    .skip-link {
+      position: fixed;
+      z-index: 20;
+      top: 10px;
+      left: 10px;
+      transform: translateY(-180%);
+      padding: 9px 13px;
+      border-radius: 8px;
+      background: var(--yellow);
+      color: #111722;
+      font-weight: 800;
+    }
+    .skip-link:focus { transform: none; }
+
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 36px auto 64px;
+    }
+    header, .report-section {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: color-mix(in srgb, var(--panel) 96%, transparent);
+      box-shadow: var(--shadow);
+    }
+    header { padding: 30px; }
+    .report-section { margin-top: 18px; padding: 24px; }
+    .report-section::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: var(--yellow);
+    }
+
+    h1, h2, h3 { margin-top: 0; line-height: 1.18; }
+    h1 {
+      max-width: 14ch;
+      margin-bottom: 18px;
+      font: 600 clamp(2.8rem, 8vw, 6.7rem)/.91 var(--display);
+      letter-spacing: -.055em;
+    }
+    h2 {
+      margin-bottom: 20px;
+      padding-bottom: 11px;
+      border-bottom: 1px solid var(--line);
+      font: 600 clamp(1.55rem, 3vw, 2.1rem)/1.1 var(--display);
+      letter-spacing: -.02em;
+    }
+    h3 { margin-bottom: 7px; font-size: 1.08rem; }
+    p { margin: 8px 0 14px; }
+    code { font-family: var(--utility); }
+    code:not(pre code) {
+      padding: .12em .38em;
+      border-radius: 5px;
+      background: var(--code);
+    }
+    .muted { color: var(--muted); }
+    .lead { max-width: 64ch; font-size: 1.12rem; }
+    .utility {
+      color: var(--muted);
+      font: 700 .75rem/1.4 var(--utility);
+      letter-spacing: .09em;
+      text-transform: uppercase;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 260px;
+      gap: 28px;
+      align-items: end;
+    }
+    .proof-card {
+      align-self: stretch;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 250px;
+      padding: 18px;
+      border: 1px solid rgb(247 198 92 / 55%);
+      border-radius: var(--radius-md);
+      background: rgb(247 198 92 / 7%);
+    }
+    .proof-mark {
+      color: var(--yellow);
+      font: 800 clamp(2rem, 4vw, 3.8rem)/1 var(--utility);
+      letter-spacing: -.08em;
+    }
+    .proof-card p { margin-bottom: 0; }
+    .conclusion {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 14px;
+      align-items: start;
+      margin-top: 24px;
+      padding: 16px 18px;
+      border-radius: 0 var(--radius-md) var(--radius-md) 0;
+      border-left: 5px solid var(--blue);
+      background: rgb(101 181 255 / 8%);
+    }
+    .conclusion strong { font-family: var(--utility); color: var(--blue); }
+    .confidence { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+    .jump-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+      margin-top: 18px;
+    }
+    .jump-links a {
+      min-height: 40px;
+      padding: 8px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text);
+      font: 700 .82rem/1.5 var(--utility);
+      text-decoration: none;
+    }
+    .jump-links a:hover { border-color: var(--blue); }
+
+    .table-wrap { overflow-x: auto; border-radius: 10px; }
+    table { width: 100%; min-width: 720px; border-collapse: collapse; }
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font: 700 .76rem/1.4 var(--utility);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    tbody tr:hover { background: rgb(101 181 255 / 5%); }
+    .status {
+      display: inline-block;
+      padding: 2px 8px;
+      border: 1px solid currentColor;
+      border-radius: 999px;
+      font: 700 .72rem/1.5 var(--utility);
+      white-space: nowrap;
+    }
+    .keep { color: var(--green); }
+    .change { color: var(--yellow); }
+    .remove { color: var(--red); }
+
+    .proof-layout {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 26px;
+    }
+    .margin-notes {
+      position: relative;
+      padding: 6px 18px 0 0;
+      border-right: 2px solid var(--yellow);
+    }
+    .margin-notes::after {
+      content: "";
+      position: absolute;
+      top: 5px;
+      right: -7px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--yellow);
+      box-shadow: 0 0 0 5px var(--panel);
+    }
+    .margin-note {
+      margin-bottom: 26px;
+      color: var(--yellow);
+      font: 750 .76rem/1.45 var(--utility);
+      text-align: right;
+    }
+    .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .decision {
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel-2);
+    }
+    .decision p:last-child { margin-bottom: 0; }
+
+    figure { margin: 20px 0 0; }
+    figure svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--code);
+    }
+    figcaption { margin-top: 9px; color: var(--muted); font-size: .92rem; }
+    .node { fill: #18253a; stroke: #65b5ff; stroke-width: 2; }
+    .node-design { stroke: #f7c65c; }
+    .node-check { stroke: #50d890; }
+    .edge { fill: none; stroke: #a9b7cb; stroke-width: 2.5; }
+    .svg-title { fill: #e8eef8; font: 700 17px var(--body); text-anchor: middle; }
+    .svg-copy { fill: #a9b7cb; font: 13px var(--body); text-anchor: middle; }
+    .svg-label { fill: #f7c65c; font: 700 12px var(--utility); text-anchor: middle; }
+
+    .steps { display: grid; gap: 12px; padding: 0; list-style: none; counter-reset: proof-step; }
+    .steps li {
+      counter-increment: proof-step;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 14px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel-2);
+    }
+    .steps li::before {
+      content: counter(proof-step);
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--blue);
+      color: #07101c;
+      font: 800 1rem var(--utility);
+    }
+    .steps p { margin-bottom: 0; }
+
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .source-card {
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel-2);
+    }
+    .source-card p:last-child { margin-bottom: 0; }
+    .limitation {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-left: 5px solid var(--yellow);
+      border-radius: 0 8px 8px 0;
+      background: rgb(247 198 92 / 8%);
+    }
+    footer { margin-top: 22px; color: var(--muted); font-size: .9rem; }
+
+    @media (max-width: 760px) {
+      .hero-grid, .proof-layout, .decision-grid, .evidence-grid { grid-template-columns: 1fr; }
+      .proof-card { min-height: 180px; }
+      .margin-notes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 0 0 14px;
+        border-right: 0;
+        border-bottom: 2px solid var(--yellow);
+      }
+      .margin-notes::after { top: auto; right: 0; bottom: -7px; }
+      .margin-note { margin: 0; text-align: left; }
+      .margin-note + .margin-note::before { content: "/ "; color: var(--muted); }
+    }
+    @media (max-width: 620px) {
+      main { width: min(100% - 18px, 1120px); margin-top: 10px; }
+      header, .report-section { padding: 18px; }
+      h1 { font-size: clamp(2.6rem, 15vw, 4rem); }
+      .conclusion { grid-template-columns: 1fr; }
+      .steps li { grid-template-columns: 34px 1fr; padding: 14px; }
+      .steps li::before { width: 30px; height: 30px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+    @media print {
+      :root { color-scheme: light; }
+      body { background: white; color: #111; }
+      main { width: 100%; margin: 0; }
+      header, .report-section, .decision, .source-card, .steps li, .proof-card {
+        background: white;
+        color: #111;
+        border-color: #999;
+        box-shadow: none;
+        break-inside: avoid;
+      }
+      .report-section::before, .margin-notes::after { background: #805d00; }
+      .margin-notes { border-color: #805d00; }
+      .margin-note, .proof-mark, .change { color: #6b4e00; }
+      .muted, .confidence, figcaption, footer, .utility { color: #444; }
+      .jump-links { display: none; }
+      a { color: #111; text-decoration: underline; }
+      figure { break-inside: avoid; }
+      figure svg { background: #f3f5f7; border-color: #999; }
+      .svg-title { fill: #111; }
+      .svg-copy { fill: #444; }
+      .node { fill: #fff; }
+      table { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#report-content">Skip to report content</a>
+<main id="report-content">
+  <header>
+    <div class="hero-grid">
+      <div>
+        <p class="utility">Design proof / example report</p>
+        <h1>The proof before the polish</h1>
+        <p class="lead">This example combines the content discipline of <code>html-report</code> with the subject-led art direction of <code>frontend-design</code>. It is written for skill authors who need a report to stay trustworthy without looking like the last report they made.</p>
+      </div>
+      <aside class="proof-card" aria-label="Design proof note">
+        <span class="proof-mark" aria-hidden="true">01↗</span>
+        <div>
+          <p class="utility">Signature move</p>
+          <p>The yellow proofing rail marks what the report keeps, changes, and removes. It turns the design review into the page's visual identity.</p>
+        </div>
+      </aside>
+    </div>
+    <div class="conclusion">
+      <strong>Conclusion</strong>
+      <span>Keep the report contract fixed. Let the subject determine typography, composition, copy, and one memorable visual move.</span>
+    </div>
+    <p class="confidence"><strong>Confidence: 96/100.</strong> The report contract and design process come directly from the two cited skill files. The exact visual treatment is an interpretation, not a mandated template.</p>
+    <nav class="jump-links" aria-label="Report sections">
+      <a href="#map">Report map</a>
+      <a href="#decisions">Design decisions</a>
+      <a href="#process">Working process</a>
+      <a href="#sources">Sources and limits</a>
+    </nav>
+  </header>
+
+  <section class="report-section" id="map">
+    <h2>Report map</h2>
+    <div class="table-wrap">
+      <table data-overview>
+        <thead>
+          <tr>
+            <th>Contract</th>
+            <th>Design move</th>
+            <th>Reason</th>
+            <th>Proof check</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Evidence before claims</td>
+            <td>Source labels sit beside decisions</td>
+            <td>The visual idea must not blur provenance</td>
+            <td><span class="status keep">Keep</span> Every conclusion traces to a cited skill</td>
+          </tr>
+          <tr>
+            <td>Approved navy system</td>
+            <td>Blueprint grid and yellow edit rail</td>
+            <td>The page keeps the report family while gaining a proofing-desk identity</td>
+            <td><span class="status change">Change</span> Composition, type roles, and emphasis</td>
+          </tr>
+          <tr>
+            <td>Useful visuals only</td>
+            <td>One process diagram, no chart</td>
+            <td>The sources describe relationships but provide no quantitative data</td>
+            <td><span class="status remove">Remove</span> Decorative metrics and invented bars</td>
+          </tr>
+          <tr>
+            <td>Progressive enhancement</td>
+            <td>Short linear document with anchor links</td>
+            <td>Tabs and scripts would add work without improving this reading path</td>
+            <td><span class="status keep">Keep</span> Complete without JavaScript</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="report-section" id="decisions">
+    <h2>Where the design changes</h2>
+    <div class="proof-layout">
+      <aside class="margin-notes" aria-label="Proof annotations">
+        <p class="margin-note">KEEP<br>semantic structure</p>
+        <p class="margin-note">CHANGE<br>visual voice</p>
+        <p class="margin-note">REMOVE<br>stock metrics</p>
+      </aside>
+      <div>
+        <p class="lead">The report skill decides what the document must prove. The frontend skill decides how this subject should look and sound. Neither gets to erase the other's constraints.</p>
+        <div class="decision-grid">
+          <article class="decision">
+            <p class="utility">Color</p>
+            <h3>Canonical palette, new hierarchy</h3>
+            <p>The navy, raised panels, blue interaction color, and semantic statuses remain intact. Yellow carries the editorial proof marks because it already means attention in the report system.</p>
+          </article>
+          <article class="decision">
+            <p class="utility">Type</p>
+            <h3>A book face makes the argument</h3>
+            <p>A restrained local serif gives the hero an editorial voice. System sans handles explanation, and monospace labels decisions and source roles. No font leaves the machine.</p>
+          </article>
+          <article class="decision">
+            <p class="utility">Layout</p>
+            <h3>The margin becomes evidence</h3>
+            <p>The wide proof rail turns critique notes into structure. On a narrow screen it becomes a horizontal annotation strip, so the concept survives without squeezing the text.</p>
+          </article>
+          <article class="decision">
+            <p class="utility">Restraint</p>
+            <h3>One risk is enough</h3>
+            <p>The proof rail carries the surprise. Cards, tables, and diagrams stay quiet. The page drops metric tiles because this subject has no honest measurements to show.</p>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="report-section" id="process">
+    <h2>A working process, not a style swap</h2>
+    <figure data-visual-kind="diagram" data-purpose="Show how report evidence, subject-led design, and verification form one sequence">
+      <svg role="img" aria-labelledby="process-title process-desc" viewBox="0 0 920 330">
+        <title id="process-title">Evidence to design to verification</title>
+        <desc id="process-desc">The report contract establishes claims and required structure. Subject-led art direction then sets typography, composition, and a signature detail. Verification checks the content, accessibility, responsive behavior, and print output. A failed check returns the page to the design stage.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+            <path d="M0,0 L0,6 L9,3 z" fill="#a9b7cb" />
+          </marker>
+        </defs>
+        <path class="edge" d="M270 133 H350" marker-end="url(#arrow)" />
+        <path class="edge" d="M570 133 H650" marker-end="url(#arrow)" />
+        <path class="edge" d="M760 188 C760 267 470 278 460 205" stroke-dasharray="7 7" marker-end="url(#arrow)" />
+        <rect class="node" x="50" y="76" width="220" height="112" rx="14" />
+        <text class="svg-label" x="160" y="105">REPORT CONTRACT</text>
+        <text class="svg-title" x="160" y="137">Establish the proof</text>
+        <text class="svg-copy" x="160" y="162">Claims, sources, structure</text>
+        <rect class="node node-design" x="350" y="76" width="220" height="112" rx="14" />
+        <text class="svg-label" x="460" y="105">SUBJECT DIRECTION</text>
+        <text class="svg-title" x="460" y="137">Give it a voice</text>
+        <text class="svg-copy" x="460" y="162">Type, layout, one risk</text>
+        <rect class="node node-check" x="650" y="76" width="220" height="112" rx="14" />
+        <text class="svg-label" x="760" y="105">VERIFICATION</text>
+        <text class="svg-title" x="760" y="137">Test the document</text>
+        <text class="svg-copy" x="760" y="162">Content, access, print</text>
+        <text class="svg-copy" x="612" y="270">Failed checks return to the design pass</text>
+      </svg>
+      <figcaption>The sequence is derived from the portable workflows in both skills. The dashed return path is an interpretation of their shared review requirement.</figcaption>
+    </figure>
+
+    <ol class="steps">
+      <li>
+        <div>
+          <h3>Choose the subject and the page's one job</h3>
+          <p>Name the audience, decision, evidence, and uncertainty. If the subject is vague, the design will default to a familiar template.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Lock the report contract</h3>
+          <p>Map the hero conclusion, overview table, explanation, action, sources, and limitations before styling. Choose a visual only when it answers a real question.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Art-direct the subject</h3>
+          <p>Set named colors, type roles, layout sketches, and one signature move. Reject any choice that could move unchanged to an unrelated report.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Critique, remove, and verify</h3>
+          <p>Check source integrity, keyboard focus, mobile layout, reduced motion, print output, and the strict validator. Remove one element that does not help the reader.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="report-section" id="sources">
+    <h2>Sources, confidence, and limits</h2>
+    <div class="evidence-grid">
+      <article class="source-card">
+        <p class="utility">Primary source / report contract</p>
+        <h3><code>skills/html-report/SKILL.md</code></h3>
+        <p>Provides the evidence model, mandatory overview, visual decision rules, approved design tokens, self-contained output contract, accessibility expectations, and strict validation step.</p>
+      </article>
+      <article class="source-card">
+        <p class="utility">Primary source / art direction</p>
+        <h3><code>pi-skill-frontend-design/skills/frontend-design/SKILL.md</code></h3>
+        <p>Provides subject grounding, palette and type planning, layout sketches, one signature element, two-pass critique, responsive basics, reduced motion, and the instruction to remove one unneeded element.</p>
+      </article>
+    </div>
+    <div class="limitation">
+      <strong>Limitation.</strong> This is one interpretation of the combined method, not a new canonical template. Copying its proof-rail style into every report would violate the frontend skill's central instruction to derive the design from the subject.
+    </div>
+    <p class="confidence"><strong>Confidence: 96/100.</strong> Source coverage is direct and local. Confidence stops short of 100 because visual synthesis requires judgment, and another subject should produce another visual answer.</p>
+  </section>
+
+  <footer>
+    <p><strong>Scope:</strong> Static, self-contained example. No external assets, network requests, telemetry, or persistent state.</p>
+  </footer>
+</main>
+</body>
+</html>

@@ -1,7 +1,8 @@
 ---
 name: frontend-design
-description: Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and choices that do not look like templated defaults.
-license: Complete terms in LICENSE.txt
+description: Use when building a new web interface or reshaping an existing one. Guides distinctive visual direction, typography, layout, motion, and interface copy without falling back to templated AI design.
+license: Apache-2.0
+compatibility: Portable Agent Skills skill. No scripts, assets, or runtime dependencies.
 ---
 
 # Frontend design
