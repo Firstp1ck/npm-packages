@@ -20,6 +20,8 @@ The selector discovers skills from Pi's standard user and project locations and 
 
 The extension applies scoped skill choices in TUI mode. It updates the skill list in the system prompt, blocks explicit invocation of disabled skills, and can expand a selected installed skill even when Pi's base settings did not register its native `/skill:name` command.
 
+When Pi starts with `--no-skills` or `-ns`, `/skills` lists only the skills Pi loaded for that session, including explicit `--skill` paths. It does not scan the normal skill locations, so disabling discovery still has its intended effect.
+
 Model changes and session-tree navigation recompute inherited choices immediately. No reload is required after saving.
 
 ## Storage and WebUI compatibility

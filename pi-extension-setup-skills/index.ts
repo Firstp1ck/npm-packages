@@ -1,8 +1,8 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Skill } from "@earendil-works/pi-coding-agent";
-import { DefaultPackageManager, DynamicBorder, formatSkillsForPrompt, getAgentDir, getSettingsListTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Skill, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { DefaultPackageManager, DynamicBorder, formatSkillsForPrompt, getAgentDir, getSettingsListTheme, parseArgs, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Key, matchesKey, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { getAgentSettingsPath, readJsonIfExists, writeJsonFile } from "@firstpick/pi-utils";
 import { branchResourceDirective, readResourceDefaults, resolveResourceSelection } from "@firstpick/pi-utils/resource-management";
@@ -20,6 +20,7 @@ type SkillCandidate = {
   packageSource?: string;
   packageSkillName?: string;
   disableModelInvocation: boolean;
+  sourceInfo?: Skill["sourceInfo"];
 };
 
 export function collectSkillFilesFromDir(root: string, includeRootMarkdown = true): string[] {
@@ -383,7 +384,7 @@ function candidateAsSkill(candidate: SkillCandidate): Skill {
     description: candidate.description,
     filePath: candidate.skillPath,
     baseDir: dirname(candidate.skillPath),
-    sourceInfo: {
+    sourceInfo: candidate.sourceInfo ?? {
       path: candidate.skillPath,
       source: candidate.packageSource ?? "auto",
       scope: candidate.skillPath.includes(`${sep}.pi${sep}`) ? "project" : "user",
@@ -401,7 +402,38 @@ function escapeXml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
-export default function setupSkillsExtension(pi: ExtensionAPI): void {
+export function hasNoSkillsFlag(argv: readonly string[]): boolean {
+  return parseArgs([...argv]).noSkills === true;
+}
+
+export function collectLoadedSkills(commands: readonly SlashCommandInfo[]): Skill[] {
+  const skills = new Map<string, Skill>();
+  for (const command of commands) {
+    if (command.source !== "skill" || !command.name.startsWith("skill:")) continue;
+    const name = command.name.slice("skill:".length);
+    try {
+      const parsed = parseSkill(command.sourceInfo.path);
+      if (!parsed) continue;
+      skills.set(name, {
+        name,
+        description: command.description ?? parsed.description,
+        filePath: command.sourceInfo.path,
+        baseDir: dirname(command.sourceInfo.path),
+        sourceInfo: command.sourceInfo,
+        disableModelInvocation: parsed.disableModelInvocation,
+      });
+    } catch {
+      // Pi already reported diagnostics for skills that disappeared after startup.
+    }
+  }
+  return [...skills.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export default function setupSkillsExtension(
+  pi: ExtensionAPI,
+  argv: readonly string[] = process.argv.slice(2),
+): void {
+  const limitToLoadedSkills = hasNoSkillsFlag(argv);
   let catalog: SkillCandidate[] = [];
   let enabledSkills: Set<string> | null = null;
   let legacyDisabledSkills = new Set<string>();
@@ -414,6 +446,18 @@ export default function setupSkillsExtension(pi: ExtensionAPI): void {
     .map((command) => command.name.slice("skill:".length));
 
   async function refreshCatalog(ctx: ExtensionContext): Promise<void> {
+    if (limitToLoadedSkills) {
+      catalog = collectLoadedSkills(pi.getCommands()).map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        skillPath: skill.filePath,
+        enableKind: "settings-skill",
+        enablePath: skill.filePath,
+        disableModelInvocation: skill.disableModelInvocation,
+        sourceInfo: skill.sourceInfo,
+      }));
+      return;
+    }
     const settings = readJsonIfExists<SettingsShape>(getAgentSettingsPath(), {});
     catalog = await discoverCandidates(settings, ctx.cwd);
   }

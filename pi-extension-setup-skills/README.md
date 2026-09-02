@@ -11,6 +11,7 @@ Choose which skills Pi can use for a session, by default, or with a specific mod
 - Sets a global default or an exact provider/model profile.
 - Applies model profiles when the active model changes.
 - Keeps WebUI and TUI resource choices in sync.
+- Honors `--no-skills` and `-ns`; `/skills` only shows skills loaded explicitly for those sessions.
 
 ## Install
 
