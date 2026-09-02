@@ -21,6 +21,13 @@ import {
   validateTheme,
 } from "../public/theme-contract.mjs";
 import { authProvidersPayload, createAuthContext, logoutStoredProvider } from "../lib/auth-actions.mjs";
+import {
+  APPEND_SYSTEM_DIAGNOSTIC_MESSAGES,
+  APPEND_SYSTEM_DISCOVERY_LIMITS,
+  discoverAppendSystemFiles,
+  validateAppendSystemSelection,
+  validateSavedAppendSystemSelection,
+} from "../lib/append-system-selection.mjs";
 import { resolveCodexUsageAuth } from "../lib/codex-usage-auth.mjs";
 import { AgentRunIndex, canonicalAgentRunId, normalizeAgentInstance } from "../lib/agent-run-protocol.mjs";
 import { AgentRunRegistry } from "../lib/agent-run-registry.mjs";
@@ -138,6 +145,7 @@ import {
   evaluateDispatchTrustGuards,
   guardsForNativeCommand,
   isLocalRequest,
+  isLoopbackHostAuthority,
   projectTrustDecision,
   remoteShellTrustWarning,
   requireLocalhost,
@@ -320,6 +328,7 @@ const PATH_SUGGESTION_SCAN_LIMIT = 5000;
 const PATH_SUGGESTION_MAX_OUTPUT_LENGTH = 300000;
 const PATH_SUGGESTION_EXCLUDED_DIRS = new Set([".git", "node_modules"]);
 const RESTORE_TAB_LIMIT = 256;
+const TAB_PROMPT_PATH_MAX_LENGTH = 4096;
 const UPDATE_HEALTH_GATE_MS = Math.max(90_000, Number.parseInt(process.env.PI_WEBUI_UPDATE_HEALTH_GATE_MS || "90000", 10) || 90_000);
 const bootIdentity = randomUUID();
 const SESSION_SELECTOR_LIMIT = 200;
@@ -954,6 +963,7 @@ class PiRpcProcess {
     this.cwd = cwd;
     this.env = env;
     this.child = undefined;
+    this.spawned = false;
     this.pending = new Map();
     this.listeners = new Set();
     this.startedAt = new Date().toISOString();
@@ -970,6 +980,7 @@ class PiRpcProcess {
   }
 
   start() {
+    this.spawned = false;
     this.child = spawn(this.command, this.args, {
       cwd: this.cwd,
       env: this.env,
@@ -977,10 +988,19 @@ class PiRpcProcess {
       windowsHide: true,
     });
 
-    this.child.on("error", (error) => {
-      const message = sanitizeError(error);
-      this.emit({ type: "pi_process_error", error: message });
-      this.rejectAll(new Error(message));
+    const startup = new Promise((resolve, reject) => {
+      this.child.once("spawn", () => {
+        this.spawned = true;
+        this.emit({ type: "pi_process_start", pid: this.child.pid, cwd: this.cwd, command: this.displayCommand, args: this.args });
+        resolve();
+      });
+      this.child.on("error", (error) => {
+        this.spawned = false;
+        const message = sanitizeError(error);
+        this.emit({ type: "pi_process_error", error: message });
+        this.rejectAll(new Error(message));
+        reject(new Error(message));
+      });
     });
 
     this.child.on("exit", (code, signal) => {
@@ -998,11 +1018,11 @@ class PiRpcProcess {
       }
     });
 
-    this.emit({ type: "pi_process_start", pid: this.child.pid, cwd: this.cwd, command: this.displayCommand, args: this.args });
+    return startup;
   }
 
   isRunning() {
-    return !!this.child && this.child.exitCode === null && !this.child.killed;
+    return this.spawned && !!this.child && this.child.exitCode === null && !this.child.killed;
   }
 
   onEvent(listener) {
@@ -9703,6 +9723,18 @@ function normalizedRestoreString(value, maxLength) {
   return text ? text.slice(0, maxLength) : undefined;
 }
 
+function normalizeTabPromptDescriptor(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (Object.keys(value).length !== 2 || !Object.hasOwn(value, "kind") || !Object.hasOwn(value, "path")) return null;
+  if (value.kind !== "append-system" || typeof value.path !== "string") return null;
+  if (!value.path || value.path.length > TAB_PROMPT_PATH_MAX_LENGTH || /[\u0000-\u001f\u007f]/.test(value.path) || !path.isAbsolute(value.path)) return null;
+  return { kind: "append-system", path: value.path };
+}
+
+function appendSystemPromptDescriptor(appendSystemPromptPath) {
+  return normalizeTabPromptDescriptor(appendSystemPromptPath ? { kind: "append-system", path: appendSystemPromptPath } : null);
+}
+
 function normalizeRestoreTabDescriptor(item, seenIds) {
   if (!item || typeof item !== "object") return null;
   const state = item.state && typeof item.state === "object" ? item.state : {};
@@ -9902,7 +9934,39 @@ async function appendCuratedResourceArgs(args, normalResources, resourceType, fl
   appendResourceArgs(args, flag, await startedWebuiResourcePaths(resourceType));
 }
 
-async function buildPiArgsForTab(tabIndex, title, tabCwd = options.cwd) {
+function globalPiAppendSystemPromptPath() {
+  return path.join(homedir(), ".pi", "agent", "APPEND_SYSTEM.md");
+}
+
+function isGlobalPiAppendSystemPromptPath(value) {
+  return value === globalPiAppendSystemPromptPath();
+}
+
+async function validatePersistedAppendSystemSelection(settings) {
+  if (!settings.appendSystemPromptPath || !settings.appendSystemPromptRootPath) return null;
+  if (isGlobalPiAppendSystemPromptPath(settings.appendSystemPromptPath)) return null;
+  return validateSavedAppendSystemSelection(
+    settings.appendSystemPromptPath,
+    settings.appendSystemPromptRootPath,
+  );
+}
+
+async function selectedAppendSystemPromptPath() {
+  let settings;
+  try {
+    settings = await readWebuiSettings();
+  } catch (error) {
+    console.warn(`failed to read the saved APPEND_SYSTEM.md selection: ${sanitizeError(error)}`);
+    return null;
+  }
+  if (!settings.appendSystemPromptPath || isGlobalPiAppendSystemPromptPath(settings.appendSystemPromptPath)) return null;
+  const validated = await validatePersistedAppendSystemSelection(settings);
+  if (validated) return validated.path;
+  console.warn(`Skipping unavailable saved APPEND_SYSTEM.md selection: ${settings.appendSystemPromptPath.slice(0, 4_096)}`);
+  return null;
+}
+
+async function buildPiLaunchForTab(tabIndex, title, tabCwd = options.cwd) {
   const args = ["--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"];
   if (options.noSession) args.push("--no-session");
 
@@ -9922,11 +9986,14 @@ async function buildPiArgsForTab(tabIndex, title, tabCwd = options.cwd) {
   // depending on TUI-only extension UIs.
   args.push("--extension", webuiHelperExtensionPath);
 
+  const appendSystemPromptPath = await selectedAppendSystemPromptPath();
+  if (appendSystemPromptPath) args.push("--append-system-prompt", appendSystemPromptPath);
+
   // Keep tab naming inside Web UI metadata. Some bundled Pi CLI versions do not
   // support --name, and passing Web UI-generated tab titles through to child
   // RPC processes makes every tab after the first exit immediately.
   args.push(...options.piArgs);
-  return args;
+  return { args, prompt: appendSystemPromptDescriptor(appendSystemPromptPath) };
 }
 
 function isNodeScriptCommand(command) {
@@ -10140,7 +10207,7 @@ async function initializeRpcSupervisor() {
   });
 }
 
-function supervisedTabMetadata(tab, { cwd = tab.cwd } = {}) {
+function supervisedTabMetadata(tab, { cwd = tab.cwd, prompt = tab.prompt } = {}) {
   return {
     index: tab.index,
     title: tab.title,
@@ -10150,6 +10217,7 @@ function supervisedTabMetadata(tab, { cwd = tab.cwd } = {}) {
     sessionFile: tabRestorableSessionFile(tab),
     gitWorkspace: tab.gitWorkspace || null,
     createdAt: tab.createdAt,
+    prompt: normalizeTabPromptDescriptor(prompt),
     featureSystemPromptDetected: featureSystemPromptDetected(tab),
   };
 }
@@ -11514,7 +11582,7 @@ function attachRpcToTab(tab, rpc) {
   });
 }
 
-function createTabRecord({ id, index, title, titleSource, conversationStarted, cwd, createdAt = new Date().toISOString(), sessionFile, gitWorkspace, rpc }) {
+function createTabRecord({ id, index, title, titleSource, conversationStarted, cwd, createdAt = new Date().toISOString(), sessionFile, gitWorkspace, prompt, rpc }) {
   const tab = {
     id,
     index,
@@ -11525,6 +11593,7 @@ function createTabRecord({ id, index, title, titleSource, conversationStarted, c
     createdAt,
     sessionFile: options.noSession ? undefined : normalizedRestoreString(sessionFile, 4096),
     gitWorkspace: gitWorkspace || null,
+    prompt: normalizeTabPromptDescriptor(prompt),
     lastState: null,
     pendingThinkingLevel: undefined,
     thinkingStreamRecovery: new ThinkingStreamRecovery(),
@@ -11569,7 +11638,8 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
   const resolvedTitleSource = ["explicit", "auto", "default"].includes(titleSource) ? titleSource : titleIsExplicit ? "explicit" : "default";
   const tabCwd = cwd ? await resolveCwd(cwd, options.cwd) : options.cwd;
   const id = requestedId && !tabs.has(requestedId) ? requestedId : randomUUID();
-  const piArgs = await buildPiArgsForTab(tabIndex, tabTitle, tabCwd);
+  const launch = await buildPiLaunchForTab(tabIndex, tabTitle, tabCwd);
+  const piArgs = launch.args;
   if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
   const createdAt = new Date().toISOString();
@@ -11596,13 +11666,14 @@ async function createTab({ id: requestedId, index, title, titleSource, conversat
     if (rpc instanceof SupervisorPiRpcProcess) {
       const snapshot = await rpcSupervisor.createTab({
         tabId: id,
-        metadata: supervisedTabMetadata(tab),
+        metadata: supervisedTabMetadata(tab, { prompt: launch.prompt }),
         child: { command: piCommand.command, args: piCommand.args, cwd: tabCwd },
       });
       rpc.applySnapshot(snapshot);
     } else {
-      rpc.start();
+      await rpc.start();
     }
+    tab.prompt = launch.prompt;
     await primeTabRpc(tab);
   } catch (error) {
     if (!tab.rpc.isRunning()) {
@@ -11651,6 +11722,7 @@ async function hydrateManagedTabs(snapshot) {
         createdAt: normalizedRestoreString(metadata?.createdAt, 128) || managed.startedAt || new Date().toISOString(),
         sessionFile: descriptor.sessionFile,
         gitWorkspace: metadata?.gitWorkspace || null,
+        prompt: normalizeTabPromptDescriptor(metadata?.prompt),
         rpc,
       });
       restoreFeatureSystemPromptDetection(tab, metadata?.featureSystemPromptDetected === true);
@@ -11687,6 +11759,7 @@ function tabMeta(tab) {
     cwd: tab.cwd,
     sessionFile: tabRestorableSessionFile(tab),
     gitWorkspace: tab.gitWorkspace || null,
+    prompt: normalizeTabPromptDescriptor(tab.prompt),
     pendingThinkingLevel: tab.pendingThinkingLevel || null,
     createdAt: tab.createdAt,
     startedAt: tab.rpc.startedAt,
@@ -12967,7 +13040,8 @@ async function performTabCwdUpdate(tab, cwd) {
   if (tab.rpc?.isRunning()) await safeRpcData(tab, { type: "get_state" }, STATUS_RPC_TIMEOUT_MS);
   const sessionFile = tabRestorableSessionFile(tab);
 
-  const piArgs = await buildPiArgsForTab(tab.index, tab.title, nextCwd);
+  const launch = await buildPiLaunchForTab(tab.index, tab.title, nextCwd);
+  const piArgs = launch.args;
   if (sessionFile && !options.noSession) piArgs.push("--session", sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
   const restartingEvent = { type: "webui_tab_restarting", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, sessionFile };
@@ -12989,7 +13063,7 @@ async function performTabCwdUpdate(tab, cwd) {
     if (oldRpc instanceof SupervisorPiRpcProcess) {
       const snapshot = await oldRpc.replace({
         child: { command: piCommand.command, args: piCommand.args, cwd: nextCwd },
-        metadata: supervisedTabMetadata(tab, { cwd: nextCwd }),
+        metadata: supervisedTabMetadata(tab, { cwd: nextCwd, prompt: launch.prompt }),
         displayCommand: piCommand.displayCommand,
       });
       oldRpc.dispose();
@@ -13007,10 +13081,19 @@ async function performTabCwdUpdate(tab, cwd) {
 
   tab.rpcUnsubscribe?.();
   tab.rpcUnsubscribe = undefined;
+  attachRpcToTab(tab, rpc);
+  if (startDirectRpc) {
+    try {
+      await rpc.start();
+    } catch (error) {
+      const detail = sanitizeError(error);
+      broadcastTabEvent(tab, { type: "webui_cwd_change_failed", tabId: tab.id, tabTitle: tab.title, cwd: nextCwd, error: detail });
+      throw makeHttpError(502, `Could not restart ${tab.title} in ${displayPath(nextCwd)}: ${detail}`);
+    }
+  }
   tab.cwd = nextCwd;
   resetTabActivity(tab);
-  attachRpcToTab(tab, rpc);
-  if (startDirectRpc) rpc.start();
+  tab.prompt = launch.prompt;
   gitLiveWatcher.unsubscribe(tab.id);
   workspaceFilesLiveWatcher.unsubscribe(tab.id);
   workspaceFilesLiveWatcher.subscribe(tab.id, tab.cwd);
@@ -13029,7 +13112,8 @@ async function restartTabRpc(tab, reason = "reload") {
   if (state.data?.isStreaming) throw makeHttpError(409, "Wait for the current response to finish before reloading.");
   if (state.data?.isCompacting) throw makeHttpError(409, "Wait for compaction to finish before reloading.");
 
-  const piArgs = await buildPiArgsForTab(tab.index, tab.title, tab.cwd);
+  const launch = await buildPiLaunchForTab(tab.index, tab.title, tab.cwd);
+  const piArgs = launch.args;
   if (state.data?.sessionFile && !options.noSession) piArgs.push("--session", state.data.sessionFile);
   const piCommand = await resolvePiCommand(piArgs);
   const reloadingEvent = { type: "webui_tab_reloading", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, reason, sessionFile: state.data?.sessionFile };
@@ -13051,7 +13135,7 @@ async function restartTabRpc(tab, reason = "reload") {
   if (oldRpc instanceof SupervisorPiRpcProcess) {
     const snapshot = await oldRpc.replace({
       child: { command: piCommand.command, args: piCommand.args, cwd: tab.cwd },
-      metadata: supervisedTabMetadata(tab),
+      metadata: supervisedTabMetadata(tab, { prompt: launch.prompt }),
       displayCommand: piCommand.displayCommand,
     });
     oldRpc.dispose();
@@ -13061,8 +13145,9 @@ async function restartTabRpc(tab, reason = "reload") {
     oldRpc.stop();
     rpc = new PiRpcProcess({ ...piCommand, cwd: tab.cwd, env: piRpcEnvironment() });
     attachRpcToTab(tab, rpc);
-    rpc.start();
+    await rpc.start();
   }
+  tab.prompt = launch.prompt;
 
   const reloadedEvent = { type: "webui_tab_reloaded", tabId: tab.id, tabTitle: tab.title, cwd: tab.cwd, pid: tab.rpc.child?.pid, reason, sessionFile: state.data?.sessionFile, tabActivity: tabActivitySnapshot(tab) };
   broadcastTabEvent(tab, reloadedEvent);
@@ -15609,6 +15694,113 @@ function directoryPickerActiveCwd(req, url, body = {}) {
   return firstTab()?.cwd || options.cwd;
 }
 
+function appendDiscoveryDiagnostic(discovery, kind, diagnosticPath = "") {
+  if (discovery.diagnostics.some((item) => item.kind === kind && item.path === diagnosticPath)) return;
+  if (discovery.diagnostics.length >= APPEND_SYSTEM_DISCOVERY_LIMITS.maxDiagnostics) {
+    discovery.diagnostics.length = APPEND_SYSTEM_DISCOVERY_LIMITS.maxDiagnostics - 1;
+    discovery.limits.truncated.diagnostics = true;
+  }
+  discovery.diagnostics.push({
+    kind,
+    path: diagnosticPath,
+    message: APPEND_SYSTEM_DIAGNOSTIC_MESSAGES[kind],
+  });
+}
+
+async function appendSystemFilesData(tab, savedSettings) {
+  const settings = savedSettings || await readWebuiSettings();
+  const savedUsesPiDefault = isGlobalPiAppendSystemPromptPath(settings.appendSystemPromptPath);
+  const discovery = await discoverAppendSystemFiles({
+    piRoot: path.join(homedir(), ".pi"),
+    cwd: tab.cwd,
+    savedPath: savedUsesPiDefault ? null : settings.appendSystemPromptPath,
+    excludedPaths: [globalPiAppendSystemPromptPath()],
+  });
+  if (!settings.appendSystemPromptPath || savedUsesPiDefault) return discovery;
+
+  const validated = await validatePersistedAppendSystemSelection(settings);
+  if (!validated) {
+    appendDiscoveryDiagnostic(discovery, "saved-selection-invalid", settings.appendSystemPromptPath);
+    return discovery;
+  }
+
+  discovery.diagnostics = discovery.diagnostics.filter((item) => item.kind !== "saved-selection-invalid" || item.path !== validated.path);
+  if (!discovery.candidates.some((candidate) => candidate.path === validated.path)) {
+    if (discovery.candidates.length >= APPEND_SYSTEM_DISCOVERY_LIMITS.maxCandidates) {
+      discovery.candidates.pop();
+      discovery.limits.truncated.candidates = true;
+      appendDiscoveryDiagnostic(discovery, "candidate-limit");
+    }
+    discovery.candidates.push({ path: validated.path, rootLabel: "Saved selection" });
+    discovery.candidates.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  }
+  return discovery;
+}
+
+function requireAppendSystemRequest(req, { json = false } = {}) {
+  if (!isLoopbackHostAuthority(req.headers.host)) {
+    throw makeHttpError(403, "APPEND_SYSTEM.md requests require a loopback Host authority.");
+  }
+  const fetchSite = String(req.headers["sec-fetch-site"] || "").trim().toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    throw makeHttpError(403, "Cross-origin APPEND_SYSTEM.md requests are blocked.");
+  }
+  if (!json) return;
+  const contentType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw makeHttpError(415, "APPEND_SYSTEM.md selection saves require Content-Type: application/json.");
+  }
+}
+
+function validateAppendSystemSelectionBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw makeHttpError(400, "APPEND_SYSTEM.md selection body must be an object with only tabId and path.");
+  }
+  const allowedFields = new Set(["tabId", "path"]);
+  const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
+  if (unknownFields.length) {
+    throw makeHttpError(400, `APPEND_SYSTEM.md selection body contains unsupported field${unknownFields.length === 1 ? "" : "s"}: ${unknownFields.join(", ")}.`);
+  }
+  if (!Object.hasOwn(body, "tabId") || !Object.hasOwn(body, "path")) {
+    throw makeHttpError(400, "APPEND_SYSTEM.md selection body requires tabId and path.");
+  }
+  if (typeof body.tabId !== "string" || !body.tabId.trim()) {
+    throw makeHttpError(400, "tabId must be a non-empty string");
+  }
+  if (body.path !== null && typeof body.path !== "string") {
+    throw makeHttpError(400, "path must be an APPEND_SYSTEM.md candidate path or null");
+  }
+  return body;
+}
+
+async function saveAppendSystemSelection(tab, body) {
+  const requestedPath = isGlobalPiAppendSystemPromptPath(body.path) ? null : body.path;
+  const freshSelection = requestedPath === null
+    ? null
+    : await validateAppendSystemSelection(requestedPath, {
+        piRoot: path.join(homedir(), ".pi"),
+        cwd: tab.cwd,
+      });
+  let changed = false;
+  const settings = await updateWebuiSettings(async (current) => {
+    let selected = freshSelection;
+    if (requestedPath !== null && !selected && current.appendSystemPromptPath === requestedPath) {
+      selected = await validatePersistedAppendSystemSelection(current);
+    }
+    if (requestedPath !== null && !selected) {
+      throw makeHttpError(400, "path must name an APPEND_SYSTEM.md candidate from a fresh discovery scan");
+    }
+
+    const appendSystemPromptPath = selected?.path || null;
+    const appendSystemPromptRootPath = selected?.rootPath || null;
+    changed = current.appendSystemPromptPath !== appendSystemPromptPath
+      || current.appendSystemPromptRootPath !== appendSystemPromptRootPath;
+    return changed ? { appendSystemPromptPath, appendSystemPromptRootPath } : undefined;
+  });
+  const discovery = await appendSystemFilesData(tab, settings);
+  return { ...discovery, changed, restartRequired: changed };
+}
+
 async function createInitialTabs() {
   const managedTabs = await hydrateManagedTabs(rpcSupervisorSnapshot);
   if (rpcSupervisorSnapshot?.tabs?.length) return managedTabs;
@@ -16409,6 +16601,30 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === "/api/tabs" && req.method === "GET") {
       sendJson(res, 200, { ok: true, data: { tabs: await listTabsWithReconciledActivity() } });
+      return;
+    }
+
+    if (url.pathname === "/api/append-system-files" && req.method === "GET") {
+      requireLocalhost(req, "APPEND_SYSTEM.md discovery is only allowed from localhost");
+      requireAppendSystemRequest(req);
+      const tab = getRequestedTab(req, url);
+      sendJson(res, 200, { ok: true, data: await appendSystemFilesData(tab) }, { "cache-control": "private, no-store" });
+      return;
+    }
+
+    if (url.pathname === "/api/append-system-selection" && req.method === "POST") {
+      requireLocalhost(req, "Saving an APPEND_SYSTEM.md selection is only allowed from localhost");
+      requireAppendSystemRequest(req, { json: true });
+      let body;
+      try {
+        body = await readJsonBody(req);
+      } catch (error) {
+        if (error instanceof SyntaxError) throw makeHttpError(400, "APPEND_SYSTEM.md selection body must be valid JSON.");
+        throw error;
+      }
+      validateAppendSystemSelectionBody(body);
+      const tab = getRequestedTab(req, url, body);
+      sendJson(res, 200, { ok: true, data: await saveAppendSystemSelection(tab, body) }, { "cache-control": "private, no-store" });
       return;
     }
 

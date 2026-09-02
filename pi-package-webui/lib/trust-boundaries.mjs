@@ -57,6 +57,43 @@ export function isLocalRequest(req) {
   return isLocalAddress(req?.socket?.remoteAddress);
 }
 
+function validAuthorityPort(value) {
+  return /^\d{1,5}$/.test(value) && Number(value) <= 65_535;
+}
+
+/** Accepts only localhost, 127/8, or IPv6 loopback HTTP Host authorities. */
+export function isLoopbackHostAuthority(authority = "") {
+  const value = String(authority || "").trim();
+  if (!value || /[\s,@/\\]/.test(value)) return false;
+
+  let host = value;
+  if (value.startsWith("[")) {
+    const closingBracket = value.indexOf("]");
+    if (closingBracket < 0) return false;
+    host = value.slice(1, closingBracket);
+    const suffix = value.slice(closingBracket + 1);
+    if (suffix && (!suffix.startsWith(":") || !validAuthorityPort(suffix.slice(1)))) return false;
+    if (!suffix && closingBracket !== value.length - 1) return false;
+    try {
+      return new URL(`http://[${host}]`).hostname.toLowerCase() === "[::1]";
+    } catch {
+      return false;
+    }
+  }
+
+  const separator = value.lastIndexOf(":");
+  if (separator >= 0) {
+    if (value.indexOf(":") !== separator || !validAuthorityPort(value.slice(separator + 1))) return false;
+    host = value.slice(0, separator);
+  }
+  const normalizedHost = host.toLowerCase().replace(/\.$/, "");
+  if (normalizedHost === "localhost") return true;
+  const octets = normalizedHost.split(".");
+  return octets.length === 4
+    && octets.every((octet) => /^(?:0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255)
+    && Number(octets[0]) === 127;
+}
+
 export function makeTrustError(statusCode, message, details = {}) {
   const error = new Error(message);
   error.statusCode = statusCode;

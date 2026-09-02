@@ -5,6 +5,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { normalizeSubagentLaunchSlots } from "./subagent-launch-slots.mjs";
 import { normalizeUiLayout } from "./ui-layout-settings.mjs";
 import { normalizeResourceDefaults } from "./resource-selection.mjs";
+import {
+  normalizeAppendSystemPromptPath,
+  normalizeAppendSystemPromptRootPath,
+} from "./append-system-selection.mjs";
 import { normalizeOutputMode, OUTPUT_MODE_NORMAL } from "./webui-output-mode.mjs";
 
 export const GIT_WORKFLOW_SETUP_VERSION = 1;
@@ -186,6 +190,8 @@ export function normalizeWebuiSettings(value) {
     ...source,
     version: normalizedSettingsVersion(source),
     remoteAuthEnabled: source.remoteAuthEnabled === true,
+    appendSystemPromptPath: normalizeAppendSystemPromptPath(source.appendSystemPromptPath),
+    appendSystemPromptRootPath: normalizeAppendSystemPromptRootPath(source.appendSystemPromptRootPath),
     outputModeDefault: normalizeOutputMode(source.outputModeDefault, OUTPUT_MODE_NORMAL),
     gitWorkflow: normalizeGitWorkflowPreferences(source.gitWorkflow),
     resourceDefaults: normalizeResourceDefaults(resourceDefaultsSource),

@@ -200,6 +200,7 @@ const elements = {
   optionsNameButton: $("#optionsNameButton"),
   optionsCloneButton: $("#optionsCloneButton"),
   optionsSettingsButton: $("#optionsSettingsButton"),
+  optionsAppendSystemButton: $("#optionsAppendSystemButton"),
   optionsSummarySetupButton: $("#optionsSummarySetupButton"),
   optionsWorkflowSetupButton: $("#optionsWorkflowSetupButton"),
   optionsSafetyGuardSetupButton: $("#optionsSafetyGuardSetupButton"),
@@ -1089,6 +1090,7 @@ let gitPanelRenderSignature = null;
 let gitChangesRequestSerial = 0;
 const gitChangesUntrackedContentRequests = new Set();
 let nativeCommandTabId = null;
+let nativeCommandDialogGeneration = 0;
 let nativeSettingsDirty = false;
 let guidedGitSetupDialogOwner = null;
 let sessionSummaryOverlayTabId = null;
@@ -17206,6 +17208,19 @@ function terminalTabActiveTooltip(tab) {
   return active.join(" · ");
 }
 
+function terminalTabPromptTooltip(tab) {
+  const prompt = tab?.prompt;
+  if (!prompt || typeof prompt !== "object" || Array.isArray(prompt) || Object.keys(prompt).length !== 2 || !Object.hasOwn(prompt, "kind") || !Object.hasOwn(prompt, "path") || prompt.kind !== "append-system") return "";
+  const path = prompt.path;
+  const absolute = typeof path === "string" && (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\"));
+  if (!absolute || path.length > 4096 || /[\u0000-\u001f\u007f]/.test(path)) return "";
+  return `Append-system prompt: ${path}`;
+}
+
+function terminalTabGroupRepresentedTab(groupTabs = []) {
+  return groupTabs.find((tab) => typeof activeTabId !== "undefined" && tab?.id === activeTabId) || groupTabs[0] || null;
+}
+
 function terminalTabTooltip(tab) {
   const lines = [
     `${tab?.title || "Terminal tab"} · ${tabIndicator(tab).label}`,
@@ -17215,6 +17230,8 @@ function terminalTabTooltip(tab) {
   if (git) lines.push(`Git: ${git}`);
   const active = terminalTabActiveTooltip(tab);
   if (active) lines.push(`Active: ${active}`);
+  const prompt = terminalTabPromptTooltip(tab);
+  if (prompt) lines.push(prompt);
   lines.push("Click to switch · Drag to group");
   return lines.join("\n");
 }
@@ -17261,6 +17278,8 @@ function terminalTabGroupTooltip(group, groupTitle = terminalDisplayGroupTitle(g
   ];
   const active = terminalTabGroupActiveTooltip(groupTabs);
   if (active) lines.push(`Active: ${active}`);
+  const prompt = terminalTabPromptTooltip(terminalTabGroupRepresentedTab(groupTabs));
+  if (prompt) lines.push(prompt);
   lines.push(isMobileView() ? "Tap to open group terminals" : "Click to switch · Drop tabs here to add");
   return lines.join("\n");
 }
@@ -17319,7 +17338,7 @@ function renderTerminalTab(tab, { showCwdAdd = false } = {}) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, preserveInternalSpaces: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", () => switchTab(tab.id));
   wrapper.append(button, createTerminalTabActions(tab));
@@ -17359,7 +17378,7 @@ function renderTerminalTabGroupItem(tab, group) {
   button.setAttribute("role", "tab");
   button.setAttribute("aria-selected", isActive ? "true" : "false");
   button.setAttribute("aria-label", `${tab.title}: ${indicator.label}${appRunnerLabel ? `, ${appRunnerLabel}` : ""}${conversationLabel}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}`);
-  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
+  applyStyledTooltip(button, terminalTabTooltip(tab), { ariaLabel: false, align: "start", description: true, preserveInternalSpaces: true, variant: "workspace", targetKey: `terminal-tab:${tab.id}:switch` });
   appendTerminalTabContent(button, { title: tab.title, indicator, meta: terminalTabMeta(tab, indicator), appRunnerRun, conversationModeActive, workflowModeActive, workflowCount });
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -17390,7 +17409,7 @@ function shouldRenderTerminalTabGroup(group, groupCount) {
 
 function renderTerminalTabGroup(group, groupCount = 1) {
   const groupTabs = group.tabs;
-  const activeGroupTab = groupTabs.find((tab) => tab.id === activeTabId) || groupTabs[0];
+  const activeGroupTab = terminalTabGroupRepresentedTab(groupTabs);
   const isActive = !activeSubagentTerminalId && groupTabs.some((tab) => tab.id === activeTabId);
   const isStopped = groupTabs.every((tab) => !tab.running);
   const indicator = tabGroupIndicator(groupTabs);
@@ -17431,7 +17450,7 @@ function renderTerminalTabGroup(group, groupCount = 1) {
   button.setAttribute("aria-haspopup", "true");
   button.setAttribute("aria-expanded", group.key === openTerminalTabGroupKey ? "true" : "false");
   button.setAttribute("aria-label", `${groupTitle} ${group.custom ? "custom" : "cwd"} group: ${groupTabs.length} tabs, ${indicator.label}${appRunnerSummary ? `, ${appRunnerSummary}` : ""}${workflowModeActive ? ", workflow mode active" : ""}${workflowCount ? `, ${workflowCount} workflow runs active` : ""}. Active ${activeTitle}. ${isMobileView() ? "Toggle group terminal list" : "Switch to the active group terminal"}`);
-  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", variant: "workspace", targetKey: `terminal-group:${group.key}:switch` });
+  applyStyledTooltip(button, terminalTabGroupTooltip(group, groupTitle), { ariaLabel: false, description: true, placement: "right", preserveInternalSpaces: true, variant: "workspace", targetKey: `terminal-group:${group.key}:switch` });
   appendTerminalTabContent(button, { title: activeTitle, indicator, meta: `${groupTitle} · ${indicator.meta}${groupAppRunnerMeta ? ` · ${groupAppRunnerMeta}` : ""}${workflowModeActive ? " · workflow mode" : ""}${workflowCount ? ` · ${workflowCount} workflows` : ""}`, appRunnerRun, count: groupTabs.length, workflowModeActive, workflowCount, dropdown: true });
   button.addEventListener("click", () => {
     if (isMobileView()) {
@@ -19425,8 +19444,12 @@ function textFromContent(content) {
     .join("\n");
 }
 
-function cleanTooltipText(value) {
-  return stripAnsi(value).replace(/\r\n?/g, "\n").replace(/[^\S\n]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+function cleanTooltipText(value, { preserveInternalSpaces = false } = {}) {
+  const normalized = stripAnsi(value).replace(/\r\n?/g, "\n");
+  const whitespaceNormalized = preserveInternalSpaces
+    ? normalized.replace(/[^\S\n ]+/g, " ")
+    : normalized.replace(/[^\S\n]+/g, " ");
+  return whitespaceNormalized.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 const TOOLTIP_HOVER_DELAY_MS = 500;
@@ -19557,7 +19580,7 @@ let styledTooltipDescriptionSerial = 0;
 
 function applyStyledTooltip(node, tooltip, options = {}) {
   if (!node) return node;
-  const text = cleanTooltipText(tooltip);
+  const text = cleanTooltipText(tooltip, { preserveInternalSpaces: options.preserveInternalSpaces === true });
   if (!text) return node;
   node.setAttribute("data-tooltip", text);
   node.removeAttribute("title");
@@ -42689,6 +42712,8 @@ function slashCommandName(message) {
 }
 
 function openNativeCommandDialog({ title, message = "", searchPlaceholder = "" } = {}) {
+  nativeCommandDialogGeneration += 1;
+  const dialogGeneration = nativeCommandDialogGeneration;
   nativeCommandTabId ||= activeTabId;
   elements.nativeCommandTitle.textContent = title || "Pi command";
   elements.nativeCommandMessage.textContent = message;
@@ -42696,6 +42721,7 @@ function openNativeCommandDialog({ title, message = "", searchPlaceholder = "" }
   elements.nativeCommandSearch.value = "";
   elements.nativeCommandSearch.placeholder = searchPlaceholder || "Filter choices…";
   elements.nativeCommandSearch.hidden = !searchPlaceholder;
+  elements.nativeCommandSearch.disabled = false;
   elements.nativeCommandSearch.oninput = null;
   elements.nativeCommandBody.replaceChildren();
   elements.nativeCommandError.hidden = true;
@@ -42704,6 +42730,7 @@ function openNativeCommandDialog({ title, message = "", searchPlaceholder = "" }
   addNativeCommandAction("Cancel", closeNativeCommandDialog);
   if (!elements.nativeCommandDialog.open) elements.nativeCommandDialog.showModal();
   if (searchPlaceholder) queueMicrotask(() => elements.nativeCommandSearch.focus());
+  return dialogGeneration;
 }
 
 function closeNativeCommandDialog({ force = false } = {}) {
@@ -42721,6 +42748,7 @@ function closeNativeCommandDialog({ force = false } = {}) {
     });
     return;
   }
+  nativeCommandDialogGeneration += 1;
   if (elements.nativeCommandDialog.open) elements.nativeCommandDialog.close();
   elements.nativeCommandSearch.oninput = null;
   nativeSettingsDirty = false;
@@ -42999,6 +43027,127 @@ function openNativeThemeSelector() {
     setNativeCommandError(error.message || String(error));
     elements.nativeCommandBody.replaceChildren();
   });
+}
+
+// The rollback choice is browser-only; the server contract represents it as path: null.
+const APPEND_SYSTEM_DEFAULT_CHOICE_ID = "__pi-default-discovery__";
+
+async function openNativeAppendSystemSelector() {
+  const dialogGeneration = openNativeCommandDialog({
+    title: "/append-system",
+    message: "Choose one global APPEND_SYSTEM.md append prompt for WebUI-managed Pi tabs. The bounded scan uses the active tab folder and ~/.pi up to depth 10, follows file and folder links even outside those roots, and never shows file contents. New tabs and reloaded tabs use this choice.",
+    searchPlaceholder: "Filter APPEND_SYSTEM.md files…",
+  });
+  const ownsNativeCommandDialog = () => dialogGeneration === nativeCommandDialogGeneration && elements.nativeCommandDialog.open;
+  let saveInFlight = false;
+  renderNativeLoading("Scanning APPEND_SYSTEM.md candidates…");
+  try {
+    const response = await nativeCommandApi("/api/append-system-files");
+    if (!ownsNativeCommandDialog()) return;
+    const data = response.data || {};
+    const savedPath = typeof data.appendSystemPromptPath === "string" && data.appendSystemPromptPath ? data.appendSystemPromptPath : "";
+    const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+    const diagnostics = Array.isArray(data.diagnostics) ? data.diagnostics : [];
+    const savedIsInvalid = !!savedPath && diagnostics.some((diagnostic) => diagnostic?.kind === "saved-selection-invalid" && diagnostic?.path === savedPath);
+    const savedIsCandidate = !!savedPath && !savedIsInvalid && candidates.some((candidate) => candidate?.path === savedPath);
+    const items = [];
+    if (savedPath && !savedIsCandidate) {
+      items.push({
+        id: `__invalid-saved__:${savedPath}`,
+        label: savedPath,
+        description: "Saved choice is no longer a valid APPEND_SYSTEM.md candidate. See the diagnostics below; Pi falls back to default discovery.",
+        badge: "invalid",
+        badgeClass: "disabled",
+        disabled: true,
+      });
+    }
+    items.push({
+      id: APPEND_SYSTEM_DEFAULT_CHOICE_ID,
+      label: "Use Pi default discovery",
+      description: "Remove the override. Pi finds APPEND_SYSTEM.md itself (project .pi/APPEND_SYSTEM.md or ~/.pi/agent/APPEND_SYSTEM.md).",
+      badge: savedIsCandidate ? "" : "current",
+      appendSystemPath: null,
+    });
+    for (const candidate of candidates) {
+      if (!candidate?.path) continue;
+      items.push({
+        id: candidate.path,
+        label: candidate.path,
+        description: `Visible path${candidate.rootLabel ? ` found below ${candidate.rootLabel}` : ""}; linked targets may be outside that root.`,
+        meta: candidate.rootLabel || "",
+        badge: savedIsCandidate && candidate.path === savedPath ? "current" : "",
+        appendSystemPath: candidate.path,
+      });
+    }
+    const appendDiagnostics = () => {
+      if (!diagnostics.length) return;
+      const note = make("div", "native-settings-note");
+      note.append(make("strong", undefined, "Scan diagnostics"));
+      for (const diagnostic of diagnostics.slice(0, 20)) {
+        const line = [diagnostic?.kind, diagnostic?.path, diagnostic?.message].filter(Boolean).join(" · ");
+        if (line) note.append(make("span", undefined, line));
+      }
+      elements.nativeCommandBody.append(note);
+    };
+    const render = () => {
+      renderNativeSelectorItems(items, {
+        emptyText: "No APPEND_SYSTEM.md files match this filter.",
+        activeId: savedIsCandidate ? savedPath : APPEND_SYSTEM_DEFAULT_CHOICE_ID,
+        onSelect: async (item) => {
+          if (!ownsNativeCommandDialog() || saveInFlight) return;
+          saveInFlight = true;
+          elements.nativeCommandSearch.disabled = true;
+          for (const button of nativeSelectorItemButtons()) button.disabled = true;
+          setNativeCommandError("");
+          const tabId = nativeCommandTabId || activeTabId;
+          try {
+            const response = await nativeCommandApi("/api/append-system-selection", {
+              method: "POST",
+              body: { tabId, path: item.appendSystemPath ?? null },
+            });
+            if (!ownsNativeCommandDialog()) return;
+            const result = response.data || {};
+            addTransientMessage({
+              role: "native",
+              title: "/append-system",
+              content: result.changed === true
+                ? `Append-system choice saved: ${item.label}.`
+                : `Append-system choice unchanged: ${item.label}.`,
+              level: "info",
+            });
+            closeNativeCommandDialog();
+            if (result.changed === true && result.restartRequired === true) await confirmAppendSystemRestart(tabId);
+          } catch (error) {
+            if (!ownsNativeCommandDialog()) return;
+            saveInFlight = false;
+            elements.nativeCommandSearch.disabled = false;
+            render();
+            setNativeCommandError(error.message || String(error));
+          }
+        },
+      });
+      appendDiagnostics();
+    };
+    elements.nativeCommandSearch.oninput = render;
+    render();
+  } catch (error) {
+    if (!ownsNativeCommandDialog()) return;
+    setNativeCommandError(`Append-system scan failed: ${error.message || String(error)}`);
+    elements.nativeCommandBody.replaceChildren();
+  }
+}
+
+async function confirmAppendSystemRestart(tabId) {
+  const confirmed = await appConfirmText(
+    "Restart the active Pi tab now to load the new append-system prompt?\n\nThe saved choice is global for WebUI tabs and already persists. Cancel keeps it for the next manual reload or new tab without restarting.",
+    { affected: "The active Pi tab", confirmLabel: "Restart tab", danger: false },
+  );
+  if (!confirmed) return;
+  try {
+    await sendPrompt("prompt", "/reload", { targetTabId: tabId, throwOnError: true });
+  } catch (error) {
+    addEvent(`Append-system tab restart failed: ${error.message || String(error)}`, "error");
+  }
 }
 
 function nativeSettingsBadge(label, tone = "") {
@@ -47236,6 +47385,7 @@ function commandPaletteCoreItems() {
     { kind: "Pi", label: "/scoped-models", description: "Manage model cycling scope", keywords: "models cycle ctrl p", run: () => runNativeCommandMenu("/scoped-models") },
     { kind: "Pi", label: "/tools", description: "Manage active tools", keywords: "capabilities", run: () => runNativeCommandMenu("/tools") },
     { kind: "Pi", label: "/skills", description: "Manage active skills", keywords: "system prompt", run: () => runNativeCommandMenu("/skills") },
+    { kind: "Pi", label: "/append-system", description: "Choose the APPEND_SYSTEM.md append prompt", keywords: "append system prompt settings global", run: () => openNativeAppendSystemSelector() },
     { kind: "Pi", label: "/theme", description: "Choose the Web UI theme", keywords: "dark light colors appearance", run: () => openNativeThemeSelector() },
     { kind: "Git", label: "Guided Git workflow", description: "Stage, commit, push, or open a pull request step by step", keywords: "git commit push pr publish", run: () => launchGuidedGitWorkflow() },
     { kind: "Git", label: "Git changes", description: "Review and stage local changes with diffs", keywords: "git diff stage unstage discard status", run: () => openGitChangesDialog() },
@@ -49684,6 +49834,10 @@ elements.optionsRemoteButton.addEventListener("click", () => runNativeCommandMen
 elements.optionsNameButton.addEventListener("click", () => runNativeCommandMenu("/name"));
 elements.optionsCloneButton.addEventListener("click", () => runNativeCommandMenu("/clone"));
 elements.optionsSettingsButton.addEventListener("click", () => runNativeCommandMenu("/settings"));
+elements.optionsAppendSystemButton?.addEventListener("click", () => {
+  setOptionsMenuOpen(false);
+  void openNativeAppendSystemSelector();
+});
 elements.optionsSummarySetupButton?.addEventListener("click", () => runNativeCommandMenu("/summary-setup"));
 elements.optionsWorkflowSetupButton?.addEventListener("click", () => runNativeCommandMenu("/workflow-setup"));
 elements.optionsSafetyGuardSetupButton?.addEventListener("click", () => runNativeCommandMenu("/safety-guard-setup"));
@@ -49796,6 +49950,7 @@ elements.nativeCommandDialog.querySelector("form")?.addEventListener("submit", (
 });
 elements.nativeCommandSearch.addEventListener("keydown", handleNativeSelectorSearchKeydown);
 elements.nativeCommandDialog.addEventListener("close", () => {
+  nativeCommandDialogGeneration += 1;
   elements.nativeCommandSearch.oninput = null;
   nativeSettingsDirty = false;
   nativeCommandTabId = null;

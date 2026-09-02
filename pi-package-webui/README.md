@@ -172,6 +172,16 @@ Enable tools for the current session, save a global default, or configure an exa
 
 Find installed skills and manage session, global, or exact-model activation. Selecting a configured model automatically applies its skill profile unless the session has its own skill selection. Pi's TUI `/skills` command belongs to the optional `@firstpick/pi-extension-setup-skills` companion and uses the same Session, Global, and Model scopes; WebUI does not register a competing command.
 
+#### Append-system prompt picker
+
+**Optional feature needed:** None. It is included in Pi Web UI core.
+
+Choose one `APPEND_SYSTEM.md` file as a global append-system prompt for WebUI-managed Pi tabs. Open **Common Pi options**, choose **Feature Setup**, then select **Append-system Prompt**. You can also open the command palette and run **/append-system**. The picker shows files found by a bounded scan below your home `~/.pi` folder and the active tab's working directory, ready to filter and select. It follows file and folder links, including links to locations outside those two folders, while keeping the visible linked path in the list. The current choice is marked, and **Use Pi default discovery** removes the override again. Pi's exact global default file, `~/.pi/agent/APPEND_SYSTEM.md`, is represented by that default choice rather than a duplicate file row. Other files below `~/.pi`, including nested alternatives, remain selectable. Scan diagnostics explain when limits omit results; [TECHNICAL.md](TECHNICAL.md) lists the limits. The picker only shows file paths; it never edits or displays prompt file contents.
+
+Saving the choice does not change a running Pi session by itself. After a changed save, the Web UI asks whether to restart the active Pi tab now; cancel keeps the saved choice for the next manual reload or new tab. Because the choice is global, it also applies to every new tab you open afterward. Pick files and links carefully: a followed link can scan or load a prompt from anywhere the Web UI process can read, and an append prompt changes Pi's high-priority instructions.
+
+Hover a terminal tab to see the effective WebUI-selected non-default `APPEND_SYSTEM.md` visible path. Tabs using Pi's default discovery omit this line. Existing tabs keep their launch-time information until their Pi process is fully restarted or the tab is recreated, and the tooltip never reads or shows prompt contents.
+
 ### Project automation and Git
 
 #### App runners

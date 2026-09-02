@@ -19,6 +19,7 @@ const actionContract = {
   optionsForkButton: { label: "Fork", command: "/fork" },
   optionsTreeButton: { label: "Tree", command: "/tree" },
   optionsExportButton: { label: "Export", command: "/export" },
+  optionsAppendSystemButton: { label: "Append-system Prompt" },
   optionsSummarySetupButton: { label: "Session Summary Setup", command: "/summary-setup", hidden: true },
   optionsGitWorkflowSetupButton: { label: "Guided Git Setup", command: "/git-workflow-setup" },
   optionsWorkflowSetupButton: { label: "Workflow Permission Setup", command: "/workflow-setup", hidden: true },
@@ -42,7 +43,7 @@ const groups = [
     label: "Feature Setup",
     triggerId: "optionsFeatureSetupSubmenuButton",
     panelId: "optionsFeatureSetupSubmenu",
-    actions: ["optionsSummarySetupButton", "optionsGitWorkflowSetupButton"],
+    actions: ["optionsAppendSystemButton", "optionsSummarySetupButton", "optionsGitWorkflowSetupButton"],
   },
   {
     key: "safety-permissions",

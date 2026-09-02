@@ -166,6 +166,10 @@ for (const [id, handler] of [
   assert.equal(occurrences(`  ${id}: \\$\\("#${id}"\\),`), 1, `${id} should keep exactly one element reference`);
 }
 
+assert.match(app, /elements\.optionsAppendSystemButton\?\.addEventListener\("click", \(\) => \{\s*setOptionsMenuOpen\(false\);\s*void openNativeAppendSystemSelector\(\);\s*\}\);/, "Append-system Prompt should close Common Pi options and open the existing browser picker directly");
+assert.equal(app.match(/elements\.optionsAppendSystemButton\?\.addEventListener\("click"/g)?.length ?? 0, 1, "Append-system Prompt should be bound exactly once");
+assert.equal(app.match(/  optionsAppendSystemButton: \$\("#optionsAppendSystemButton"\),/g)?.length ?? 0, 1, "Append-system Prompt should have exactly one element reference");
+
 assert.equal(occurrences('elements\\.optionsMenu\\.addEventListener\\("click"'), 1, "the submenu delegate should be bound exactly once");
 assert.equal(occurrences('elements\\.optionsMenu\\.addEventListener\\("keydown"'), 1, "the submenu key handler should be bound exactly once");
 assert.equal(occurrences("function initializeOptionsSubmenus\\(\\)"), 1, "the initializer should be defined exactly once");

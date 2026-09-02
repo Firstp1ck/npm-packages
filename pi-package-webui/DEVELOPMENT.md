@@ -14,6 +14,34 @@ Focused contributor validation:
 node tests/resource-tui-extension.test.mjs
 ```
 
+## Append-system prompt picker contract
+
+The browser exposes one global `APPEND_SYSTEM.md` override through the native selector flow in `public/app.js`:
+
+- `openNativeAppendSystemSelector` opens the shared native command dialog, fetches `GET /api/append-system-files?tab=<id>` via `nativeCommandApi`, and renders the returned candidates through the shared `renderNativeSelectorItems` implementation (filter input and keyboard navigation included). Candidate labels are visible alias paths and warn that followed targets can be outside the displayed root. It marks the saved candidate `current`, marks `Use Pi default discovery` current when no valid override is saved, and shows an invalid saved `appendSystemPromptPath` as a disabled row with a diagnostic. Scan `diagnostics` render as a bounded note (first 20 entries, kind/path/message only); prompt file contents are never fetched.
+- Selecting an item posts `POST /api/append-system-selection` with `{ tabId, path }` (`path: null` for Pi default discovery). The save itself never reloads a tab. Only a response with `changed: true` and `restartRequired: true` proceeds to `confirmAppendSystemRestart`, which asks through the shared `appConfirmText` confirmation and, on approval, reuses the standard active-tab reload path (`sendPrompt("prompt", "/reload", { targetTabId, throwOnError: true })`); reload errors are surfaced in the events log. Cancellation keeps the saved choice for the next manual reload or new tab.
+- The command palette lists the action as `/append-system` so the flow stays reachable from the browser-native settings surface.
+
+Endpoint data contract (server side owned by the discovery/persistence workstream): `GET /api/append-system-files?tab=<id>` returns `appendSystemPromptPath` (saved override or `null`), `roots` (`{ path, label }`), bounded `candidates` (`{ path, rootLabel }`), bounded `diagnostics` (`{ kind, path, message }`), and `limits`. Discovery follows symlinked roots, directory entries, and exact-visible-name file links, including external targets, while candidate identity remains the visible absolute alias. Canonical directory identities are internal cycle/deduplication keys only. A provenance-valid global choice outside the active tab's roots is included as one deduplicated `Saved selection` candidate. `POST /api/append-system-selection` accepts `{ tabId, path }` and returns the same scan payload plus `changed` and `restartRequired`; it never returns file contents. Changed selections must be candidates of a fresh active-tab scan, while the exact provenance-valid saved path may be submitted unchanged from another project.
+
+The exact lexical global Pi default `path.join(homedir(), ".pi", "agent", "APPEND_SYSTEM.md")` is excluded during discovery before candidate-limit accounting. Existing and submitted selections equal to it are normalized to `null` default discovery, so they do not produce an invalid saved row or `--append-system-prompt` override. No other global, nested, or project-local candidate is excluded.
+
+Private settings persist both `appendSystemPromptPath` and its lexical `appendSystemPromptRootPath`. Child launch revalidates lexical containment, the exact visible name, the depth-10 bound, and the final followed target's regular-file status. The followed target may be outside the saved root, while the visible saved alias is passed unchanged to Pi. Broken, inaccessible, and non-regular targets fail closed. This intentionally allows a link to scan or load a prompt outside the two visible roots; canonical target identity is not persisted, and the accepted retargeting/validation-to-open race remains.
+
+Each successful WebUI-managed Pi launch captures its validated selected path as tab-local runtime metadata. `tabMeta.prompt` and detached-supervisor metadata use only `null` or `{ "kind": "append-system", "path": "<absolute visible path>" }`. The path is capped at 4096 characters and cannot contain C0 control characters (`U+0000`–`U+001F`) or DEL (`U+007F`); restored values must also have exactly those two fields, the known kind, and an absolute path, or normalization returns `null`. Discovery omits candidates with those controls, and fresh or restored selections containing them fail closed. Tabs created by older builds therefore restore without a custom-prompt claim. Supervisor hydration retains valid descriptors, while supervised replacement stays atomic and direct create, working-folder replacement, and full reload update the live tab only after the child emits its successful spawn event.
+
+Direct-mode `pi_process_start` is emitted from that child `spawn` event. A failed spawn emits `pi_process_error` without a preceding start. A failed direct working-folder replacement retains the prior live cwd and prompt descriptor and leaves cwd-dependent watcher subscriptions on that prior cwd; cwd, activity, prompt, and watcher publication move together only after the replacement spawn succeeds.
+
+This descriptor comes directly from the validated saved selection used while constructing that process launch. It is never reconstructed from current global settings or by scanning final child arguments, so later selection changes do not rewrite existing tabs and arbitrary launcher `--append-system-prompt` values remain outside this contract. Prompt file contents, inline launcher text, and unrelated arguments are not copied into the descriptor.
+
+Focused contributor validation:
+
+```bash
+node tests/append-system-selection.test.mjs
+node tests/append-system-http.test.mjs
+node tests/append-system-selector-static.test.mjs
+```
+
 ## Web UI settings write lock
 
 `updateWebuiSettings` serializes same-process updates and uses per-writer records under `<settings-file>.lock` for cross-process writes. A process can exit after creating its record but before writing valid JSON, leaving an empty file. Lock acquisition removes incomplete records immediately when their PID is dead. It gives a live writer a one-second grace period, then removes records that are still empty or malformed so one interrupted write cannot block every later settings save.

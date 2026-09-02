@@ -9,6 +9,7 @@ import {
   guardsForNativeCommand,
   isLocalAddress,
   isLocalRequest,
+  isLoopbackHostAuthority,
   LOCALHOST_ONLY_POST_ROUTES,
   remoteShellTrustWarning,
   requireLocalhost,
@@ -39,6 +40,12 @@ assert.equal(isLocalAddress("::1"), true);
 assert.equal(isLocalAddress("192.168.1.50"), false);
 assert.equal(isLocalRequest(localReq), true);
 assert.equal(isLocalRequest(remoteReq), false);
+for (const authority of ["localhost", "localhost:8080", "LOCALHOST.", "127.0.0.1", "127.42.0.1:65535", "[::1]", "[0:0:0:0:0:0:0:1]:8080"]) {
+  assert.equal(isLoopbackHostAuthority(authority), true, `${authority} should be accepted as a loopback Host authority`);
+}
+for (const authority of ["", "attacker.example", "attacker.example:8080", "128.0.0.1", "127.0.0.1.attacker.example", "127.1", "[::ffff:127.0.0.1]", "[::1]:65536", "localhost:bad"]) {
+  assert.equal(isLoopbackHostAuthority(authority), false, `${authority || "an empty Host"} should be rejected as a loopback Host authority`);
+}
 
 assert.throws(() => requireLocalhost(remoteReq, "blocked"), (error) => error.statusCode === 403);
 assert.throws(() => requireLocalhostRoute(remoteReq, "/api/update"), (error) => error.statusCode === 403);

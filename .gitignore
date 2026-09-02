@@ -25,3 +25,4 @@ pi-package-webui/test-results/
 /plans/handoffs/
 /.pi/subagents/
 /pi-package-webui/.pi/subagents/
+pi-session-*
