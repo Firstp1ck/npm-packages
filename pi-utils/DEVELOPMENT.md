@@ -48,11 +48,11 @@ Shared helper utilities used by `@firstpick/pi-extension-*` packages.
 - `createLocalWikiEngine(config)`
 - `@firstpick/pi-utils/resource-management`: resource normalization, scope resolution, model profiles, and locked shared defaults
 - `@firstpick/pi-utils/scoped-resource-command`: shared Session, Global, and Model command flow
-- `@firstpick/pi-utils/tui-resource-selector`: searchable multi-resource selector with caller-supplied display labels and selected-item descriptions
+- `@firstpick/pi-utils/tui-resource-selector`: searchable multi-resource selector with caller-supplied display labels, discovery values, and selected-item descriptions
 - `src/tui-setup-option-selector.mjs`: setup-menu navigation that distinguishes Back from immediate exit
 - `@firstpick/pi-utils/tui-model-profile-selector`: searchable exact-model profile picker
 
-`scoped-resource-command` keeps resource names as persistence identifiers. Callers may return separate `getResourcePresentation()` entries with a display label or description. The TUI selector includes that presentation text in search and shows the selected description without changing saved resource names.
+`scoped-resource-command` keeps resource names as persistence identifiers. Callers may return separate `getResourcePresentation()` entries with `label`, `discovery`, or `description` fields. The TUI selector renders name, discovery, and status columns, includes presentation text in search, and shows the selected description without changing saved resource names.
 
 `createExtensionWorkingIndicator` renders a reusable extension-owned spinner using `ctx.ui.setWidget` plus footer `setStatus`, so it works inside slash-command handlers where Pi's built-in model-streaming working row is not shown.
 

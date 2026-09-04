@@ -54,8 +54,8 @@ try {
     customType: "webui-skills-config",
     getVisibleNames: async () => ["alpha", "beta"],
     getResourcePresentation: async () => [
-      { name: "alpha", description: "npm:package-a: Alpha skill" },
-      { name: "beta", description: "local: Beta skill" },
+      { name: "alpha", discovery: "npm:package-a", description: "Alpha skill" },
+      { name: "beta", discovery: "local", description: "Beta skill" },
     ],
     getRuntimeNames: async () => ["alpha"],
     getEnabledNames: async () => ["alpha"],
@@ -80,7 +80,7 @@ try {
     { title: "Global skills default", inputs: ["\r"] },
     {
       title: "Skills Configuration",
-      includes: ["npm:package-a: Alpha skill"],
+      includes: ["npm:package-a", "Alpha skill"],
       inputs: ["\x1b[B", "\r", "\x13"],
     },
   ];

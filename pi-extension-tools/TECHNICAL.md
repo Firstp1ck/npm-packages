@@ -14,7 +14,7 @@ Advanced user setup, configuration, compatibility, and troubleshooting informati
 
 Session choices take precedence over an exact case-sensitive provider/model profile. A model profile takes precedence over the global default, which takes precedence over Pi's runtime tool set. **Use inherited defaults** removes the selected override. An empty saved selection intentionally enables no tools.
 
-The selector shows each tool's source beside its name. Source labels distinguish Pi built-ins, SDK custom tools, and extension-provided tools. Source text is searchable.
+The selector separates tool names, discovery values, and enabled status into three columns. Discovery values distinguish Pi built-ins, SDK custom tools, and extension-provided tools. The selected tool's description appears below the list. Names, discovery values, and descriptions are searchable.
 
 The selector keeps saved names that are temporarily unavailable so reinstalling an extension does not silently erase a profile.
 

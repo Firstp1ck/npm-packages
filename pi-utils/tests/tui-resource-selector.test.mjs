@@ -37,28 +37,30 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
   const alphaRow = selector.render(100).find((line) => line.includes("alpha"));
   const betaRow = selector.render(100).find((line) => line.includes("beta"));
 
+  assert.match(output, /Name\s+Discovery\s+Status/);
   assert.match(output, /Ctrl\+X Disable all · Ctrl\+A Enable all · Ctrl\+S save · Esc Back · Ctrl\+C Close/);
   assert.doesNotMatch(output, /[✓✗]/);
-  assert.match(alphaRow, /alpha\s{2}enabled/);
-  assert.match(betaRow, /beta\s{3}disabled/);
+  assert.match(alphaRow, /alpha\s+enabled/);
+  assert.match(betaRow, /beta\s+disabled/);
   assert.equal(alphaRow.indexOf("enabled"), betaRow.indexOf("disabled"), "status values should share one column");
 }
 
 {
   const { selector } = createSelector(["alpha", "gamma"], [
-    { name: "alpha", label: "alpha (Pi built-in)", description: "Pi built-in: Alpha tool" },
-    { name: "beta", label: "beta (extension:sample)", description: "npm:sample: Beta tool" },
+    { name: "alpha", discovery: "Pi built-in", description: "Alpha tool" },
+    { name: "beta", discovery: "npm:sample", description: "Beta tool" },
   ]);
-  assert.match(selector.render(100).join("\n"), /alpha \(Pi built-in\).*enabled[\s\S]*Pi built-in: Alpha tool/);
+  const initialOutput = selector.render(100).join("\n");
+  assert.match(initialOutput, /alpha\s+Pi built-in\s+enabled[\s\S]*Alpha tool/);
 
   selector.handleInput("\x1b[B");
-  assert.match(selector.render(100).join("\n"), /npm:sample: Beta tool/);
-  assert.doesNotMatch(selector.render(100).join("\n"), /Pi built-in: Alpha tool/);
+  assert.match(selector.render(100).join("\n"), /Beta tool/);
+  assert.doesNotMatch(selector.render(100).join("\n"), /Alpha tool/);
 
   selector.handleInput("n");
   selector.handleInput("p");
   selector.handleInput("m");
-  assert.match(selector.render(100).join("\n"), /beta \(extension:sample\)/, "source and description text should be searchable");
+  assert.match(selector.render(100).join("\n"), /beta\s+npm:sample\s+disabled/, "discovery and description text should be searchable");
 }
 
 {

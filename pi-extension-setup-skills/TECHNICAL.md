@@ -14,7 +14,7 @@ Advanced user setup, configuration, compatibility, and troubleshooting informati
 
 Session choices take precedence over an exact case-sensitive provider/model profile. A model profile takes precedence over the global default, which takes precedence over Pi's runtime skill set. **Use inherited defaults** removes the selected override. An empty saved selection intentionally enables no skills.
 
-The selector discovers skills from Pi's standard user and project locations and configured Pi packages. It shows the selected skill's package, CLI, or local source together with its description. Name, source, and description text are searchable. The selector keeps saved names that are temporarily unavailable so reinstalling a package does not silently erase a profile.
+The selector discovers skills from Pi's standard user and project locations and configured Pi packages. It separates skill names, discovery values, and enabled status into three columns. The selected skill's description appears below the list. Names, discovery values, and descriptions are searchable. The selector keeps saved names that are temporarily unavailable so reinstalling a package does not silently erase a profile.
 
 ## Runtime behavior
 

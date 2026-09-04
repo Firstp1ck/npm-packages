@@ -299,6 +299,14 @@ export function skillSourceLabel(candidate: SkillCandidate): string {
     ?? (candidate.enableKind === "package" ? "package" : "local");
 }
 
+export function skillResourcePresentation(candidate: SkillCandidate) {
+  return {
+    name: candidate.name,
+    discovery: skillSourceLabel(candidate),
+    description: candidate.description,
+  };
+}
+
 async function selectSkills(
   ctx: ExtensionCommandContext,
   candidates: SkillCandidate[],
@@ -510,10 +518,7 @@ export default function setupSkillsExtension(
       await refreshCatalog(ctx);
       return catalog.map((candidate) => candidate.name);
     },
-    getResourcePresentation: async () => catalog.map((candidate) => ({
-      name: candidate.name,
-      description: `${skillSourceLabel(candidate)}: ${candidate.description}`,
-    })),
+    getResourcePresentation: async () => catalog.map(skillResourcePresentation),
     getRuntimeNames: async () => runtimeSkillNames(),
     getEnabledNames: async () => {
       if (enabledSkills instanceof Set) return [...enabledSkills];

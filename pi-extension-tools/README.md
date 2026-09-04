@@ -28,7 +28,7 @@ Run `/tools`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-In the resource list, each tool name includes its source in parentheses and shows `enabled` or `disabled` in a separate status column. Type to search by name or source, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+The resource list has separate **Name**, **Discovery**, and **Status** columns. Discovery shows how Pi found the tool, such as `auto`, while Status shows `enabled` or `disabled`. The selected tool's description appears below the list. Type to search by name, discovery value, or description, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
 
 ## Before you start
 

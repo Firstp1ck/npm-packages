@@ -8,6 +8,7 @@ import setupSkillsExtension, {
   collectPackageSkillFiles,
   collectSkillFilesFromDir,
   hasNoSkillsFlag,
+  skillResourcePresentation,
   skillSourceLabel,
 } from "../index";
 
@@ -76,6 +77,11 @@ describe("skill source presentation", () => {
     expect(skillSourceLabel({ ...base, packageSource: "npm:@firstpick/example" })).toBe("npm:@firstpick/example");
     expect(skillSourceLabel({ ...base, sourceInfo: { source: "cli" } as never })).toBe("cli");
     expect(skillSourceLabel(base)).toBe("local");
+    expect(skillResourcePresentation({ ...base, sourceInfo: { source: "auto" } as never })).toEqual({
+      name: "example",
+      discovery: "auto",
+      description: "Example skill",
+    });
   });
 });
 

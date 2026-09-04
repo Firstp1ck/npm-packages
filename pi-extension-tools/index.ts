@@ -19,6 +19,14 @@ export function toolSourceLabel(tool: ToolInfo): string {
   return source.replace(/^extension:/, "");
 }
 
+export function toolResourcePresentation(tool: ToolInfo) {
+  return {
+    name: tool.name,
+    discovery: toolSourceLabel(tool),
+    description: tool.description,
+  };
+}
+
 function lastBranchConfig(ctx: ExtensionContext): ToolsState | undefined {
   let found: ToolsState | undefined;
   for (const entry of ctx.sessionManager.getBranch()) {
@@ -66,10 +74,7 @@ export default function toolsExtension(pi: ExtensionAPI) {
     selectionKey: "enabledTools",
     customType: CUSTOM_TYPE,
     getVisibleNames: async () => allToolNames(),
-    getResourcePresentation: async () => pi.getAllTools().map((tool) => ({
-      name: tool.name,
-      label: `${tool.name} (${toolSourceLabel(tool)})`,
-    })),
+    getResourcePresentation: async () => pi.getAllTools().map(toolResourcePresentation),
     getRuntimeNames: async () => runtimeTools(),
     getEnabledNames: async () => [...enabledTools],
     recompute,

@@ -1,5 +1,5 @@
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
-import { Container, fuzzyFilter, getKeybindings, Input, Key, matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, getKeybindings, Input, Key, matchesKey, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
 
 function keyMatches(data, keybinding, fallback) {
   const keybindings = getKeybindings();
@@ -21,7 +21,11 @@ export class TuiResourceSelectorComponent extends Container {
     this.filteredResources = [...this.resources];
     this.selectedIndex = 0;
     this.maxVisible = 10;
-    this.statusColumnOffset = Math.max(0, ...this.resources.map((name) => this.displayLabel(name).length));
+    this.nameColumnWidth = Math.max(visibleWidth("Name"), ...this.resources.map((name) => visibleWidth(this.displayLabel(name))));
+    this.discoveryColumnWidth = Math.max(
+      visibleWidth("Discovery"),
+      ...this.resources.map((name) => visibleWidth(this.discoveryLabel(name))),
+    );
     this.isDirty = false;
     this._focused = false;
 
@@ -63,9 +67,17 @@ export class TuiResourceSelectorComponent extends Container {
     return this.presentation.get(name)?.label ?? name;
   }
 
+  discoveryLabel(name) {
+    return this.presentation.get(name)?.discovery ?? "";
+  }
+
+  padColumn(value, width) {
+    return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
+  }
+
   searchText(name) {
     const item = this.presentation.get(name);
-    return [name, item?.label, item?.description].filter(Boolean).join(" ");
+    return [name, item?.label, item?.discovery, item?.description].filter(Boolean).join(" ");
   }
 
   refresh() {
@@ -79,6 +91,8 @@ export class TuiResourceSelectorComponent extends Container {
 
   updateList() {
     this.listContainer.clear();
+    const header = `  ${this.padColumn("Name", this.nameColumnWidth)}  ${this.padColumn("Discovery", this.discoveryColumnWidth)}  Status`;
+    this.listContainer.addChild(new Text(this.theme.fg("muted", header), 0, 0));
     if (this.filteredResources.length === 0) {
       this.listContainer.addChild(new Text(this.theme.fg("muted", "  No matching resources"), 0, 0));
       return;
@@ -93,12 +107,14 @@ export class TuiResourceSelectorComponent extends Container {
       const name = this.filteredResources[index];
       const selected = index === this.selectedIndex;
       const prefix = selected ? this.theme.fg("accent", "→ ") : "  ";
-      const paddedLabel = this.displayLabel(name).padEnd(this.statusColumnOffset);
+      const paddedLabel = this.padColumn(this.displayLabel(name), this.nameColumnWidth);
       const label = selected ? this.theme.fg("accent", paddedLabel) : paddedLabel;
+      const paddedDiscovery = this.padColumn(this.discoveryLabel(name), this.discoveryColumnWidth);
+      const discovery = selected ? this.theme.fg("accent", paddedDiscovery) : paddedDiscovery;
       const status = this.enabled.has(name)
         ? this.theme.fg("success", "enabled")
         : this.theme.fg("dim", "disabled");
-      this.listContainer.addChild(new Text(`${prefix}${label}  ${status}`, 0, 0));
+      this.listContainer.addChild(new Text(`${prefix}${label}  ${discovery}  ${status}`, 0, 0));
     }
 
     if (startIndex > 0 || endIndex < this.filteredResources.length) {
