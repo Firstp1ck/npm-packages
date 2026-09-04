@@ -14,6 +14,7 @@ import {
   inspectRecoveryFiles,
   postSecureWebuiRecovery,
   selectRecoveryModel,
+  shouldNotifyAnthropicCompatibility,
   writeRecoveryPromptFile,
 } from "../anthropic-subscription-auth-recovery.ts";
 
@@ -39,6 +40,24 @@ test("patch status summary hides already-applied targets and preserves actionabl
     { roles: ["webui-rpc"], status: "applicable", packageVersion: "0.83.0" },
   ]), "webui-rpc: applicable (0.83.0)");
   assert.equal(formatPatchStatusSummary([]), "no runtime targets discovered");
+});
+
+test("startup compatibility warnings require an active Anthropic subscription login", () => {
+  const anthropic = { provider: "anthropic", id: "claude" };
+  const registry = ({ available = [anthropic], configured = true, oauth = true, subscription = true } = {}) => ({
+    getAvailable: () => available,
+    hasConfiguredAuth: () => configured,
+    isUsingOAuth: () => oauth,
+    getProvider: () => ({ auth: { oauth: { isSubscription: subscription } } }),
+  });
+  const summary = "native-tui: unsupported-layout (0.85.0); webui-rpc: unsupported-layout (0.85.0)";
+
+  assert.equal(shouldNotifyAnthropicCompatibility(summary, registry()), true);
+  assert.equal(shouldNotifyAnthropicCompatibility(summary, registry({ available: [] })), false);
+  assert.equal(shouldNotifyAnthropicCompatibility(summary, registry({ configured: false })), false);
+  assert.equal(shouldNotifyAnthropicCompatibility(summary, registry({ oauth: false })), false);
+  assert.equal(shouldNotifyAnthropicCompatibility(summary, registry({ subscription: false })), false);
+  assert.equal(shouldNotifyAnthropicCompatibility("native-tui: already-applied (0.85.0)", registry()), false);
 });
 
 test("error classifiers are provider-scoped, normalized, and stable", () => {

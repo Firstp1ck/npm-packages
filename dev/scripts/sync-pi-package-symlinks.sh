@@ -513,8 +513,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [rootDir, agentDir, piPackageDir] = process.argv.slice(2);
-const piIndex = path.join(piPackageDir, "dist", "index.js");
-const { DefaultPackageManager, SettingsManager } = await import(pathToFileURL(piIndex).href);
+const packageManagerModule = path.join(piPackageDir, "dist", "core", "package-manager.js");
+const settingsManagerModule = path.join(piPackageDir, "dist", "core", "settings-manager.js");
+const { DefaultPackageManager } = await import(pathToFileURL(packageManagerModule).href);
+const { SettingsManager } = await import(pathToFileURL(settingsManagerModule).href);
 
 const sources = fs.readdirSync(rootDir, { withFileTypes: true })
   .filter((entry) => entry.isDirectory() && entry.name.startsWith("pi-"))

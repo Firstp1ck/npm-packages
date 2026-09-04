@@ -48,6 +48,13 @@ type ModelRegistryLike = {
   hasConfiguredAuth(model: ModelRef): boolean;
 };
 
+type AnthropicSubscriptionRegistryLike = {
+  getAvailable(): ModelRef[];
+  hasConfiguredAuth(model: ModelRef): boolean;
+  isUsingOAuth(model: ModelRef): boolean;
+  getProvider(provider: string): { auth?: { oauth?: { isSubscription?: boolean } } } | undefined;
+};
+
 function normalizeError(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
@@ -335,6 +342,17 @@ export function formatPatchStatusSummary(
     .join("; ");
 }
 
+export function shouldNotifyAnthropicCompatibility(summary: string, registry: AnthropicSubscriptionRegistryLike): boolean {
+  if (!/applicable|drifted|unsupported/iu.test(summary)) return false;
+  const model = registry.getAvailable().find((candidate) => candidate.provider === "anthropic");
+  return Boolean(
+    model
+    && registry.hasConfiguredAuth(model)
+    && registry.isUsingOAuth(model)
+    && registry.getProvider("anthropic")?.auth?.oauth?.isSubscription === true,
+  );
+}
+
 async function runPatchStatus(files: RecoveryFiles): Promise<{ ok: boolean; summary: string; payload?: unknown }> {
   try {
     const { stdout } = await execFileAsync(process.execPath, [files.patchctlPath, "status", "--patch", files.patchPath], {
@@ -399,7 +417,9 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
     }
     if (status.summary) {
       ctx.ui.setStatus(STATUS_KEY, status.summary);
-      if (/applicable|drifted|unsupported/iu.test(status.summary)) ctx.ui.notify(`Anthropic compatibility status: ${status.summary}`, "warning");
+      if (shouldNotifyAnthropicCompatibility(status.summary, ctx.modelRegistry as unknown as AnthropicSubscriptionRegistryLike)) {
+        ctx.ui.notify(`Anthropic compatibility status: ${status.summary}`, "warning");
+      }
     }
   });
 

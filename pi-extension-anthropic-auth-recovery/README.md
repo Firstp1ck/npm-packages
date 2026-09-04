@@ -6,6 +6,7 @@ Helps you recover from a narrow class of Anthropic compatibility errors without 
 
 - Recognizes supported Anthropic compatibility errors.
 - Shows a recovery option only when it matches the problem.
+- Shows startup compatibility warnings only while you are signed in to an Anthropic subscription.
 - Uses another authenticated model to prepare a recovery plan.
 - Never applies compatibility changes automatically.
 

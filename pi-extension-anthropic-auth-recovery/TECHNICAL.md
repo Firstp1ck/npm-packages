@@ -14,6 +14,8 @@ pi install npm:@firstpick/pi-extension-anthropic-auth-recovery
 
 The recovery option appears only for supported Anthropic subscription or extra-usage compatibility errors. Other provider errors and unrelated Anthropic failures are ignored.
 
+Pi shows automatic startup compatibility warnings only when an Anthropic subscription login is active. It suppresses them when Anthropic is logged out or configured with an API key instead. You can still run `/anthropic-auth-status` manually.
+
 The same recognized error is shown only once during a Pi session.
 
 ## Recovery flow

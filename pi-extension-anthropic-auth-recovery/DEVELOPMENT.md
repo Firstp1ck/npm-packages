@@ -31,7 +31,7 @@ npm run smoke
 npm pack --dry-run --json
 ```
 
-Tests run only against temporary directories and mocked fetch calls. They cover provider-scoped error classification, authenticated model selection, plan-only arguments, prompt-file permissions, packaged and fallback discovery, secure WebUI rules, and an offline independent npm installation from locally built tarballs.
+Tests run only against temporary directories and mocked fetch calls. They cover provider-scoped error classification, Anthropic subscription warning guards, authenticated model selection, plan-only arguments, prompt-file permissions, packaged and fallback discovery, secure WebUI rules, and an offline independent npm installation from locally built tarballs.
 
 ## Additional implementation details
 
@@ -64,7 +64,7 @@ The extension:
 - asks the recovery session to run `patchctl status` and `patchctl plan` only;
 - starts Pi with `--no-approve` and explicitly forbids `apply`, rollback, package installation, and live provider verification;
 - exposes `/anthropic-auth-status` for a read-only compatibility status check; and
-- shows status at session start when the external patch resources can be discovered.
+- shows status at session start when the external patch resources can be discovered, but emits an automatic warning only when Pi has active Anthropic subscription OAuth.
 
 In a native TUI, the confirmed flow opens a separate terminal when a supported terminal launcher is available. In RPC mode, it posts only to an explicitly configured, authenticated recovery endpoint; otherwise it shows a manual local command.
 

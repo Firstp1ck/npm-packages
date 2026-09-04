@@ -19,17 +19,23 @@ try {
   await mkdir(extensions, { recursive: true });
   await mkdir(fakeBin, { recursive: true });
   await mkdir(path.dirname(fakePiCli), { recursive: true });
+  await mkdir(path.join(fakePiPackage, "dist", "core"), { recursive: true });
   await symlink(webuiLib, path.join(extensions, "lib"));
   await writeFile(path.join(fakePiPackage, "package.json"), JSON.stringify({ type: "module" }));
   await writeFile(fakePiCli, "#!/usr/bin/env node\n");
   await chmod(fakePiCli, 0o755);
   await symlink(fakePiCli, path.join(fakeBin, "pi"));
+  await writeFile(path.join(fakePiPackage, "dist", "index.js"), 'import "missing-entrypoint-dependency";\n');
   await writeFile(
-    path.join(fakePiPackage, "dist", "index.js"),
+    path.join(fakePiPackage, "dist", "core", "settings-manager.js"),
     `export class SettingsManager {
   static create() { return new SettingsManager(); }
 }
-export class DefaultPackageManager {
+`,
+  );
+  await writeFile(
+    path.join(fakePiPackage, "dist", "core", "package-manager.js"),
+    `export class DefaultPackageManager {
   async resolveExtensionSources() {
     return {
       extensions: [{ enabled: true, path: ${JSON.stringify(path.join(repoRoot, "pi-package-webui", "session-summary.ts"))} }],
