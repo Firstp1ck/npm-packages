@@ -3,7 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 // Strict JSON-lines reader: LF is the only record delimiter, one trailing CR is stripped,
 // and any record longer than maxFrameBytes is rejected without being buffered further.
 // Node's readline is intentionally not used because it also splits on U+2028/U+2029.
-export function createJsonlReader({ maxFrameBytes, onRecord, onOversized, onInvalid }) {
+export function createJsonlReader({ maxFrameBytes, onRecord, onOversized, onInvalid, shouldPause = () => false }) {
   const decoder = new StringDecoder("utf8");
   let buffer = "";
   let discarding = false;
@@ -25,6 +25,7 @@ export function createJsonlReader({ maxFrameBytes, onRecord, onOversized, onInva
   const consume = (text) => {
     buffer += text;
     while (true) {
+      if (shouldPause()) return;
       const newline = buffer.indexOf("\n");
       if (newline === -1) {
         if (discarding) {
@@ -54,6 +55,8 @@ export function createJsonlReader({ maxFrameBytes, onRecord, onOversized, onInva
   };
 
   return {
+    resume() { consume(""); },
+    get bufferedBytes() { return Buffer.byteLength(buffer); },
     write(chunk) {
       consume(typeof chunk === "string" ? chunk : decoder.write(chunk));
     },

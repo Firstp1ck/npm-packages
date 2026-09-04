@@ -22,10 +22,14 @@ Rectangle {
     property string completionQuery: ""
     property string completionEmptyText: ""
     property string suppressedCompletion: ""
+    property string completionIdentity: ""
+    property int completionGeneration: 0
+    property int completionResultGeneration: -1
+    property bool completionLoading: false
     property string busyPromptMode: "steer"
     readonly property bool overLimit: prompt.text.length > maxCharacters
     readonly property bool hasText: prompt.text.trim().length > 0 && !overLimit
-    readonly property bool completionOpen: completionPopup.visible
+    readonly property bool completionOpen: completionLoading || completionPopup.visible
     readonly property int completionIndex: completionPopup.currentIndex
     readonly property int cursorPosition: prompt.cursorPosition
 
@@ -35,7 +39,7 @@ Rectangle {
     signal attachRequested()
     signal attachmentRemoveRequested(string attachmentId)
     signal attachmentEditRequested(string attachmentId)
-    signal completionRequested(string kind, string query)
+    signal completionRequested(string kind, string query, int generation)
     signal draftEdited(string text)
 
     implicitHeight: column.implicitHeight + theme.space4Xl
@@ -95,38 +99,66 @@ Rectangle {
         return { kind: "", query: "", start: 0, end: 0 }
     }
 
-    function refreshCompletion() {
-        const context = completionContext()
-        const identity = context.kind + ":" + context.query
-        if (context.kind.length === 0 || identity === suppressedCompletion) {
-            if (completionKind.length > 0) {
-                completionKind = ""
-                completionQuery = ""
-                completions = []
-                completionEmptyText = ""
-                completionRequested("", "")
-            }
-            return
-        }
-        if (context.kind === completionKind && context.query === completionQuery) return
-        completionKind = context.kind
-        completionQuery = context.query
-        completionRequested(context.kind, context.query)
+    function contextIdentity(context) {
+        return JSON.stringify([context.kind, context.query, context.start, context.end])
     }
 
-    function dismissCompletion() {
-        const context = completionContext()
-        suppressedCompletion = context.kind.length > 0 ? context.kind + ":" + context.query : ""
+    function invalidateCompletion() {
+        completionGeneration++
+        completionResultGeneration = -1
+        completionLoading = false
+        completionIdentity = ""
         completionKind = ""
         completionQuery = ""
         completions = []
         completionEmptyText = ""
     }
 
+    function refreshCompletion() {
+        const context = completionContext()
+        const identity = contextIdentity(context)
+        if (context.kind.length === 0 || identity === suppressedCompletion) {
+            if (context.kind.length === 0) suppressedCompletion = ""
+            if (completionKind.length > 0) {
+                invalidateCompletion()
+                completionRequested("", "", completionGeneration)
+            }
+            return
+        }
+        suppressedCompletion = ""
+        if (identity === completionIdentity) return
+        // Drop selectable results before emitting a request or starting its debounce.
+        invalidateCompletion()
+        completionIdentity = identity
+        completionKind = context.kind
+        completionQuery = context.query
+        completionLoading = true
+        completionEmptyText = "Loading suggestions…"
+        completionRequested(context.kind, context.query, completionGeneration)
+    }
+
+    function setCompletionResults(generation, items, emptyText) {
+        if (generation !== completionGeneration || completionKind.length === 0
+                || completionIdentity !== contextIdentity(completionContext())) return false
+        completions = items
+        completionResultGeneration = generation
+        completionLoading = false
+        completionEmptyText = emptyText
+        return true
+    }
+
+    function dismissCompletion() {
+        const context = completionContext()
+        suppressedCompletion = context.kind.length > 0 ? contextIdentity(context) : ""
+        invalidateCompletion()
+    }
+
     // Replaces the token under the cursor with the chosen suggestion. Never sends.
     function acceptCompletion(index) {
         const context = completionContext()
-        if (context.kind.length === 0 || index < 0 || index >= completions.length) return false
+        if (completionLoading || completionResultGeneration !== completionGeneration
+                || completionIdentity !== contextIdentity(context)
+                || context.kind.length === 0 || index < 0 || index >= completions.length) return false
         const item = completions[index]
         const replacement = context.kind === "command"
             ? "/" + String(item.value) + " "
@@ -142,6 +174,37 @@ Rectangle {
     function acceptCurrentCompletion() {
         const index = completionPopup.currentIndex >= 0 ? completionPopup.currentIndex : (completions.length > 0 ? 0 : -1)
         return acceptCompletion(index)
+    }
+
+    function handleEditorKey(event) {
+        if (composer.completionOpen) {
+            if (event.key === Qt.Key_Down) {
+                completionPopup.move(1)
+                event.accepted = true
+                return
+            }
+            if (event.key === Qt.Key_Up) {
+                completionPopup.move(-1)
+                event.accepted = true
+                return
+            }
+            if (event.key === Qt.Key_Escape) {
+                composer.dismissCompletion()
+                event.accepted = true
+                return
+            }
+            if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && event.modifiers === Qt.NoModifier) {
+                composer.acceptCurrentCompletion()
+                event.accepted = true
+                return
+            }
+        }
+        const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+        if (!enter) return
+        if (event.modifiers & Qt.ShiftModifier) return
+        if (event.modifiers & Qt.AltModifier) composer.trySend(composer.active ? "followUp" : "send")
+        else composer.trySend(composer.active ? composer.busyPromptMode : "send")
+        event.accepted = true
     }
 
     function sizeLabel(bytes) {
@@ -226,37 +289,7 @@ Rectangle {
                     composer.draftEdited(text)
                 }
                 onCursorPositionChanged: composer.refreshCompletion()
-                Keys.onPressed: event => {
-                    if (composer.completionOpen) {
-                        if (event.key === Qt.Key_Down) {
-                            completionPopup.move(1)
-                            event.accepted = true
-                            return
-                        }
-                        if (event.key === Qt.Key_Up) {
-                            completionPopup.move(-1)
-                            event.accepted = true
-                            return
-                        }
-                        if (event.key === Qt.Key_Escape) {
-                            composer.dismissCompletion()
-                            event.accepted = true
-                            return
-                        }
-                        if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && event.modifiers === Qt.NoModifier) {
-                            // Accepting a suggestion edits the prompt; it must never send.
-                            composer.acceptCurrentCompletion()
-                            event.accepted = true
-                            return
-                        }
-                    }
-                    const enter = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
-                    if (!enter) return
-                    if (event.modifiers & Qt.ShiftModifier) return // default: insert a new line
-                    if (event.modifiers & Qt.AltModifier) composer.trySend(composer.active ? "followUp" : "send")
-                    else composer.trySend(composer.active ? composer.busyPromptMode : "send")
-                    event.accepted = true
-                }
+                Keys.onPressed: event => composer.handleEditorKey(event)
             }
         }
 

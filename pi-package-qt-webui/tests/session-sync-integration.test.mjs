@@ -277,14 +277,32 @@ test("same-tab stale preparation is shared and an older rebind cannot clear a ne
   const sharedPreparation = harness.registry.prepareMutation(harness.tab.id);
   assert.equal(preparationOne, sharedPreparation, "concurrent mutation guards share one same-session switch");
   assert.equal(harness.switchCalls, 1);
-  harness.registry.applyExternalSnapshot(sessionPath, persistedSnapshot({ messages: [oldMessage, newMessage], leafId: "external-2" }));
+  const newerSnapshot = persistedSnapshot({ messages: [oldMessage, newMessage], leafId: "external-2" });
+  assert.equal(harness.registry.applyExternalSnapshot(sessionPath, newerSnapshot).reason, "active", "external projection defers while rebind owns mutation");
   firstSwitch.resolve();
   await Promise.all([preparationOne, sharedPreparation]);
+  harness.registry.applyExternalSnapshot(sessionPath, newerSnapshot);
 
   const newerPreparation = harness.registry.prepareMutation(harness.tab.id);
   assert.equal(harness.switchCalls, 2, "the newer external generation remains fenced after the older switch completes");
   secondSwitch.resolve();
   assert.equal(await newerPreparation, true);
+  assert.equal(await harness.registry.prepareMutation(harness.tab.id), false);
+});
+
+test("a revision observed during rebind is prepared before its mutation can proceed", async t => {
+  const root = await temporary(t), cwd = path.join(root, "workspace"), sessionPath = path.join(root, "session.jsonl");
+  await mkdir(cwd); await writeFile(sessionPath, "{}\n");
+  const first = deferred(), second = deferred();
+  const harness = createRegistryHarness({ cwd, sessionPath, switchDeferreds: [first, second] });
+  harness.registry.markForRebind(harness.tab.id);
+  const prepared = harness.registry.prepareMutation(harness.tab.id);
+  harness.registry.noteSessionRevision(sessionPath, "newer-revision");
+  first.resolve();
+  await waitUntil(() => harness.switchCalls === 2, "newer rebind");
+  assert(harness.registry.isPreparingMutation(harness.tab.id));
+  second.resolve();
+  assert.equal(await prepared, true);
   assert.equal(await harness.registry.prepareMutation(harness.tab.id), false);
 });
 

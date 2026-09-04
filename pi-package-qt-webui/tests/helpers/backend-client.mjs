@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,18 +12,21 @@ export const backendEntry = path.join(packageRoot, "lib", "backend", "main.mjs")
 export const fakePiEntry = path.join(packageRoot, "tests", "fixtures", "fake-pi-rpc.mjs");
 
 // Spawns the real backend with the fake Pi fixture and exposes request/event helpers.
-export async function startBackend({ env = {}, cwd, smoke = true, startupTimeoutMs } = {}) {
+export async function startBackend({ env = {}, cwd, smoke = true, startupTimeoutMs, piCliEntry = fakePiEntry, t } = {}) {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "qt-webui-backend-"));
   const capturePath = path.join(temporary, "commands.jsonl");
   const statePath = path.join(temporary, "state.txt");
   await writeFile(capturePath, "");
+  if (!env.PI_CODING_AGENT_DIR) await mkdir(path.join(temporary, "agent", "sessions"), { recursive: true });
   const childEnv = {
     ...process.env,
     ...env,
     XDG_CONFIG_HOME: env.XDG_CONFIG_HOME ?? path.join(temporary, "config"),
     XDG_STATE_HOME: env.XDG_STATE_HOME ?? path.join(temporary, "state"),
+    XDG_CACHE_HOME: env.XDG_CACHE_HOME ?? path.join(temporary, "cache"),
     PI_WEBUI_SETTINGS_FILE: env.PI_WEBUI_SETTINGS_FILE ?? path.join(temporary, "webui-settings.json"),
-    QT_WEBUI_PI_CLI_ENTRY: fakePiEntry,
+    PI_CODING_AGENT_DIR: env.PI_CODING_AGENT_DIR ?? path.join(temporary, "agent"),
+    QT_WEBUI_PI_CLI_ENTRY: piCliEntry,
     QT_WEBUI_NODE_EXECUTABLE: process.execPath,
     QT_WEBUI_CALLER_CWD: cwd ?? temporary,
     ...(smoke ? { QT_WEBUI_SMOKE_MODE: "1", QT_WEBUI_SMOKE_CAPTURE_PATH: capturePath, QT_WEBUI_SMOKE_STATE_PATH: statePath } : {}),
@@ -65,6 +68,11 @@ export async function startBackend({ env = {}, cwd, smoke = true, startupTimeout
         pending.reject(new Error(`backend exited (${code ?? signal}) before responding to ${id}`));
       }
     });
+  });
+  // Register before any readiness/exit await, including intentionally invalid startups.
+  t?.after(async () => {
+    signalProcessTree(child, "SIGKILL");
+    await waitForExit();
   });
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -122,6 +130,16 @@ export async function startBackend({ env = {}, cwd, smoke = true, startupTimeout
     });
   }
 
+  function waitForExit(timeoutMs = 5_000) {
+    let timer;
+    return Promise.race([
+      exitPromise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for backend exit (${timeoutMs} ms)\nevents: ${JSON.stringify(events.slice(-20))}\nstderr: ${stderr}`)), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
   function waitForEvent(type, extra = () => true, timeoutMs) {
     return waitFor((record) => record.type === type && extra(record), `${type} event`, timeoutMs);
   }
@@ -146,6 +164,7 @@ export async function startBackend({ env = {}, cwd, smoke = true, startupTimeout
     get stderr() { return stderr; },
     get exit() { return exit; },
     exitPromise,
+    waitForExit,
     pause() { paused = true; child.stdout.pause(); },
     resume() { paused = false; child.stdout.resume(); },
     get paused() { return paused; },

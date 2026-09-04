@@ -14,6 +14,12 @@ export const LIMITS = Object.freeze({
   // Outbound event queue while the QML consumer is slow
   maxQueuedRecords: 2000,
   maxQueuedBytes: 4 * 1024 * 1024,
+  maxTransportBytes: 8 * 1024 * 1024,
+  maxTransportRecords: 4096,
+  transportControlBytes: 64 * 1024,
+  transportDrainMs: 3_000,
+  maxControlRequests: 8,
+  maxAdmittedResponseBytes: 64 * 1024 * 1024,
   // Request handling
   maxPendingRequests: 64,
   maxRequestIdCharacters: 96,
@@ -49,6 +55,7 @@ export const LIMITS = Object.freeze({
     commands_list: 10_000,
     attachment_add: 10_000,
     attachment_update: 5_000,
+    attachment_read: 5_000,
     attachment_remove: 5_000,
     path_complete: 10_000,
     tabs_list: 5_000,
@@ -80,6 +87,9 @@ export const LIMITS = Object.freeze({
   piStartupReadinessMs: 15_000,
   promptReconciliationMs: 150,
   shutdownGraceMs: 3_000,
+  processGroupSweepMs: 1_000,
+  processGroupPollMs: 20,
+  maxProcessSweepEntries: 65_536,
   // Transcript content
   maxTranscriptRows: 80,
   maxMessageCharacters: 8192,
@@ -110,6 +120,8 @@ export const LIMITS = Object.freeze({
   maxLinkUrlCharacters: 2048,
   // Settings and themes
   maxSettingsFileBytes: 64 * 1024,
+  storeLockWaitMs: 100,
+  storeLockCommandMs: 500,
   maxThemeNameCharacters: 64,
   // Extension status chips (structured footer payloads)
   maxStatusChips: 18,
@@ -149,6 +161,8 @@ export const LIMITS = Object.freeze({
   maxAttachments: 8,
   maxImageAttachmentBytes: 5 * 1024 * 1024,
   maxTextAttachmentBytes: 256 * 1024,
+  maxAttachmentReadCharacters: 32 * 1024,
+  maxAttachmentLegacyListBytes: 256 * 1024,
   maxAttachmentNameCharacters: 128,
   maxAttachmentIdCharacters: 64,
   // Workspace paths and completion
@@ -165,10 +179,30 @@ export const LIMITS = Object.freeze({
   maxTabIdCharacters: 32,
   maxTabNameCharacters: 64,
   maxSessionListEntries: 200,
+  maxCatalogCandidates: 4096,
+  maxCatalogCandidateBytes: 8 * 1024 * 1024,
+  maxCatalogRows: 2000,
+  maxCatalogBytes: 8 * 1024 * 1024,
+  maxCatalogReadBytes: 16 * 1024 * 1024,
+  maxCatalogPageBytes: 512 * 1024,
+  maxCatalogScans: 4,
+  maxCatalogCursors: 512,
+  maxCatalogCacheEntries: 512,
+  maxCatalogCacheBytes: 4 * 1024 * 1024,
+  catalogScanMs: 3_000,
+  catalogCursorMs: 30_000,
   maxSettledSessions: 2048,
   maxAutomaticSettledSessions: 2048,
   maxSessionRestoreGraceEntries: 2048,
   maxSessionScanBytes: 1024 * 1024,
+  maxSnapshotInputBytes: 8 * 1024 * 1024,
+  maxSnapshotOutputBytes: 8 * 1024 * 1024,
+  maxConcurrentSnapshotLoads: 2,
+  maxQueuedSnapshotLoads: 8,
+  snapshotWorkerHeapMiB: 128,
+  snapshotLoadMs: 5_000,
+  maxSessionSyncWarnings: 128,
+  maxSessionRebindAttempts: 3,
   maxSessionPreviewCharacters: 160,
   maxDirectoryEntries: 500,
   maxBranchNameCharacters: 128,
@@ -366,6 +400,7 @@ export function validateRequest(frame) {
       request.key = requireString(frame, "key", LIMITS.maxStateKeyCharacters);
       if (request.key.length === 0) throw new ProtocolError("invalid_request", "draft_set requires a key");
       request.text = requireString(frame, "text", LIMITS.maxDraftCharacters);
+      if (frame.expectedText !== undefined) request.expectedText = requireString(frame, "expectedText", LIMITS.maxDraftCharacters);
       break;
     }
     case "sequence_save": {
@@ -400,9 +435,25 @@ export function validateRequest(frame) {
       request.granted = frame.granted === true;
       break;
     }
+    case "attachment_read": {
+      request.attachmentId = requireString(frame, "attachmentId", LIMITS.maxAttachmentIdCharacters);
+      request.offset = frame.offset ?? 0;
+      if (!Number.isSafeInteger(request.offset) || request.offset < 0 || request.offset > LIMITS.maxTextAttachmentBytes) throw new ProtocolError("invalid_request", "Invalid attachment read offset");
+      if (frame.revision !== undefined) {
+        if (!Number.isSafeInteger(frame.revision) || frame.revision < 0) throw new ProtocolError("invalid_request", "Invalid attachment revision");
+        request.revision = frame.revision;
+      }
+      break;
+    }
+    case "hello": {
+      if (frame.attachmentMetadata !== undefined && typeof frame.attachmentMetadata !== "boolean") throw new ProtocolError("invalid_request", "attachmentMetadata must be boolean");
+      if (frame.attachmentMetadata !== undefined) request.attachmentMetadata = frame.attachmentMetadata;
+      break;
+    }
     case "attachment_update": {
       request.attachmentId = requireString(frame, "attachmentId", LIMITS.maxAttachmentIdCharacters);
       request.text = requireString(frame, "text", LIMITS.maxTextAttachmentBytes);
+      if (Buffer.byteLength(request.text, "utf8") > LIMITS.maxTextAttachmentBytes) throw new ProtocolError("limit_exceeded", "Text attachment exceeds its UTF-8 byte limit");
       break;
     }
     case "attachment_remove": {
@@ -436,6 +487,7 @@ export function validateRequest(frame) {
       break;
     }
     case "sessions_list": {
+      if (frame.cursor !== undefined) request.cursor = requireString(frame, "cursor", 64);
       request.scope = frame.scope === undefined ? "workspace" : frame.scope;
       if (request.scope !== "workspace" && request.scope !== "all") throw new ProtocolError("invalid_request", "sessions_list scope must be workspace or all");
       request.offset = frame.offset === undefined ? 0 : frame.offset;

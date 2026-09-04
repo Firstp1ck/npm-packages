@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { createJsonFileStore } from "./store.mjs";
 import os from "node:os";
 import path from "node:path";
 import { LIMITS, SETTINGS_SCHEMA, validateSettingValue } from "./protocol.mjs";
@@ -38,43 +38,25 @@ function validated(raw) {
 }
 
 export function createSettingsStore({ env = process.env, directory = settingsDirectory(env) } = {}) {
-  const filePath = path.join(directory, "settings.json");
+  const store = createJsonFileStore({ directory, fileName: "settings.json", maxBytes: LIMITS.maxSettingsFileBytes,
+    validate(raw) {
+      if (raw === null) return { value: defaultSettings(), problems: [] };
+      const result = validated(raw);
+      return { value: result.settings, problems: result.problems };
+    },
+  });
 
   function read() {
-    let text;
-    try {
-      const size = statSync(filePath).size;
-      if (size > LIMITS.maxSettingsFileBytes) {
-        return { settings: defaultSettings(), problems: [`settings file exceeds ${LIMITS.maxSettingsFileBytes} bytes; using defaults`], path: filePath };
-      }
-      text = readFileSync(filePath, "utf8");
-    } catch (error) {
-      if (error && error.code === "ENOENT") return { settings: defaultSettings(), problems: [], path: filePath };
-      return { settings: defaultSettings(), problems: [`could not read settings: ${error.message}`], path: filePath };
-    }
-    try {
-      const { settings, problems } = validated(JSON.parse(text));
-      return { settings, problems, path: filePath };
-    } catch (error) {
-      return { settings: defaultSettings(), problems: [`settings file is not valid JSON: ${error.message}`], path: filePath };
-    }
+    const result = store.read();
+    return { settings: result.value, problems: result.problems, path: store.path };
   }
 
   function write(values) {
-    const current = read().settings;
-    const { settings, problems } = validated({ ...current, ...values });
+    const { problems } = validated({ ...defaultSettings(), ...values });
     if (problems.length > 0) throw new Error(problems.join("; "));
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
-    try {
-      chmodSync(directory, 0o700);
-    } catch {
-      // Directory permissions can only be tightened on filesystems that support modes.
-    }
-    const temporary = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-    renameSync(temporary, filePath);
-    return { settings, path: filePath };
+    const result = store.update(current => ({ ...current, ...values }));
+    return { settings: result.value, path: store.path };
   }
 
-  return { read, write, path: filePath, directory };
+  return { read, write, path: store.path, directory };
 }

@@ -44,6 +44,9 @@ AppDialog {
         lines.push("Client requests: pending " + bridge.pendingRequestCount + ", stale responses " + bridge.staleResponses + ", dropped events " + bridge.droppedEvents)
         if (info) {
             lines.push("Backend queue: peak " + info.stats.maxWritableLength + " bytes, dropped " + info.stats.droppedTotal + ", backpressure pauses " + info.stats.backpressurePauses + ", in flight " + info.stats.inflight + ", events " + info.stats.sequence)
+            lines.push("Transport: current " + info.stats.queuedBytes + " bytes / " + info.stats.queuedRecords + " records; peak records " + info.stats.peakQueuedRecords + "; paused " + info.stats.producersPaused + "; peak admitted " + info.stats.peakAdmittedWork + "; slow-consumer exits " + info.stats.slowConsumerShutdowns)
+            if (info.catalog) lines.push("Catalog: " + JSON.stringify(info.catalog))
+            if (info.snapshotLoads) lines.push("Snapshot loads: " + JSON.stringify(info.snapshotLoads))
             lines.push("Paths: settings " + info.paths.settings + "; state " + info.paths.state + "; sequences " + info.paths.sequences)
             lines.push("Tabs (" + info.tabs.tabs.length + "):")
             for (const tab of info.tabs.tabs) lines.push("  " + tab.id + (tab.id === info.tabs.activeTab ? " *" : "") + " pid " + (tab.pid === null ? "-" : tab.pid) + " " + tab.statusKind + " " + tab.cwd + (tab.sessionFile ? " · " + tab.sessionFile : ""))

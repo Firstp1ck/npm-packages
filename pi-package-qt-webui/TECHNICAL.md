@@ -114,13 +114,29 @@ Prompts are limited to 8,192 characters; the editor shows a counter near the lim
 
 ## Completion, attachments, drafts, and sequences
 
-Typing `/` at the start of the prompt lists the commands Pi reports: extension commands, prompt templates, and skills (`/skill:name`). Typing `@` anywhere lists workspace paths that match the word after it; inside a Git repository ignored files are left out, and at most 50 suggestions are shown. `Up` and `Down` move through the suggestions, `Tab` or `Enter` completes the word without sending, and `Escape` closes the list. A completed directory ends with `/` so you can keep typing into it. Commands are read from Pi once per session and again after a restart.
+Typing `/` at the start of the prompt lists the commands Pi reports: extension commands, prompt templates, and skills (`/skill:name`). Typing `@` anywhere lists workspace paths that match the word after it; inside a Git repository ignored files are left out, and at most 50 suggestions are shown. `Up` and `Down` move through the suggestions, `Tab` or `Enter` completes the word without sending, and `Escape` closes the list. Changing the query clears old suggestions immediately. While replacements load, `Tab` and `Enter` wait without inserting an old result or sending your prompt. A completed directory ends with `/` so you can keep typing into it. Commands are read from Pi once per session and again after a restart.
 
 **Attach** (or `Ctrl+Shift+A`) opens a file picker. Files chosen there can come from anywhere; paths typed elsewhere must stay inside the workspace. Text files must be valid UTF-8 up to 256 KiB and are sent below your prompt as a labelled code block; PNG, JPEG, GIF, and WebP images up to 5 MiB are sent to the model as images when it accepts them. Up to eight files can be attached at once. Each attachment appears as a chip with its name and size; **Edit** changes the text of a text attachment before sending and **Remove** drops it. Attachments are sent with the next prompt, steering message, or follow-up, are shown on that message in the transcript, and are consumed once: a file edited after attaching is sent as it was when attached.
 
-The prompt you have not sent yet is saved as a draft shortly after you stop typing and restored the next time the same session is shown with an empty editor. Drafts are kept per Pi session file, so switching sessions later keeps each session's unsent text.
+Your prompt stays in the editor and saved draft until Pi accepts it. Rejection preserves it. A timeout means the outcome is unknown, not that Pi rejected it; the app does not resend automatically. Late acceptance never clears newer edits. Session replacement saves the outgoing draft before loading the next one, even if you changed text just before switching. A new session gaining its first saved filename keeps its current draft.
+
+Text attachment sizes count UTF-8 bytes. Editing also has a 256 KiB transfer budget, so a file that fits the storage limit can still produce an edit that is too large to transfer. Quotes, backslashes, and control characters need extra transfer space. A rejected edit stays open without changing the stored attachment. After a timeout, use **Check outcome** before saving again. It checks stored content without discarding your edit.
+
+Extension answers are limited to 16,384 characters. Definite rejection keeps the dialog actionable. A timed-out answer stays visible with an unknown outcome until a late answer or cancellation settles it. Backend acceptance means the answer was written for Pi, not proof that Pi processed it.
 
 **Sequences** in **More options** (or `Ctrl+Shift+S`) keeps named lists of prompts. **New** and **Edit** take a name and one prompt per paragraph (up to 16 prompts); **Run** sends the first prompt and queues the rest as follow-ups so Pi works through them in order; **Load into prompt** copies the prompts into the editor instead; **Move up** and **Move down** reorder; **Delete** asks for a second press to confirm and never runs anything. Up to 32 sequences are saved. In the list, `Enter` runs the highlighted sequence.
+
+## Discovery and shared-state limits
+
+One Qt WebUI backend permits only one current or reserved owner of a saved session, including symlink aliases. Opening an already-owned session selects its tab; switching another tab to it is refused. This does not coordinate ownership across separate Qt WebUI windows or external Pi processes.
+
+A catalog refresh visits at most 4,096 directory entries, retains up to 2,000 readable sessions and 8 MiB of metadata, reads at most 16 MiB of history for discovery, and has a three-second deadline. A limit notice means the list is incomplete. The previous complete list stays visible until a replacement refresh succeeds. Refresh again after an error; page expiry causes at most one automatic fresh attempt.
+
+Automatic transcript refresh accepts saved histories up to 8 MiB, with two concurrent loads and eight queued loads. A load has five seconds including queue time. Oversized, malformed, changing, or slow files leave the last complete transcript in place and never truncate the source history. A new valid saved revision can retry immediately.
+
+Qt-owned settings, drafts, layouts, sequences, and sampling use shared document locks. A contending write waits at most 100 ms before reporting that another window is updating the document. Let that operation finish and retry. The util-linux `flock` command must be available. Empty owner-only `.lock` files alongside these documents are normal; do not delete them while a window is running. Process exit releases ownership automatically, including after a crash. Full replacements of the same setting or layout still follow the last successful writer's intent.
+
+If the UI stops reading output, Pi output pauses and ordinary requests are refused. Output retention is capped at 8 MiB and 4,096 records, with a separate 64 KiB control allowance. If draining does not resume within three seconds, or a hard ceiling is reached, the backend stops its Pi processes and exits with code 75. Accepted work may then have an unknown outcome. Abort, shutdown, and fatal process cleanup remain available. Restart the backend after addressing the stalled UI rather than automatically repeating a mutation.
 
 ## Models, thinking effort, and compaction
 

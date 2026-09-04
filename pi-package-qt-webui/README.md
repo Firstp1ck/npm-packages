@@ -4,7 +4,7 @@ Use Pi in a Linux desktop window built with Quickshell and Qt Quick.
 
 ## What you can do
 
-- Send prompts and read assistant answers as they stream. Drag to select transcript text, including syntax-highlighted code; Markdown still renders headings, lists, tables, quotes, and links.
+- Keep your prompt text until acceptance, and read assistant answers as they stream. Drag to select transcript text, including syntax-highlighted code; Markdown still renders headings, lists, tables, quotes, and links.
 - Attach text files and images to a prompt, complete `/` commands and `@` workspace paths while typing, keep an unsent draft per session, and save prompt sequences you run again later.
 - See what Pi is doing: thinking sections you can show or hide, and a card for every tool call with its status, duration, and output.
 - Answer questions from Pi extensions in native dialogs: pick an option, confirm, type a value, or edit text.
@@ -60,6 +60,8 @@ Open **More options** and choose **Theme** to use Automatic, Light, Dark, or a P
 
 Drag the rail's right edge to resize it, or focus that edge with `Tab` and press `Shift+Left` / `Shift+Right`. The rail can use the available window width instead of stopping at a fixed maximum. If you scroll up in a transcript, use **Latest** to return to the newest output and follow new messages again. Then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). The prompt control defaults to **Steer mode**. Switch it to **Follow-up mode** when you want `Enter` and the nearby run action to queue the next prompt instead; `Alt+Enter` always queues a follow-up. The **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. The three-line **More options** menu below the prompt holds Resources, automatic settlement, display preferences, Events, and Diagnostics without crowding the main window. **Status** opens the Pi, Git, usage, and extension details above the control strip, so those rows do not occupy the window while you are writing or reading. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
 
+Your prompt stays in the editor until accepted. Rejection keeps it available to edit. If a submission times out, its outcome is unknown, so check the session before trying again. Extension answers stay open while submitting and after rejection; a timeout never resends an answer automatically.
+
 ## Main window
 
 ![Qt WebUI dark window with Working sessions above an expanded Settled section in the left rail](screenshots/session-settlement.png)
@@ -93,7 +95,7 @@ Saving a QML file while this development command is running lets Quickshell relo
 
 ## Before you start
 
-Qt WebUI requires Linux, a Wayland desktop session, Quickshell 0.3 or newer, and Node.js 22.19 or newer. It uses your existing Pi credentials and settings; it never asks you to enter provider secrets.
+Qt WebUI requires Linux, a Wayland desktop session, Quickshell 0.3 or newer, Node.js 22.19 or newer, and the `flock` command from util-linux. It uses your existing Pi credentials and settings; it never asks you to enter provider secrets.
 
 Pi runs with access to the directory where you launch the app. Review prompts, tool cards, extension dialogs, and resource profiles just as you would in Pi's terminal interface, because enabled tools and skills can read or change project files. An empty profile intentionally disables every item in that category; **Inherit** does not. If Pi is using an ephemeral session, Qt WebUI warns that a session profile applies only until that session ends instead of claiming it was saved.
 

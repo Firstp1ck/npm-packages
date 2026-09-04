@@ -18,12 +18,22 @@ Scope {
     property var usage: null
     property var recentActions: []
     readonly property int maxPendingRequests: 64
+    property int maxInboundFrameBytes: 262144
+    property int maxDialogValueCharacters: 16384
+    property int maxControlRequests: 8
+    property int maxTextAttachmentBytes: 262144
+    property int maxAttachmentReadCharacters: 32768
+    property int backendGeneration: 0
+    property var sessionGenerations: ({})
+    property var promptSubmissions: []
+    property var dialogStates: ({})
+    readonly property int maxDialogStates: 128
     readonly property var sessionScopedRequestTypes: ({
         "prompt": true, "abort": true, "state": true, "restart": true, "extension_response": true,
         "models_list": true, "model_set": true, "model_cycle": true, "thinking_levels": true,
         "thinking_set": true, "thinking_cycle": true, "resources_state": true, "tools_set": true,
         "skills_set": true, "sampling_set": true, "compact": true, "commands_list": true,
-        "attachment_add": true, "attachment_update": true, "attachment_remove": true,
+        "attachment_add": true, "attachment_update": true, "attachment_remove": true, "attachment_read": true,
         "path_complete": true, "session_stats": true, "sessions_list": true, "session_switch": true,
         "session_new": true, "worktrees_list": true, "worktree_plan": true
     })
@@ -37,6 +47,7 @@ Scope {
     // The saved-session catalog is global across Pi projects. It is loaded one bounded backend
     // page at a time and replaced only after a complete successful pass.
     property var sessionCatalog: []
+    property int maxCatalogRows: 2000
     property bool sessionCatalogLoading: false
     property string sessionCatalogError: ""
     property int sessionCatalogGeneration: 0
@@ -46,6 +57,7 @@ Scope {
     // bounded mirror of every tab and replays it when the active tab changes.
     property var tabs: []
     property string activeTabId: ""
+    property int selectionGeneration: 0
     readonly property int tabCount: tabs.length
     readonly property var activeTab: tabById(activeTabId)
     readonly property string workspaceCwd: activeTab ? String(activeTab.cwd) : callerCwd
@@ -56,6 +68,7 @@ Scope {
         : ""
 
     property alias transcriptModel: transcript
+    property int transcriptRevision: 0
     property alias noticeModel: notices
     property bool backendRunning: backendProcess.running
     property bool backendReady: false
@@ -146,7 +159,11 @@ Scope {
     signal compactionFinished(bool ok)
     signal draftLoaded(string key, string text)
     signal sequenceRan(string sequenceId)
+    signal tabSwitching()
     signal tabSwitched(string tabId)
+    signal sessionReplacing()
+    signal sessionReplaced()
+    signal dialogStateChanged(string requestId, string state, string message)
     signal sessionsLoaded(var data)
     signal sessionCatalogLoaded(var sessions)
 
@@ -256,6 +273,7 @@ Scope {
             "toolOutput": row.toolOutput || "",
             "toolError": row.toolError || ""
         })
+        transcriptRevision++
         return transcript.count - 1
     }
 
@@ -263,6 +281,7 @@ Scope {
         const index = rowIndexById(rowId)
         if (index < 0) return false
         for (const key in values) transcript.setProperty(index, key, values[key])
+        transcriptRevision++
         return true
     }
 
@@ -291,31 +310,63 @@ Scope {
         return configured > 0 ? configured : defaultRequestTimeoutMs
     }
 
-    function request(type, fields, callback, sessionScopedOverride) {
+    function utf8Bytes(text) {
+        let bytes = 0
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i)
+            if (code < 128) bytes++
+            else if (code < 2048) bytes += 2
+            else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length
+                    && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i++ }
+            else bytes += 3
+        }
+        return bytes
+    }
+
+    function sessionGenerationFor(tabId) {
+        return backendGeneration + ":" + String(sessionGenerations[tabId] || 0)
+    }
+
+    function request(type, fields, callback, sessionScopedOverride, settlement) {
         if (!backendProcess.running) {
-            if (callback) callback({ ok: false, error: { code: "not_running", message: "Backend is not running" } })
+            const failure = { ok: false, local: true, error: { code: "not_running", message: "Backend is not running" } }
+            if (settlement) settlement(failure)
+            if (callback) callback(failure)
             return ""
         }
-        if (pendingRequestCount >= maxPendingRequests) {
-            if (callback) callback({ ok: false, error: { code: "busy", message: "Too many requests are pending" } })
+        const control = type === "abort" || type === "shutdown"
+        if ((!control && pendingRequestCount >= maxPendingRequests) || pendingRequestCount >= maxPendingRequests + maxControlRequests) {
+            const failure = { ok: false, local: true, error: { code: "busy", message: "Too many requests are pending" } }
+            if (settlement) settlement(failure)
+            if (callback) callback(failure)
             return ""
         }
         requestSerial++
         const id = "q-" + requestSerial
         const frame = Object.assign({ "v": protocolVersion, "id": id, "type": type }, fields || {})
         if (activeTabId.length > 0 && frame.tab === undefined) frame.tab = activeTabId
+        const encoded = JSON.stringify(frame) + "\n"
+        if (utf8Bytes(encoded) > maxInboundFrameBytes) {
+            const failure = { ok: false, local: true, error: { code: "limit_exceeded", message: "The encoded request exceeds the transport limit; your text has been kept" } }
+            if (settlement) settlement(failure)
+            if (callback) callback(failure)
+            return ""
+        }
         const pending = pendingRequests
         pending[id] = {
             type: type,
             callback: callback || null,
+            settlement: settlement || null,
+            timedOut: false,
             deadline: Date.now() + timeoutFor(type),
-            originTab: activeTabId,
+            originTab: type === "tab_select" ? String(frame.tab) : activeTabId,
+            selectionGeneration: selectionGeneration,
             sessionScoped: sessionScopedOverride === undefined ? sessionScopedRequestTypes[type] === true : sessionScopedOverride === true
         }
         pendingRequests = pending
         pendingRequestCount++
         pendingSweepTimer.start()
-        backendProcess.write(JSON.stringify(frame) + "\n")
+        backendProcess.write(encoded)
         return id
     }
 
@@ -323,10 +374,18 @@ Scope {
         const pending = pendingRequests
         const entry = pending[id]
         if (!entry) return false
-        delete pending[id]
+        const late = entry.timedOut
+        const retain = entry.settlement && response.clientTimeout === true
+        if (retain) { entry.timedOut = true; entry.deadline = Infinity }
+        else {
+            delete pending[id]
+            pendingRequestCount = Math.max(0, pendingRequestCount - 1)
+        }
         pendingRequests = pending
-        pendingRequestCount = Math.max(0, pendingRequestCount - 1)
         if (pendingRequestCount === 0) pendingSweepTimer.stop()
+        // Settlement belongs to the operation, not to whichever tab is now selected.
+        if (entry.settlement) entry.settlement(response)
+        if (late || quitting) return true
         if (entry.sessionScoped && entry.originTab.length > 0 && entry.originTab !== activeTabId) {
             staleResponses++
             return true
@@ -346,28 +405,49 @@ Scope {
         for (const id in pending) {
             if (pending[id].deadline <= now) {
                 const type = pending[id].type
-                settlePending(id, { ok: false, error: { code: "timeout", message: type + " timed out in the client" } })
+                settlePending(id, { ok: false, clientTimeout: true, error: { code: "timeout", message: type + " timed out in the client; outcome unknown" } })
             }
         }
     }
 
     // ---- public actions ------------------------------------------------------------------
 
-    function sendPrompt(text, mode) {
+    function sendPrompt(text, mode, settlement, draftText) {
         const message = typeof text === "string" ? text.trim() : ""
         if (!ready || message.length === 0 || message.length > maxMessageCharacters) return false
         const promptMode = mode || (active ? "steer" : "send")
         if (promptMode === "send" && active) return false
         visibleError = ""
         const attachmentIds = attachments.map(attachment => String(attachment.id))
-        request("prompt", { "message": message, "mode": promptMode, "attachments": attachmentIds }, response => {
+        const generation = sessionGenerationFor(activeTabId)
+        promptSubmissions = promptSubmissions.filter(entry => entry.generation === sessionGenerationFor(entry.tab))
+        if (promptSubmissions.length >= maxPendingRequests) {
+            showError("Too many submissions have unresolved outcomes")
+            return false
+        }
+        if (promptSubmissions.some(entry => entry.tab === activeTabId && entry.generation === generation
+                && entry.text === message && (entry.state === "admitted" || entry.state === "unknown"))) {
+            showError("This submission is still pending or its outcome is unknown; it has not been sent again")
+            return false
+        }
+        const submission = { id: "", tab: activeTabId, generation: generation, draftKey: draftKey,
+            text: message, draftText: draftText === undefined ? text : draftText, mode: promptMode,
+            attachmentIds: attachmentIds, state: "admitted" }
+        const id = request("prompt", { "message": message, "mode": promptMode, "attachments": attachmentIds }, response => {
             if (!response.ok) showError(response.error.message)
             // The backend consumes attachments once the prompt is accepted for delivery; only a
             // refusal before that point (busy, not ready, backend gone) leaves them attached.
             const kept = !response.ok && ["busy", "not_ready", "not_running"].indexOf(response.error.code) !== -1
             if (attachmentIds.length > 0 && !kept) attachments = []
+        }, true, response => {
+            submission.state = response.ok ? "accepted" : !response.local && ["timeout", "not_running"].indexOf(response.error.code) !== -1 ? "unknown" : "rejected"
+            submission.superseded = submission.generation !== sessionGenerationFor(submission.tab)
+            if (settlement) settlement(response, submission)
+            if (submission.state !== "unknown") promptSubmissions = promptSubmissions.filter(entry => entry !== submission)
         })
-        return true
+        submission.id = id
+        if (id.length > 0) promptSubmissions = promptSubmissions.concat([submission])
+        return id.length > 0
     }
 
     // ---- composer support: commands, paths, attachments, drafts, sequences --------------
@@ -399,19 +479,38 @@ Scope {
         })
     }
 
-    function updateAttachment(attachmentId, text, callback) {
-        request("attachment_update", { "attachmentId": String(attachmentId), "text": String(text) }, response => {
-            if (!response.ok) postNotice("error", "Could not update attachment: " + response.error.message)
-            else attachments = response.data.attachments
-            if (callback) callback(response)
+    function readAttachment(attachmentId, callback, offset, revision, accumulated, chunks) {
+        if ((chunks || 0) >= Math.ceil(maxTextAttachmentBytes / maxAttachmentReadCharacters)) {
+            callback({ ok: false, error: { code: "limit_exceeded", message: "Attachment read exceeded its transfer count limit" } })
+            return ""
+        }
+        const fields = { attachmentId: String(attachmentId), offset: offset || 0 }
+        if (revision !== undefined) fields.revision = revision
+        return request("attachment_read", fields, response => {
+            if (!response.ok) { callback(response); return }
+            const text = (accumulated || "") + response.data.text
+            if (utf8Bytes(text) > maxTextAttachmentBytes) { callback({ ok: false, error: { code: "limit_exceeded", message: "Attachment read exceeded its byte limit" } }); return }
+            if (response.data.nextOffset !== null) {
+                if (response.data.nextOffset <= fields.offset) { callback({ ok: false, error: { code: "invalid_request", message: "Invalid attachment read progress" } }); return }
+                readAttachment(attachmentId, callback, response.data.nextOffset, response.data.revision, text, (chunks || 0) + 1)
+            } else callback({ ok: true, data: { text: text, revision: response.data.revision } })
         })
+    }
+
+    function updateAttachment(attachmentId, text, callback) {
+        const tab = activeTabId
+        const generation = sessionGenerationFor(tab)
+        return request("attachment_update", { "attachmentId": String(attachmentId), "text": String(text) }, response => {
+            if (!response.ok) postNotice("error", "Could not update attachment: " + response.error.message)
+            else if (generation === sessionGenerationFor(tab)) attachments = response.data.attachments
+        }, true, callback)
     }
 
     function removeAttachment(attachmentId, callback) {
         request("attachment_remove", { "attachmentId": String(attachmentId) }, response => {
             if (!response.ok && response.error.code !== "stale_request") postNotice("error", "Could not remove attachment: " + response.error.message)
             if (response.ok) attachments = response.data.attachments
-            else attachments = attachments.filter(attachment => String(attachment.id) !== String(attachmentId))
+            // A definite rejection leaves the selected metadata unchanged.
             if (callback) callback(response)
         })
     }
@@ -428,9 +527,11 @@ Scope {
         return saveDraftFor(draftKey, text)
     }
 
-    function saveDraftFor(key, text) {
+    function saveDraftFor(key, text, expectedText) {
         if (typeof key !== "string" || key.length === 0) return ""
-        return request("draft_set", { "key": key, "text": boundedText(String(text || ""), 8192) }, () => {})
+        const fields = { key: key, text: boundedText(String(text || ""), 8192) }
+        if (expectedText !== undefined) fields.expectedText = expectedText
+        return request("draft_set", fields, () => {})
     }
 
     function loadSequences(callback) {
@@ -507,7 +608,15 @@ Scope {
         request("restart", {}, response => {
             if (!response.ok) {
                 restarting = false
-                if (response.error.code !== "busy") showError(response.error.message)
+                const current = tabById(activeTabId)
+                if (current) {
+                    statusKind = String(current.statusKind)
+                    statusText = String(current.statusText)
+                    ready = current.ready === true
+                    active = current.active === true
+                }
+                if (response.error.code === "busy") postNotice("warning", response.error.message)
+                else showError(response.error.message)
             }
         })
         return true
@@ -885,6 +994,7 @@ Scope {
     // pending in the backend; they are dropped here without being answered.
     function resetTabState() {
         transcript.clear()
+        transcriptRevision = 0
         visibleError = ""
         statusKind = "stopped"
         statusText = "Starting…"
@@ -920,6 +1030,7 @@ Scope {
 
     function beginTabSwitch(tabId) {
         if (tabId === activeTabId) return
+        tabSwitching()
         activeTabId = tabId
         resetTabState()
         usage = null
@@ -929,8 +1040,8 @@ Scope {
     // Applies a backend snapshot ({tab, session, attachments}); the transcript itself arrives as
     // transcript.reset and transcript.row events before the snapshot response.
     function applySnapshot(data) {
-        if (!data || !data.session) return
-        if (data.tab && data.tab.id !== activeTabId) beginTabSwitch(String(data.tab.id))
+        if (!data || !data.session || !data.tab || data.tab.id !== activeTabId
+                || data.selectionGeneration !== selectionGeneration) return
         const snapshot = data.session
         statusKind = String(snapshot.statusKind || "stopped")
         statusText = boundedText(snapshot.statusText || "", maxRuntimeInfoCharacters)
@@ -1101,10 +1212,16 @@ Scope {
         return true
     }
 
-    function loadSessionCatalogPage(generation, offset, merged, seen) {
-        request("sessions_list", { "scope": "all", "offset": offset }, response => {
+    function loadSessionCatalogPage(generation, offset, merged, seen, cursor, retries) {
+        const fields = { scope: "all", offset: offset }
+        if (cursor) fields.cursor = cursor
+        request("sessions_list", fields, response => {
             if (generation !== sessionCatalogGeneration) return
             if (!response.ok) {
+                if (response.error.code === "stale_request" && (retries || 0) < 1) {
+                    loadSessionCatalogPage(generation, 0, [], ({}), "", (retries || 0) + 1)
+                    return
+                }
                 sessionCatalogLoading = false
                 sessionCatalogError = boundedError(response.error.message)
                 postNotice("error", "Could not refresh sessions: " + sessionCatalogError)
@@ -1114,23 +1231,29 @@ Scope {
             for (const session of rows) {
                 const path = String(session.path || "")
                 if (path.length === 0 || seen[path] === true) continue
+                if (merged.length >= maxCatalogRows) {
+                    sessionCatalogLoading = false
+                    sessionCatalogError = "Catalog exceeds its declared retention limit"
+                    return
+                }
                 seen[path] = true
                 merged.push(session)
             }
             const nextOffset = response.data ? response.data.nextOffset : null
             if (nextOffset !== null) {
-                if (!Number.isInteger(nextOffset) || nextOffset <= offset) {
+                if (!Number.isInteger(nextOffset) || nextOffset <= offset || typeof response.data.cursor !== "string" || response.data.cursor.length > 64) {
                     sessionCatalogLoading = false
                     sessionCatalogError = "The session catalog returned an invalid next page"
                     postNotice("error", sessionCatalogError)
                     return
                 }
-                loadSessionCatalogPage(generation, nextOffset, merged, seen)
+                loadSessionCatalogPage(generation, nextOffset, merged, seen, response.data.cursor, retries)
                 return
             }
             sessionCatalog = merged
             sessionCatalogLoading = false
             sessionCatalogError = ""
+            if (response.data.truncated) postNotice("warning", "Session discovery reached its scan or retention limit; this catalog is incomplete")
             sessionCatalogLoaded(merged)
         }, false)
     }
@@ -1338,13 +1461,26 @@ Scope {
     function enqueueDialog(event, notify) {
         const requestId = String(event.requestId)
         if ((activeDialog && activeDialog.requestId === requestId) || dialogQueue.some(entry => entry.requestId === requestId)) return false
+        const key = dialogKey(activeTabId, requestId)
+        const cached = dialogStates[key]
+        if (cached && cached.state === "finished") return false
         const queue = dialogQueue
-        queue.push({
+        const dialog = cached || {
             requestId: requestId, method: String(event.method), title: String(event.title || ""),
             message: String(event.message || ""), options: Array.isArray(event.options) ? event.options : [],
             placeholder: String(event.placeholder || ""), prefill: String(event.prefill || ""),
-            timeoutMs: Number(event.timeoutMs) || 0, answered: false
-        })
+            timeoutMs: Number(event.timeoutMs) || 0, state: "open", originTab: activeTabId,
+            generation: sessionGenerationFor(activeTabId), draftValue: String(event.prefill || "")
+        }
+        const states = Object.assign({}, dialogStates)
+        if (!cached && Object.keys(states).length >= maxDialogStates) {
+            const expired = Object.keys(states).find(id => states[id].state === "finished" || states[id].generation !== sessionGenerationFor(states[id].originTab))
+            if (expired) delete states[expired]
+            else { postNotice("error", "Too many retained dialogs"); return false }
+        }
+        states[key] = dialog
+        dialogStates = states
+        queue.push(dialog)
         dialogQueue = queue
         if (notify) notifyDesktop("Pi needs your input", String(event.title || event.method))
         return true
@@ -1358,21 +1494,44 @@ Scope {
         dialogRequested(activeDialog)
     }
 
-    function answerDialog(requestId, answer) {
-        if (!activeDialog || activeDialog.requestId !== requestId || activeDialog.answered) return false
-        const dialog = activeDialog
-        dialog.answered = true
-        activeDialog = dialog
-        const fields = Object.assign({ "requestId": requestId }, answer)
-        request("extension_response", fields, response => {
-            if (!response.ok && response.error.code !== "stale_request") postNotice("error", "Dialog answer failed: " + response.error.message)
-            finishDialog(requestId)
-        })
-        return true
+    function dialogKey(tab, requestId, generation) {
+        return tab + ":" + (generation === undefined ? sessionGenerationFor(tab) : generation) + ":" + requestId
     }
 
-    function finishDialog(requestId) {
-        if (activeDialog && activeDialog.requestId === requestId) {
+    function updateDialogDraft(requestId, value) {
+        if (activeDialog && activeDialog.requestId === requestId) activeDialog.draftValue = value
+    }
+
+    function answerDialog(requestId, answer) {
+        if (!activeDialog || activeDialog.requestId !== requestId || activeDialog.state !== "open") return false
+        const dialog = activeDialog
+        if (typeof answer.value === "string" && answer.value.length > maxDialogValueCharacters) {
+            dialogStateChanged(requestId, "open", "Answers are limited to " + maxDialogValueCharacters + " characters")
+            return false
+        }
+        dialog.state = "submitting"
+        dialogStateChanged(requestId, "submitting", "")
+        const fields = Object.assign({ "requestId": requestId, tab: dialog.originTab }, answer)
+        const id = request("extension_response", fields, null, true, response => {
+            if (dialog.state === "finished") return
+            if (response.ok || response.error.code === "stale_request") {
+                finishDialog(requestId, dialog.originTab, dialog.generation)
+                return
+            }
+            dialog.state = !response.local && ["timeout", "not_running"].indexOf(response.error.code) !== -1 ? "unknown" : "open"
+            if (activeDialog === dialog) dialogStateChanged(requestId, dialog.state, response.error.message)
+            postNotice("error", "Dialog answer " + (dialog.state === "unknown" ? "outcome unknown: " : "failed: ") + response.error.message)
+        })
+        return id.length > 0
+    }
+
+    function finishDialog(requestId, tabId, generation) {
+        const tab = tabId === undefined ? activeTabId : tabId
+        const key = dialogKey(tab, requestId, generation)
+        const dialog = dialogStates[key]
+        if (dialog) dialog.state = "finished"
+        if (tab !== activeTabId || (generation !== undefined && generation !== sessionGenerationFor(tab))) return
+        if (activeDialog && activeDialog.requestId === requestId && (!dialog || activeDialog === dialog)) {
             activeDialog = null
             dialogFinished(requestId)
         } else {
@@ -1474,6 +1633,15 @@ Scope {
 
     function handleEvent(event) {
         eventReceived(event)
+        if (event.type === "pi.started" || (event.type === "session.replaced" && !event.rebind)) {
+            const generations = sessionGenerations
+            generations[event.tab] = (generations[event.tab] || 0) + 1
+            sessionGenerations = generations
+        }
+        if (event.type === "extension.answered" || event.type === "extension.cancelled") {
+            finishDialog(String(event.requestId), String(event.tab || activeTabId))
+            return
+        }
         // Session events name their tab; only the active tab drives the view.
         if (typeof event.tab === "string" && event.tab !== activeTabId) {
             handleInactiveTabEvent(event)
@@ -1482,36 +1650,53 @@ Scope {
         switch (event.type) {
         case "backend.ready":
             backendReady = true
+            maxInboundFrameBytes = event.limits.maxInboundFrameBytes
+            maxDialogValueCharacters = event.limits.maxDialogValueCharacters
+            maxCatalogRows = event.limits.maxCatalogRows
+            maxControlRequests = event.limits.maxControlRequests
+            maxTextAttachmentBytes = event.limits.maxTextAttachmentBytes
+            maxAttachmentReadCharacters = event.limits.maxAttachmentReadCharacters
             resetThemeGeneration()
             requestTimeouts = event.limits && event.limits.requestTimeoutMs ? event.limits.requestTimeoutMs : {}
             applyAppearance(event.appearance)
             backendStartupTimer.stop()
-            request("hello", {}, response => {
+            request("hello", { attachmentMetadata: true }, response => {
                 if (!response.ok) return
                 applySettings(response.data.settings)
                 applyAppearance(response.data.appearance)
                 applyThemeState(response.data.themeState)
                 if (Array.isArray(response.data.recentActions)) recentActions = response.data.recentActions
                 if (response.data.tabs) {
-                    tabs = response.data.tabs.tabs
-                    if (typeof response.data.tabs.activeTab === "string" && response.data.tabs.activeTab !== activeTabId) beginTabSwitch(response.data.tabs.activeTab)
+                    if (response.data.selectionGeneration === selectionGeneration) tabs = response.data.tabs.tabs
                 }
-                applySnapshot({ tab: tabById(activeTabId), session: response.data.session, attachments: response.data.attachments })
+                applySnapshot({ tab: tabById(response.data.tabs.activeTab), selectionGeneration: response.data.selectionGeneration, session: response.data.session, attachments: response.data.attachments })
                 refreshSessionCatalog()
             })
             backendBecameReady()
             break
         case "tabs.update":
+            if (!Number.isInteger(event.selectionGeneration) || event.selectionGeneration < selectionGeneration) break
+            selectionGeneration = event.selectionGeneration
             tabs = Array.isArray(event.tabs) ? event.tabs : []
+            const liveTabs = tabs.map(tab => String(tab.id))
+            const generations = Object.assign({}, sessionGenerations)
+            for (const tab of Object.keys(generations)) if (liveTabs.indexOf(tab) === -1) delete generations[tab]
+            sessionGenerations = generations
+            const dialogs = Object.assign({}, dialogStates)
+            for (const key of Object.keys(dialogs)) if (liveTabs.indexOf(dialogs[key].originTab) === -1) delete dialogs[key]
+            dialogStates = dialogs
             if (typeof event.activeTab === "string" && event.activeTab !== activeTabId) beginTabSwitch(event.activeTab)
             break
         case "sessions.changed":
             scheduleSessionCatalogRefresh()
             break
         case "transcript.reset":
+            if (event.selectionGeneration !== selectionGeneration) break
             transcript.clear()
+            transcriptRevision++
             break
         case "transcript.row":
+            if (event.selectionGeneration !== selectionGeneration) break
             if (event.row && typeof event.row === "object") appendRow(event.row)
             break
         case "backend.closing":
@@ -1525,6 +1710,13 @@ Scope {
         case "pi.error":
             if (typeof event.message === "string" && event.message.length > 0) showError(event.message)
             else visibleError = ""
+            break
+        case "session.replaced":
+            if (event.rebind) break
+            sessionReplacing()
+            sessionName = ""
+            sessionFile = String(event.sessionFile || "")
+            sessionReplaced()
             break
         case "pi.runtime":
             handleRuntime(event)
@@ -1568,7 +1760,7 @@ Scope {
             break
         case "part.remove": {
             const index = rowIndexById(event.partId)
-            if (index >= 0) transcript.remove(index)
+            if (index >= 0) { transcript.remove(index); transcriptRevision++ }
             break
         }
         case "message.end":
@@ -1608,11 +1800,6 @@ Scope {
         case "extension.request":
             enqueueDialog(event, true)
             presentNextDialog()
-            break
-        case "extension.cancelled":
-            finishDialog(String(event.requestId))
-            break
-        case "extension.answered":
             break
         case "extension.notify":
             postNotice(String(event.level || "info"), String(event.message || ""))
@@ -1762,6 +1949,10 @@ Scope {
         }
 
         onStarted: {
+            bridge.selectionGeneration = 0
+            bridge.backendGeneration++
+            bridge.sessionGenerations = ({})
+            bridge.dialogStates = ({})
             bridge.backendReady = false
             bridge.ready = false
             bridge.active = false
@@ -1772,6 +1963,11 @@ Scope {
 
         onExited: (exitCode, exitStatus) => {
             backendStartupTimer.stop()
+            if (bridge.quitting) {
+                bridge.failAllPending("not_running", "Backend exited")
+                Qt.quit()
+                return
+            }
             bridge.backendReady = false
             bridge.ready = false
             bridge.active = false
@@ -1795,7 +1991,7 @@ Scope {
             bridge.activeTabId = ""
             bridge.usage = null
             bridge.sessionCatalogGeneration++
-            bridge.sessionCatalog = []
+            // Keep the last complete catalog until the replacement backend finishes a scan.
             bridge.sessionCatalogLoading = false
             bridge.sessionCatalogError = ""
             bridge.sessionSettlementPending = ({})
@@ -1803,10 +1999,6 @@ Scope {
             bridge.sessionSettleDaysPending = false
             bridge.failAllPending("not_running", "Backend exited")
             bridge.clearDialogs(bridge.activeDialog || bridge.dialogQueue.length > 0 ? "Pending extension dialogs were cancelled because the backend exited" : "")
-            if (bridge.quitting) {
-                Qt.quit()
-                return
-            }
             bridge.statusKind = "error"
             bridge.statusText = "Backend exited (" + exitCode + ")"
             bridge.visibleError = bridge.boundedError("The Qt WebUI backend exited with code " + exitCode + ". Use Restart to start it again.")

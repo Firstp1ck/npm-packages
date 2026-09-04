@@ -228,7 +228,11 @@ export function createPiSession({
 }) {
   const session = {
     child: null,
+    owner: null,
+    ownerCleanup: null,
     reader: null,
+    stderrReader: null,
+    inputPaused: false,
     ready: false,
     active: false,
     statusKind: "stopped",
@@ -290,7 +294,7 @@ export function createPiSession({
       thinkingLevel: boundedString(data ? data.thinkingLevel : "", LIMITS.maxRuntimeInfoCharacters).trim(),
       sessionId: boundedString(data ? data.sessionId : "", LIMITS.maxRuntimeInfoCharacters).trim(),
       sessionName: boundedString(data ? data.sessionName : "", LIMITS.maxRuntimeInfoCharacters).trim(),
-      sessionFile: boundedString(data ? data.sessionFile : "", 1024).trim(),
+      sessionFile: boundedString(data ? data.sessionFile : "", LIMITS.maxPathCharacters).trim(),
       messageCount: Number.isInteger(data?.messageCount) ? data.messageCount : 0,
     };
     emit("pi.runtime", session.runtime);
@@ -323,7 +327,7 @@ export function createPiSession({
       thinkingLevel: boundedString(snapshot?.thinkingLevel, LIMITS.maxRuntimeInfoCharacters, "").trim(),
       sessionId: boundedString(snapshot?.sessionId, LIMITS.maxRuntimeInfoCharacters, "").trim(),
       sessionName: boundedString(snapshot?.name, LIMITS.maxRuntimeInfoCharacters, "").trim(),
-      sessionFile: boundedString(snapshot?.path ?? session.runtime.sessionFile, 1024, "").trim(),
+      sessionFile: boundedString(snapshot?.path ?? session.runtime.sessionFile, LIMITS.maxPathCharacters, "").trim(),
       messageCount: Number.isInteger(messageCount) ? messageCount : session.runtime.messageCount,
     };
     emit("pi.runtime", session.runtime);
@@ -395,13 +399,11 @@ export function createPiSession({
   }
 
   function cancelDialogs(reason) {
-    for (const requestId of session.dialogOrder) {
-      const dialog = session.dialogs.get(requestId);
-      if (!dialog) continue;
-      session.dialogs.delete(requestId);
-      emit("extension.cancelled", { requestId, reason });
-    }
+    const cancelled = session.dialogOrder.slice();
+    session.dialogs.clear();
     session.dialogOrder = [];
+    // Observers synchronously build snapshots, so commit both collections before notifying.
+    for (const requestId of cancelled) emit("extension.cancelled", { requestId, reason });
   }
 
   // ---- state requests -------------------------------------------------------------------
@@ -529,32 +531,50 @@ export function createPiSession({
 
   // Replaces the client transcript with Pi's persisted history for the current session and
   // says when the last exchange looks interrupted instead of presenting it as complete.
-  async function loadHistory() {
+  function assertCurrentChild(child) {
+    if (session.child !== child || session.shuttingDown || !child || hasExited(child)) throw new ProtocolError("stale_request", "Pi changed during the session operation");
+  }
+
+  async function loadHistory({ reset = true } = {}) {
+    const child = session.child;
     const data = await piCommand({ type: "get_messages" }, requestTimeouts.session_switch, "could not read the session history");
+    assertCurrentChild(child);
+    if (session.active) throw new ProtocolError("busy", "A run started while history was loading; its live transcript was retained");
     const history = rowsFromHistory(data ? data.messages : []);
-    emit("transcript.reset", {});
+    if (reset) emit("transcript.reset", {});
     for (const row of history.rows) emit("transcript.row", { row });
     if (history.interrupted) emit("notice", { level: "warning", message: "The previous run in this session did not complete; the last request may need to be sent again" });
     return { rows: history.rows.length, messageCount: history.messageCount, interrupted: history.interrupted };
   }
 
-  async function switchSession(sessionPath) {
+  async function switchSession(sessionPath, { rebind = false } = {}) {
     requireIdle("switching sessions");
+    const child = session.child;
     const data = await piCommand({ type: "switch_session", sessionPath }, requestTimeouts.session_switch, "could not switch sessions");
+    assertCurrentChild(child);
     if (data && data.cancelled === true) throw new ProtocolError("pi_error", "An extension cancelled the session switch");
+    session.runtime = { ...session.runtime, sessionFile: sessionPath, sessionName: "" };
+    emit("session.replaced", { sessionFile: sessionPath, rebind });
+    emit("transcript.reset", {});
     cancelDialogs("Session switched");
     session.queues = { steering: [], followUp: [] };
     emit("queue.update", { steering: [], followUp: [] });
     clearError();
-    const history = await loadHistory();
+    let history;
+    try { history = await loadHistory({ reset: false }); }
+    catch (error) { await requestState().catch(() => {}); throw error; }
     await requestState();
     return { sessionFile: session.runtime.sessionFile, sessionName: session.runtime.sessionName, ...history };
   }
 
   async function newSession() {
     requireIdle("starting a new session");
+    const child = session.child;
     const data = await piCommand({ type: "new_session" }, requestTimeouts.session_new, "could not start a new session");
+    assertCurrentChild(child);
     if (data && data.cancelled === true) throw new ProtocolError("pi_error", "An extension cancelled the new session");
+    session.runtime = { ...session.runtime, sessionFile: "", sessionName: "" };
+    emit("session.replaced", { sessionFile: "" });
     cancelDialogs("New session");
     session.queues = { steering: [], followUp: [] };
     emit("queue.update", { steering: [], followUp: [] });
@@ -1183,11 +1203,11 @@ export function createPiSession({
       if (dialog.method === "select" && !dialog.options.includes(value)) throw new ProtocolError("invalid_request", "selected value is not one of the offered options");
       response = { value };
     }
-    session.dialogs.delete(requestId);
-    session.dialogOrder = session.dialogOrder.filter((entry) => entry !== requestId);
     if (!writeRaw({ type: "extension_ui_response", id: dialog.rawId, ...response })) {
       throw new ProtocolError("not_running", "Pi is not running");
     }
+    session.dialogs.delete(requestId);
+    session.dialogOrder = session.dialogOrder.filter((entry) => entry !== requestId);
     emit("extension.answered", { requestId, method: dialog.method, ...response });
     return { requestId, ...response };
   }
@@ -1289,8 +1309,20 @@ export function createPiSession({
 
   // ---- process lifecycle ---------------------------------------------------------------
 
+  function cleanupOwner(owner = session.owner) {
+    if (!owner) return Promise.resolve({ escalated: false });
+    if (session.owner === owner && session.ownerCleanup) return session.ownerCleanup;
+    const cleanup = terminateProcessTree(owner.child, { graceMs: shutdownGraceMs }).then(result => {
+      if (session.owner === owner) { session.owner = null; session.ownerCleanup = null; }
+      return result;
+    });
+    if (session.owner === owner) session.ownerCleanup = cleanup;
+    return cleanup;
+  }
+
   function start() {
-    if (session.child && !hasExited(session.child)) return false;
+    if (session.owner || (session.child && !hasExited(session.child))) return false;
+    session.stopPromise = null;
     session.shuttingDown = false;
     session.ready = false;
     session.active = false;
@@ -1311,12 +1343,15 @@ export function createPiSession({
       return false;
     }
     session.child = child;
+    session.owner = Object.freeze({ child, pgid: child.pid });
     child.once("error", (error) => {
       if (session.child !== child) return;
+      onChildExit(null, "spawn_error");
       showError(`Could not start Pi: ${error.message}`);
     });
     child.stdout.setEncoding("utf8");
     session.reader = attachJsonlReader(child.stdout, {
+      shouldPause: () => session.inputPaused,
       maxFrameBytes: LIMITS.maxPiFrameBytes,
       onRecord: (record) => {
         if (session.child === child) handleRecord(record);
@@ -1332,7 +1367,8 @@ export function createPiSession({
       },
     });
     child.stderr.setEncoding("utf8");
-    attachJsonlReader(child.stderr, {
+    session.stderrReader = attachJsonlReader(child.stderr, {
+      shouldPause: () => session.inputPaused,
       maxFrameBytes: LIMITS.maxInboundFrameBytes,
       onRecord: () => {},
       onInvalid: (_error, line) => {
@@ -1369,12 +1405,9 @@ export function createPiSession({
     clearRuntime();
     session.queues = { steering: [], followUp: [] };
     session.statusRecords.clear();
+    void cleanupOwner().catch(error => showError(`Pi process-group cleanup failed: ${error.message}`));
     emit("pi.exit", { code: code ?? null, signal: signal ?? null });
-    if (session.restartPending) {
-      session.restartPending = false;
-      start();
-      return;
-    }
+    if (session.restartPending) return;
     if (session.shuttingDown) return;
     session.preserveRunError = false;
     if (code === 0) setStatus("stopped", "Stopped");
@@ -1394,14 +1427,15 @@ export function createPiSession({
     session.preserveRunError = false;
     emit("pi.error", { message: "" });
     setStatus("stopped", "Restarting…");
-    if (session.child && !hasExited(session.child)) {
-      session.restartPending = true;
-      const child = session.child;
-      await terminateProcessTree(child, { graceMs: shutdownGraceMs });
+    session.restartPending = true;
+    try {
+      await cleanupOwner();
+      if (session.shuttingDown) throw new ProtocolError("not_running", "The session is closing");
+      start();
       return { restarted: true };
+    } finally {
+      session.restartPending = false;
     }
-    start();
-    return { restarted: true };
   }
 
   function stop() {
@@ -1410,25 +1444,29 @@ export function createPiSession({
     session.restartPending = false;
     cancelDialogs("Qt WebUI is closing");
     const child = session.child;
-    if (!child || hasExited(child)) {
-      session.stopPromise = Promise.resolve({ escalated: false });
-      return session.stopPromise;
-    }
     try {
-      child.stdin.end();
+      child?.stdin.end();
     } catch {
       // Closing stdin is a courtesy; the signal path below is authoritative.
     }
-    session.stopPromise = terminateProcessTree(child, { graceMs: shutdownGraceMs });
+    session.stopPromise = cleanupOwner();
     return session.stopPromise;
   }
 
   function pauseInput() {
-    if (session.child && !hasExited(session.child)) session.child.stdout.pause();
+    session.inputPaused = true;
+    session.child?.stdout.pause();
+    session.child?.stderr.pause();
   }
 
   function resumeInput() {
-    if (session.child && !hasExited(session.child)) session.child.stdout.resume();
+    session.inputPaused = false;
+    session.reader?.resume();
+    if (session.inputPaused) return;
+    session.stderrReader?.resume();
+    if (session.inputPaused) return;
+    session.child?.stdout.resume();
+    session.child?.stderr.resume();
   }
 
   function snapshot() {
@@ -1487,7 +1525,7 @@ export function createPiSession({
     resumeInput,
     snapshot,
     get child() {
-      return session.child;
+      return session.owner?.child ?? session.child;
     },
   };
 }

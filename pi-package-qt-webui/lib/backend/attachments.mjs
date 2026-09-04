@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { IMAGE_ATTACHMENT_TYPES, LIMITS, ProtocolError, boundedString } from "./protocol.mjs";
 import { resolveInsideWorkspace } from "./workspace.mjs";
@@ -35,11 +35,11 @@ function decodeText(buffer) {
 export function createAttachmentStore({ workspaceRoot, now = () => Date.now() }) {
   const attachments = new Map();
 
-  function list() {
-    return [...attachments.values()].map(publicView);
+  function list({ metadataOnly = false } = {}) {
+    return [...attachments.values()].map(attachment => publicView(attachment, metadataOnly));
   }
 
-  function publicView(attachment) {
+  function publicView(attachment, metadataOnly = false) {
     return {
       id: attachment.id,
       name: attachment.name,
@@ -47,12 +47,22 @@ export function createAttachmentStore({ workspaceRoot, now = () => Date.now() })
       mimeType: attachment.mimeType,
       size: attachment.size,
       path: attachment.path,
-      text: attachment.kind === "text" ? attachment.text : "",
+      ...(metadataOnly ? {} : { text: attachment.kind === "text" ? attachment.text : "" }),
+      revision: attachment.revision || 0,
       edited: attachment.edited,
     };
   }
 
-  function add({ path: requested, granted = false }) {
+  function preflightChange(id, prospective, { metadataOnly = false, preflight = () => {} } = {}) {
+    const next = new Map(attachments);
+    if (prospective) next.set(id, prospective);
+    else next.delete(id);
+    const result = { ...(prospective ? { attachment: publicView(prospective, metadataOnly) } : {}), attachments: [...next.values()].map(entry => publicView(entry, metadataOnly)) };
+    preflight(result);
+    return result;
+  }
+
+  function add({ path: requested, granted = false }, options = {}) {
     if (attachments.size >= LIMITS.maxAttachments) throw new ProtocolError("limit_exceeded", `At most ${LIMITS.maxAttachments} attachments can be added`);
     let resolved;
     try {
@@ -75,10 +85,24 @@ export function createAttachmentStore({ workspaceRoot, now = () => Date.now() })
     const limit = expectedImageType ? LIMITS.maxImageAttachmentBytes : LIMITS.maxTextAttachmentBytes;
     if (stats.size > limit) throw new ProtocolError("limit_exceeded", `${expectedImageType ? "Images" : "Text files"} larger than ${Math.round(limit / 1024)} KiB cannot be attached`);
     let buffer;
+    let fd;
     try {
-      buffer = readFileSync(resolved);
+      fd = openSync(resolved, constants.O_RDONLY | constants.O_NOFOLLOW);
+      if (!fstatSync(fd).isFile()) throw new Error("Only regular files can be attached");
+      const storage = Buffer.alloc(limit + 1);
+      let count = 0;
+      while (count < storage.length) {
+        const read = readSync(fd, storage, count, storage.length - count, null);
+        if (read === 0) break;
+        count += read;
+      }
+      if (count > limit) throw new ProtocolError("limit_exceeded", "The attachment grew beyond its byte limit");
+      buffer = storage.subarray(0, count);
     } catch (error) {
+      if (error instanceof ProtocolError) throw error;
       throw new ProtocolError("rejected", `Cannot read the file: ${error.message}`);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
     const id = `att-${randomBytes(6).toString("hex")}`;
     const name = boundedString(path.basename(resolved), LIMITS.maxAttachmentNameCharacters);
@@ -91,22 +115,36 @@ export function createAttachmentStore({ workspaceRoot, now = () => Date.now() })
       const text = decodeText(buffer);
       attachment = { id, name, kind: "text", mimeType: "text/plain", size: buffer.length, path: resolved, text, edited: false, addedAt: now() };
     }
+    preflightChange(id, attachment, options);
     attachments.set(id, attachment);
-    return publicView(attachment);
+    return publicView(attachment, options.metadataOnly);
   }
 
-  function update(id, text) {
+  function update(id, text, options = {}) {
     const attachment = attachments.get(id);
     if (!attachment) throw new ProtocolError("stale_request", "That attachment no longer exists");
     if (attachment.kind !== "text") throw new ProtocolError("invalid_request", "Only text attachments can be edited");
-    attachment.text = text;
-    attachment.size = Buffer.byteLength(text, "utf8");
-    attachment.edited = true;
-    return publicView(attachment);
+    const size = Buffer.byteLength(text, "utf8");
+    if (size > LIMITS.maxTextAttachmentBytes) throw new ProtocolError("limit_exceeded", "Text attachment exceeds its UTF-8 byte limit");
+    const next = { ...attachment, text, size, edited: true, revision: (attachment.revision || 0) + 1 };
+    preflightChange(id, next, options);
+    attachments.set(id, next);
+    return publicView(next, options.metadataOnly);
   }
 
-  function remove(id) {
-    if (!attachments.delete(id)) throw new ProtocolError("stale_request", "That attachment no longer exists");
+  function readText(id, offset = 0, revision) {
+    const attachment = attachments.get(id);
+    if (!attachment) throw new ProtocolError("stale_request", "That attachment no longer exists");
+    if (attachment.kind !== "text") throw new ProtocolError("invalid_request", "Only text attachments can be read");
+    if (revision !== undefined && revision !== (attachment.revision || 0)) throw new ProtocolError("stale_request", "Attachment changed during reading");
+    const text = attachment.text.slice(offset, offset + LIMITS.maxAttachmentReadCharacters);
+    return { attachmentId: id, text, revision: attachment.revision || 0, size: attachment.size, nextOffset: offset + text.length < attachment.text.length ? offset + text.length : null };
+  }
+
+  function remove(id, options = {}) {
+    if (!attachments.has(id)) throw new ProtocolError("stale_request", "That attachment no longer exists");
+    preflightChange(id, null, options);
+    attachments.delete(id);
     return { removed: id, remaining: attachments.size };
   }
 
@@ -131,7 +169,7 @@ export function createAttachmentStore({ workspaceRoot, now = () => Date.now() })
     attachments.clear();
   }
 
-  return { list, add, update, remove, take, clear, get size() { return attachments.size; } };
+  return { list, add, update, remove, readText, take, clear, get size() { return attachments.size; } };
 }
 
 // The message Pi receives: the prompt text followed by every text attachment as a labelled

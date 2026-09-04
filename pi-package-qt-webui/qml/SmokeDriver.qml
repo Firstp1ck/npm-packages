@@ -10,7 +10,9 @@ Item {
     required property var bridge
     required property var shell
     readonly property string testMode: String(Quickshell.env("QT_WEBUI_THEME_MODE") || "normal")
+    readonly property bool remediationOnly: testMode === "remediation"
     readonly property bool orderOnly: testMode === "order-only"
+    RemediationChecks { id: remediation; driver: driver; bridge: driver.bridge; shell: driver.shell }
     readonly property bool screenshotOnly: testMode === "screenshot"
     readonly property bool themeOnly: testMode === "theme-only"
     property string phase: "boot"
@@ -276,9 +278,35 @@ Item {
             if (composer.completions[0].value !== "src/main.mjs") return fail("path suggestion " + composer.completions[0].value)
             if (!composer.acceptCurrentCompletion() || composer.text !== "look at @src/main.mjs " || composer.completionOpen) return fail("path completion text " + JSON.stringify(composer.text) + " kind=" + composer.completionKind + " query=" + composer.completionQuery + " index=" + composer.completionIndex + " cursor=" + composer.cursorPosition + " open=" + composer.completionOpen)
             log("QT_WEBUI_SMOKE_PATH_COMPLETED")
-            composer.clearAndFocus()
-            composerAttachment()
+            composerCompletionRaces()
         })
+    }
+
+    function composerCompletionRaces() {
+        const composer = shell.composerItem
+        composer.setText("@main")
+        const oldGeneration = composer.completionGeneration
+        const oldResults = [{ value: "src/main.mjs" }]
+        if (!composer.setCompletionResults(oldGeneration, oldResults, "")) return fail("completion setup")
+        composer.setText("@missing")
+        if (!composer.completionLoading || composer.completions.length !== 0 || composer.acceptCurrentCompletion()) return fail("stale completion stayed selectable")
+        for (const key of [Qt.Key_Tab, Qt.Key_Return, Qt.Key_Enter]) {
+            const event = { key: key, modifiers: Qt.NoModifier, accepted: false }
+            composer.handleEditorKey(event)
+            if (!event.accepted || composer.text !== "@missing") return fail("loading completion key " + key)
+        }
+        if (composer.setCompletionResults(oldGeneration, oldResults, "")) return fail("old completion reply accepted")
+        composer.setText("@main")
+        if (composer.setCompletionResults(oldGeneration, oldResults, "")) return fail("completion revisit accepted old generation")
+        const generation = composer.completionGeneration
+        composer.dismissCompletion()
+        if (composer.setCompletionResults(generation, oldResults, "")) return fail("dismissed completion reopened")
+        composer.setText("/rev")
+        if (composer.setCompletionResults(generation, oldResults, "")) return fail("completion kind change accepted old reply")
+        if (!composer.acceptCurrentCompletion() || composer.text !== "/review ") return fail("current command completion refused")
+        log("QT_WEBUI_SMOKE_COMPLETION_GENERATIONS")
+        composer.clearAndFocus()
+        composerAttachment()
     }
 
     function composerAttachment() {
@@ -1032,7 +1060,8 @@ Item {
             if (!driver.piReadyOnce) {
                 driver.piReadyOnce = true
                 driver.log("QT_WEBUI_SMOKE_READY")
-                if (driver.screenshotOnly) driver.startScreenshot()
+                if (driver.remediationOnly) remediation.run()
+                else if (driver.screenshotOnly) driver.startScreenshot()
                 else if (driver.orderOnly) driver.startModels()
                 else if (driver.themeOnly) driver.startThemeChecks()
                 else driver.schedule("stream")
@@ -1180,7 +1209,7 @@ Item {
         }
 
         function onDialogRequested(dialog) {
-            dialogAnswerTimer.start()
+            if (!driver.remediationOnly) dialogAnswerTimer.start()
         }
     }
 

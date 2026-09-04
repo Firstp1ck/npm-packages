@@ -10,7 +10,11 @@ AppDialog {
 
     required property var bridge
     property var request: null
-    property bool answered: false
+    property string submissionState: "open"
+    property string submissionError: ""
+    readonly property bool answered: submissionState === "accepted"
+    readonly property string inputText: method === "editor" ? editorArea.text : inputField.text
+    closePolicy: Popup.NoAutoClose
     readonly property string method: request ? String(request.method) : ""
     readonly property string requestId: request ? String(request.requestId) : ""
     readonly property var options: request && Array.isArray(request.options) ? request.options : []
@@ -24,19 +28,21 @@ AppDialog {
 
     function present(nextRequest) {
         request = nextRequest
-        answered = false
-        inputField.text = ""
-        editorArea.text = nextRequest && typeof nextRequest.prefill === "string" ? nextRequest.prefill : ""
+        submissionState = nextRequest.state || "open"
+        submissionError = ""
+        inputField.text = method === "input" ? String(nextRequest.draftValue || "") : ""
+        editorArea.text = method === "editor" ? String(nextRequest.draftValue || nextRequest.prefill || "") : ""
         optionList.currentIndex = options.length > 0 ? 0 : -1
         open()
     }
 
     function submit(answer) {
-        if (answered || !request) return false
-        answered = true
-        const accepted = bridge.answerDialog(requestId, answer)
-        close()
-        return accepted
+        if (submissionState !== "open" || !request) return false
+        if (typeof answer.value === "string" && answer.value.length > bridge.maxDialogValueCharacters) {
+            submissionError = "Answers are limited to " + bridge.maxDialogValueCharacters + " characters"
+            return false
+        }
+        return bridge.answerDialog(requestId, answer)
     }
 
     function selectOption(value) {
@@ -73,12 +79,30 @@ AppDialog {
         editorArea.text = String(value)
     }
 
-    onClosed: {
-        if (!answered && request) {
-            answered = true
-            bridge.answerDialog(requestId, { "cancelled": true })
-        }
-        request = null
+    function finish() {
+        submissionState = "accepted"
+        close()
+    }
+
+    function settle(state, message) {
+        submissionState = state
+        submissionError = message
+    }
+
+    onClosed: request = null
+
+    Shortcut {
+        sequence: "Escape"
+        enabled: dialog.opened
+        onActivated: dialog.cancel()
+    }
+
+    Label {
+        Layout.fillWidth: true
+        visible: dialog.submissionState !== "open" || dialog.submissionError.length > 0
+        text: dialog.submissionError || (dialog.submissionState === "unknown" ? "Outcome unknown. Your answer has been kept; it will not be resent automatically." : "Submitting…")
+        wrapMode: Text.Wrap
+        color: dialog.theme.muted
     }
 
     Label {
@@ -168,6 +192,8 @@ AppDialog {
         }
         Accessible.role: Accessible.EditableText
         Accessible.name: dialog.title
+        onTextChanged: if (dialog.method === "input") dialog.bridge.updateDialogDraft(dialog.requestId, text)
+        readOnly: dialog.submissionState !== "open"
         onAccepted: dialog.submitText()
     }
 
@@ -179,6 +205,8 @@ AppDialog {
 
         TextArea {
             id: editorArea
+            readOnly: dialog.submissionState !== "open"
+            onTextChanged: if (dialog.method === "editor") dialog.bridge.updateDialogDraft(dialog.requestId, text)
             wrapMode: TextEdit.Wrap
             textFormat: TextEdit.PlainText
             selectByMouse: true

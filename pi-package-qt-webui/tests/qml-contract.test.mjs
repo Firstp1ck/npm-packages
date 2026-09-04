@@ -177,10 +177,12 @@ test("global sessions page safely into accessible Working and default-expanded S
   const finishSettleAll = functionBody(bridge, "finishSettleAll");
   const open = functionBody(bridge, "openCatalogSession");
   assert.match(refresh, /const generation = \+\+sessionCatalogGeneration[\s\S]*loadSessionCatalogPage\(generation, 0, \[\], \(\{\}\)\)/);
-  assert.match(page, /request\("sessions_list", \{ "scope": "all", "offset": offset \}/);
+  assert.match(page, /const fields = \{ scope: "all", offset: offset \}/);
+  assert.match(page, /if \(cursor\) fields\.cursor = cursor/);
+  assert.match(page, /request\("sessions_list", fields/);
   assert.match(page, /generation !== sessionCatalogGeneration\) return/);
   assert.match(page, /seen\[path\] === true[\s\S]*seen\[path\] = true[\s\S]*merged\.push\(session\)/, "concurrent-page duplicates are removed by path");
-  assert.match(page, /nextOffset <= offset[\s\S]*loadSessionCatalogPage\(generation, nextOffset, merged, seen\)/, "paging must make progress and remain sequential");
+  assert.match(page, /nextOffset <= offset[\s\S]*loadSessionCatalogPage\(generation, nextOffset, merged, seen, response\.data\.cursor, retries\)/, "paging must make progress and remain sequential");
   assert.match(page, /sessionCatalog = merged[\s\S]*sessionCatalogLoading = false[\s\S]*sessionCatalogLoaded\(merged\)/);
   assert.match(page, /\}, false\)/, "global pages are not dropped after a tab switch");
   assert.match(bridge, /Timer\s*\{[\s\S]*id:\s*sessionCatalogRefreshTimer[\s\S]*interval:\s*500[\s\S]*bridge\.refreshSessionCatalog\(\)/, "catalog refresh events are coalesced");
@@ -475,10 +477,12 @@ test("bridge talks only to the backend over strict LF JSONL with correlated, bou
   assert.equal((bridge.match(/splitMarker:\s*"\\n"/g) ?? []).length, 2);
   const request = functionBody(bridge, "request");
   assert.match(request, /"v": protocolVersion/);
-  assert.match(request, /backendProcess\.write\(JSON\.stringify\(frame\) \+ "\\n"\)/);
+  assert.match(request, /const encoded = JSON\.stringify\(frame\) \+ "\\n"/);
+  assert.match(request, /utf8Bytes\(encoded\) > maxInboundFrameBytes/);
+  assert.match(request, /backendProcess\.write\(encoded\)/);
   assert.match(request, /pendingRequestCount >= maxPendingRequests/);
   assert.match(request, /deadline: Date\.now\(\) \+ timeoutFor\(type\)/);
-  assert.match(request, /originTab: activeTabId/);
+  assert.match(request, /originTab: type === "tab_select" \? String\(frame\.tab\) : activeTabId/);
   assert.match(request, /sessionScoped:\s*sessionScopedOverride === undefined \? sessionScopedRequestTypes\[type\] === true : sessionScopedOverride === true/);
   const settle = functionBody(bridge, "settlePending");
   assert.match(settle, /entry\.sessionScoped && entry\.originTab\.length > 0 && entry\.originTab !== activeTabId/);
@@ -502,7 +506,7 @@ test("bridge handles every backend event type and keeps failure paths explicit",
   for (const eventType of [
     "backend.ready", "backend.fatal", "pi.status", "pi.error", "pi.runtime", "pi.exit", "message.user", "part.begin",
     "part.render", "part.remove", "message.end", "tool.start", "tool.update", "tool.end", "run.start", "run.end",
-    "extension.request", "extension.cancelled", "extension.notify", "extension.status", "composer.setText",
+    "extension.request", "extension.notify", "extension.status", "composer.setText",
     "window.title", "queue.update", "notice", "events.dropped", "settings.changed", "appearance.changed", "themes.changed", "tabs.update", "sessions.changed", "transcript.reset", "transcript.row",
   ]) assert.match(handler, new RegExp(`case "${eventType.replace(".", "\\.")}"`), `event ${eventType}`);
   assert.match(handler, /default:\s*\n\s*break/);
@@ -524,17 +528,20 @@ test("bridge handles every backend event type and keeps failure paths explicit",
   assert.match(bridge, /QT_WEBUI_DESKTOP_EDGE_GAP/);
 });
 
-test("extension dialogs answer exactly once with typed values and cancel on close or session loss", () => {
+test("extension dialogs settle before closing and retain rejected answers", () => {
   const answer = functionBody(bridge, "answerDialog");
-  assert.match(answer, /activeDialog\.answered/);
-  assert.match(answer, /dialog\.answered = true/);
+  assert.match(answer, /activeDialog\.state !== "open"/);
+  assert.match(answer, /dialog\.state = "submitting"/);
+  assert.match(answer, /response\.ok \|\| response\.error\.code === "stale_request"/);
   assert.match(answer, /request\("extension_response"/);
   assert.match(functionBody(bridge, "clearDialogs"), /dialogQueue = \[\]/);
   assert.match(bridge, /case "pi\.exit":[\s\S]*clearDialogs\(/);
   assert.match(bridge, /onExited:[\s\S]*clearDialogs\(/);
   for (const method of ["select", "confirm", "input", "editor"]) assert.match(extensionDialog, new RegExp(`method === "${method}"`));
-  assert.match(functionBody(extensionDialog, "submit"), /if \(answered \|\| !request\) return false/);
-  assert.match(extensionDialog, /onClosed:\s*\{[\s\S]*if \(!answered && request\)[\s\S]*"cancelled": true/);
+  assert.match(functionBody(extensionDialog, "submit"), /submissionState !== "open"/);
+  assert.doesNotMatch(functionBody(extensionDialog, "submit"), /close\(\)/);
+  assert.match(extensionDialog, /closePolicy: Popup\.NoAutoClose/);
+  assert.match(extensionDialog, /onActivated: dialog\.cancel\(\)/);
   assert.match(functionBody(extensionDialog, "selectOption"), /options\.indexOf\(value\) === -1\) return false/);
   assert.match(extensionDialog, /initialFocusItem:/);
   assert.match(extensionDialog, /keyNavigationEnabled:\s*true/);
@@ -864,11 +871,12 @@ test("composer completion, attachments, drafts, and sequences never send by acci
   assert.match(composer, /enabled:\s*composer\.attachments\.length < composer\.maxAttachments/);
   assert.equal(LIMITS.maxAttachments, 8);
   assert.match(row, /text:\s*"Attached: " \+ row\.attachments/);
-  assert.match(textEditDialog, /function save\(\)[\s\S]*if \(answered \|\| overLimit\) return false/);
+  assert.match(textEditDialog, /function save\(\)[\s\S]*if \(answered \|\| overLimit \|\| submitting \|\| unknown\) return false/);
+  assert.doesNotMatch(functionBody(textEditDialog, "save"), /close\(\)/);
 
   // Drafts: saved after typing stops, restored only into an empty editor for the same key.
   assert.match(bridge, /readonly property string draftKey:\s*sessionFile\.length > 0 \? sessionFile : workspaceCwd/);
-  assert.match(shell, /Timer\s*\{[\s\S]*id:\s*draftTimer[\s\S]*interval:\s*600[\s\S]*bridge\.saveDraft\(composer\.text\)/);
+  assert.match(shell, /Timer\s*\{[\s\S]*id:\s*draftTimer[\s\S]*interval:\s*600[\s\S]*bridge\.saveDraftFor\(root\.draftKeyInUse, composer\.text\)/);
   assert.match(functionBody(shell, "restoreDraft"), /key !== bridge\.draftKey \|\| text\.length === 0 \|\| composer\.text\.trim\(\)\.length > 0\) return/);
   assert.match(functionBody(bridge, "saveDraftFor"), /boundedText\(String\(text \|\| ""\), 8192\)/);
   assert.equal(LIMITS.maxDraftCharacters, 8192);

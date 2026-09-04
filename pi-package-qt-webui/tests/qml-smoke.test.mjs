@@ -49,6 +49,7 @@ const smokeMarkers = [
   "QT_WEBUI_SMOKE_COMMANDS_LOADED",
   "QT_WEBUI_SMOKE_COMMAND_COMPLETED",
   "QT_WEBUI_SMOKE_PATH_COMPLETED",
+  "QT_WEBUI_SMOKE_COMPLETION_GENERATIONS",
   "QT_WEBUI_SMOKE_ATTACHMENT_ADDED",
   "QT_WEBUI_SMOKE_ATTACHMENT_SENT",
   "QT_WEBUI_SMOKE_DRAFT_PERSISTED",
@@ -153,7 +154,7 @@ function quickshellUnavailableReason() {
   return null;
 }
 
-export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, extraEnv = {}, timeoutMs = 40_000, orderOnly = false, themeOnly = false }) {
+export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, extraEnv = {}, timeoutMs = 40_000, orderOnly = false, themeOnly = false, remediation = false }) {
   const program = `
     import { launchQtWebUi } from ${JSON.stringify(launcherUrl)};
     const code = await launchQtWebUi({
@@ -167,7 +168,7 @@ export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, ex
         QT_WEBUI_SMOKE_MODE: "1",
         QT_WEBUI_SMOKE_CAPTURE_PATH: ${JSON.stringify(capturePath)},
         QT_WEBUI_SMOKE_STATE_PATH: ${JSON.stringify(statePath)},
-        QT_WEBUI_THEME_MODE: ${JSON.stringify(themeOnly ? "theme-only" : orderOnly ? "order-only" : "normal")},
+        QT_WEBUI_THEME_MODE: ${JSON.stringify(remediation ? "remediation" : themeOnly ? "theme-only" : orderOnly ? "order-only" : "normal")},
         QT_WEBUI_PI_STARTUP_TIMEOUT_MS: "1500",
         QT_WEBUI_PI_REQUEST_TIMEOUT_MS: "10000",
       },
@@ -188,6 +189,9 @@ export function runLiveSmoke({ callerCwd, capturePath, statePath, configHome, ex
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_SYSTEM: "/dev/null",
         ...extraEnv,
+        XDG_CACHE_HOME: path.join(path.dirname(configHome), "cache"),
+        PI_WEBUI_SETTINGS_FILE: path.join(path.dirname(configHome), "webui-settings.json"),
+        DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(path.dirname(configHome), "isolated-session-bus")}`,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -388,6 +392,19 @@ test("real Quickshell completes a model reorder and persists merged identities",
   assert.doesNotMatch(combined, /QT_WEBUI_SMOKE_FAILURE|QQmlApplicationEngine failed|TypeError:|ReferenceError:|Cannot assign|Accessible attached property must be attached to an object deriving from Item or Action/i, combined);
   const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
   assert.deepEqual(settings.modelOrder, ["fixture-provider/fixture-fast", "fixture-provider/fixture-model", "other-provider/other-model", "absent-provider/absent-model"]);
+});
+
+test("real Quickshell preserves prompt, draft, and dialog intent under delayed settlement", { timeout: 40_000 }, async (t) => {
+  const skipReason = waylandUnavailableReason() ?? quickshellUnavailableReason();
+  if (skipReason) return t.skip(skipReason);
+  const workspace = await smokeWorkspace(t);
+  const result = await runLiveSmoke({ ...workspace, remediation: true });
+  const output = `${result.stdout}\n${result.stderr}`;
+  assert.equal(result.code, 0, output);
+  assert.doesNotMatch(output, /QT_WEBUI_SMOKE_FAILURE|TypeError:|ReferenceError:|Cannot assign/, output);
+  for (const name of ["PROMPTS", "DRAFTS", "DIALOGS", "ATTACHMENTS", "SELECTION", "SEARCH"]) assert.match(output, new RegExp(`QT_WEBUI_REMEDIATION_${name}`), output);
+  const commands = (await readFile(workspace.capturePath, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(commands.filter(command => command.message === "__QT_WEBUI_ACCEPT_DELAY__").length, 2, "timeouts never resend");
 });
 
 test("real Quickshell completes the same scenarios at 200% scaling", { timeout: 60_000 }, async (t) => {

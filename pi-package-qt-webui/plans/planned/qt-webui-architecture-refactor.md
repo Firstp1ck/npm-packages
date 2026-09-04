@@ -1,6 +1,6 @@
 # Qt WebUI architecture refactor
 
-Status: planned, independently reviewed, and amended
+Status: planned; amended to preserve the remediation contracts
 
 This plan covers the four recommended architecture steps:
 
@@ -24,11 +24,11 @@ The target architecture has these ownership rules:
 - A protocol registry owns request metadata, validation, timeouts, scope, and mutation policy.
 - Shared packages contain only stable logic that has no Qt, DOM, HTTP, or process-lifecycle dependency.
 
-## Current evidence
+## Evidence before remediation
 
 The refactor addresses four concentrated files:
 
-| File | Current size | Main issue |
+| File | Size at review | Main issue |
 | --- | ---: | --- |
 | `lib/backend/main.mjs` | 1,218 lines | Transport, routing, synchronization, resource transactions, and lifecycle share one closure. |
 | `lib/backend/pi-session.mjs` | 1,493 lines | Pi transport, mutable session state, transcript translation, helper calls, dialogs, and model controls share one owner. |
@@ -39,12 +39,7 @@ Protocol facts are also repeated across `protocol.mjs`, `main.mjs`, `BackendBrid
 
 ## Independent review record
 
-Four independent Pi review processes used `openrouter/moonshotai/kimi-k3`, one per step. Their full reports are retained separately:
-
-- [Step 1 review](../reviews/architecture-step-1-review-kimi-k3.md)
-- [Step 2 review](../reviews/architecture-step-2-review-kimi-k3.md)
-- [Step 3 review](../reviews/architecture-step-3-review-kimi-k3.md)
-- [Step 4 review](../reviews/architecture-step-4-review-kimi-k3.md)
+The earlier plan recorded four independent Pi review processes using `openrouter/moonshotai/kimi-k3`, one per step. Those full reports are no longer retained in this working tree. The scores below are historical context, not independently reproducible evidence for the current implementation.
 
 The scores below assess each step as originally written, before the amendments in this revision.
 
@@ -70,14 +65,28 @@ The amendments below accept the reviewers' required findings. Optional suggestio
 
 ## Baseline gate
 
+The architecture-review remediation establishes the behavior that extraction must preserve:
+
+- Operation settlement runs for its origin even after selection changes. Prompt and dialog timeouts retain text and never retry automatically; draft cleanup uses revision guards and a locked compare-and-set.
+- Backend selection generations fence snapshots and replay. Step 2 must extend that contract rather than reintroducing response-owned selection.
+- Session mutation reservations are synchronous and survive awaits. A backend-private canonical identity index includes transitions and closing owners. Actors must adopt these rules before replacing them.
+- Process owners survive leader exit until group cleanup completes. Transport extraction must retain both-stream reader pauses, ordinary admission limits, reserved controls, and the bounded slow-consumer exit.
+- Attachment metadata is negotiated additively under protocol v1; old clients retain bounded legacy results. Preserve pre-commit size checks and bounded text reads.
+- Catalog cursors address immutable bounded scans. Snapshot workers have input, output, heap, concurrency, queue, and deadline limits with parent-owned cleanup.
+- Qt documents use latest-read mutations under kernel-owned locks. The stable `.lock` inode is intentional; shared-package extraction must not unlink it or introduce another owner for the same file.
+
+Remediation passed its final gate in the working tree above `708449044bba2a8227623cc4e4639fcff8098049`: 262 tests passed with no failures or skips, including all six live Quickshell tests. The required focused groups passed 96 backend tests and 77 UI/unit/package/documentation tests. QML lint passed. The package dry run contained 102 files and had SHA-1 `b8d7d8ecc9db264463e56199f6170cd1dca000b2`. Runtime versions were Node `v22.23.2`, Qt `6.11.2`, and Quickshell `0.3.1`. The completed remediation record is retained locally under `plans/archive/qt-webui-architecture-review.md`; implementation contracts and regression suites are documented in [DEVELOPMENT.md](../../DEVELOPMENT.md).
+
+The four stages below remain separate work, not part of remediation. Re-run the baseline after a clean dependency install before beginning extraction.
+
 Before step 1 begins:
 
 - [ ] Run `npm ci --ignore-scripts` in `pi-package-qt-webui` on Linux or WSL.
-- [ ] Run `npm run check` and record the passing count, skipped live tests, Node version, Qt version, Quickshell version, and revision.
-- [ ] Run `qmllint -I /usr/lib/qt6/qml qml/*.qml qml/components/*.qml qml/dialogs/*.qml`.
-- [ ] Run `npm pack --dry-run --json` and retain the package file inventory.
-- [ ] Record current request, event, shutdown, tab-switch, session-sync, and resource-rollback behavior as characterization tests where coverage is missing.
-- [ ] Record a clean smoke trace for the default, 200 percent scale, and model-order scenarios.
+- [x] Run `npm run check` and record the passing count, skipped live tests, Node version, Qt version, Quickshell version, and revision.
+- [x] Run `qmllint -I /usr/lib/qt6/qml qml/*.qml qml/components/*.qml qml/dialogs/*.qml`.
+- [x] Run `npm pack --dry-run --json` and retain the package file inventory.
+- [x] Record current request, event, shutdown, tab-switch, session-sync, and resource-rollback behavior as characterization tests where coverage is missing.
+- [x] Record a clean smoke trace for the default, 200 percent scale, and model-order scenarios.
 
 If the baseline is not green, classify each failure before refactoring. Fix only failures that block trustworthy comparison.
 

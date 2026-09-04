@@ -9,6 +9,7 @@ import { LIMITS } from "../lib/backend/protocol.mjs";
 import { processAlive, startBackend, waitUntil } from "./helpers/backend-client.mjs";
 
 const REAP_BOUND_MS = LIMITS.shutdownGraceMs + 2_000;
+const INVALID_ENTRY_EXIT_MS = 3_000;
 
 async function isolatedDesktopCommands(t) {
   const temporary = await mkdtemp(path.join(os.tmpdir(), "qt-webui-desktop-fixture-"));
@@ -35,13 +36,7 @@ if (command === "gdbus") setInterval(() => {}, 60_000);
 }
 
 async function backendWithGrandchild(t) {
-  const backend = await startBackend({ startupTimeoutMs: 1_000 });
-  t.after(async () => {
-    if (!backend.exit) {
-      backend.kill("SIGKILL");
-      await backend.exitPromise;
-    }
-  });
+  const backend = await startBackend({ t, startupTimeoutMs: 1_000 });
   await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");
   const started = await backend.waitForEvent("pi.started");
   await backend.send("prompt", { message: "__QT_WEBUI_GRANDCHILD__" });
@@ -54,12 +49,7 @@ async function backendWithGrandchild(t) {
 
 test("smoke backend tests do not invoke desktop portal commands", { timeout: 20_000 }, async (t) => {
   const desktop = await isolatedDesktopCommands(t);
-  const backend = await startBackend({ env: desktop.env, startupTimeoutMs: 1_000 });
-  t.after(async () => {
-    if (backend.exit) return;
-    backend.kill("SIGKILL");
-    await backend.exitPromise;
-  });
+  const backend = await startBackend({ t, env: desktop.env, startupTimeoutMs: 1_000 });
 
   await backend.waitForEvent("backend.ready");
   await delay(100);
@@ -70,13 +60,9 @@ test("smoke backend tests do not invoke desktop portal commands", { timeout: 20_
 
 test("an abruptly killed backend cannot orphan its isolated portal monitor", { timeout: 20_000 }, async (t) => {
   const desktop = await isolatedDesktopCommands(t);
-  const backend = await startBackend({ smoke: false, env: desktop.env, startupTimeoutMs: 1_000 });
+  const backend = await startBackend({ t, smoke: false, env: desktop.env, startupTimeoutMs: 1_000 });
   let monitorPid = null;
-  t.after(async () => {
-    if (!backend.exit) {
-      backend.kill("SIGKILL");
-      await backend.exitPromise;
-    }
+  t.after(() => {
     if (monitorPid && processAlive(monitorPid)) process.kill(monitorPid, "SIGKILL");
   });
 
@@ -146,23 +132,42 @@ test("a fatal backend error reports itself, kills the Pi tree, and exits non-zer
 
 test("debug_crash is refused outside smoke mode and a missing Pi entry fails fast", { timeout: 20_000 }, async (t) => {
   const desktop = await isolatedDesktopCommands(t);
-  const backend = await startBackend({ smoke: false, env: desktop.env, startupTimeoutMs: 1_000 });
-  t.after(async () => {
-    if (!backend.exit) {
-      backend.kill("SIGKILL");
-      await backend.exitPromise;
-    }
-  });
+  const backend = await startBackend({ t, smoke: false, env: desktop.env, startupTimeoutMs: 1_000 });
   await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");
   const refused = await backend.send("debug_crash");
   assert.equal(refused.error.code, "unknown_request");
   backend.closeStdin();
   await backend.exitPromise;
 
-  const broken = await startBackend({ env: { QT_WEBUI_PI_CLI_ENTRY: "relative/pi.js" } });
-  const exit = await broken.exitPromise;
+  const broken = await startBackend({ t, piCliEntry: "relative/pi.js" });
+  const exit = await broken.waitForExit(INVALID_ENTRY_EXIT_MS);
   assert.equal(exit.code, 64);
   assert(broken.events.some((event) => event.type === "backend.fatal" && /absolute path/.test(event.message)));
+  assert(!broken.events.some((event) => event.type === "pi.started"));
+  assert.deepEqual(await broken.readCapture(), []);
+});
+
+test("generic environment cannot replace the protected Pi fixture entry", { timeout: 10_000 }, async (t) => {
+  const backend = await startBackend({ t, env: { QT_WEBUI_PI_CLI_ENTRY: "relative/pi.js" } });
+  await backend.waitForEvent("pi.status", (event) => event.statusKind === "ready");
+  await assert.rejects(backend.waitForExit(20), /timed out waiting for backend exit.*\nevents:.*pi.started.*\nstderr:/s);
+  const started = await backend.waitForEvent("pi.started");
+  backend.closeStdin();
+  assert.equal((await backend.waitForExit()).code, 0);
+  await waitUntil(() => !processAlive(started.pid), { description: `fixture ${started.pid} exits` });
+});
+
+test("spontaneous Pi leader exit sweeps its retained group before replacement", { timeout: 20_000 }, async (t) => {
+  const { backend, piPid, grandchildPid } = await backendWithGrandchild(t);
+  process.kill(piPid, "SIGKILL");
+  await backend.waitForEvent("pi.exit");
+  const before = backend.events.filter(event => event.type === "pi.started").length;
+  const restart = await backend.send("restart");
+  assert.equal(restart.ok, true, JSON.stringify(restart));
+  const started = await backend.waitForEvent("pi.started", event => event.pid !== piPid);
+  await waitUntil(() => !processAlive(grandchildPid), { timeoutMs: REAP_BOUND_MS, description: `old Pi ${piPid} tool ${grandchildPid} gone before replacement ${started.pid}` });
+  assert.equal(backend.events.filter(event => event.type === "pi.started").length, before + 1);
+  assert.equal((await backend.send("hello")).ok, true);
 });
 
 test("restarting Pi terminates the previous tree before starting a new child", { timeout: 20_000 }, async (t) => {

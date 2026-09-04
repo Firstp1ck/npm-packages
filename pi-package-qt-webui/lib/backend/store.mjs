@@ -1,10 +1,9 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, ftruncateSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-
-// Small private JSON documents under the XDG config or state directories. Every store validates
-// on read, replaces the file atomically, and keeps owner-only permissions. Oversized or invalid
-// files fall back to the validated default instead of failing the caller.
+import { LIMITS, ProtocolError } from "./protocol.mjs";
 
 export function xdgDirectory(env, variable, fallbackSegments) {
   const configured = env[variable];
@@ -16,52 +15,96 @@ export function stateDirectory(env = process.env) {
   return xdgDirectory(env, "XDG_STATE_HOME", [".local", "state"]);
 }
 
+export function readBoundedFileSync(file, maxBytes) {
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error("not a regular file");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let size = 0;
+    while (size < buffer.length) {
+      const count = readSync(fd, buffer, size, buffer.length - size, null);
+      if (!count) break;
+      size += count;
+    }
+    if (size > maxBytes) throw new ProtocolError("limit_exceeded", `file exceeds ${maxBytes} bytes`);
+    return buffer.subarray(0, size);
+  } finally { closeSync(fd); }
+}
+
+// flock locks the inherited open-file description. The parent retains that descriptor until
+// commit; the kernel releases it on crash. Never unlink the stable inode while waiters may use it.
+export function withDocumentLock(file, mutate) {
+  const directory = path.dirname(file);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  chmodSync(directory, 0o700);
+  const fd = openSync(`${file}.lock`, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  let acquired = false;
+  try {
+    const lock = spawnSync("flock", ["-w", String(LIMITS.storeLockWaitMs / 1000), "3"], { stdio: ["ignore", "pipe", "pipe", fd], timeout: LIMITS.storeLockCommandMs, maxBuffer: 4096 });
+    if (lock.error || lock.status !== 0) throw new ProtocolError("busy", lock.error?.code === "ENOENT" ? "Qt settings require the util-linux flock command" : "Another window is updating this document; retry after it finishes");
+    acquired = true;
+    ftruncateSync(fd, 0);
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }));
+    return mutate();
+  } finally {
+    if (acquired) ftruncateSync(fd, 0);
+    closeSync(fd);
+  }
+}
+
+// Shared Qt documents use one latest-read/validate/replace transaction. Unknown top-level keys
+// remain on disk but are not exposed as validated settings. No lock or parse failure writes data.
 export function createJsonFileStore({ directory, fileName, maxBytes, validate }) {
   const filePath = path.join(directory, fileName);
+  const knownKeys = new Set(Object.keys(validate(null).value));
 
-  // Returns { value, problems }. `value` is always validated, so callers never see raw JSON.
-  function read() {
-    let text;
+  function readDocument() {
+    let raw = null;
+    let problems = [];
     try {
-      const size = statSync(filePath).size;
-      if (size > maxBytes) return { value: validate(null).value, problems: [`${fileName} exceeds ${maxBytes} bytes; using defaults`], path: filePath };
-      text = readFileSync(filePath, "utf8");
+      raw = JSON.parse(readBoundedFileSync(filePath, maxBytes).toString("utf8"));
     } catch (error) {
-      if (error && error.code === "ENOENT") return { value: validate(null).value, problems: [], path: filePath };
-      return { value: validate(null).value, problems: [`could not read ${fileName}: ${error.message}`], path: filePath };
+      if (error.code !== "ENOENT") problems = [error instanceof SyntaxError ? `${fileName} is not valid JSON: ${error.message}` : `could not read ${fileName}: ${error.message}; using defaults`];
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (error) {
-      return { value: validate(null).value, problems: [`${fileName} is not valid JSON: ${error.message}`], path: filePath };
-    }
-    const { value, problems } = validate(parsed);
-    return { value, problems, path: filePath };
+    const result = validate(raw);
+    return { raw, value: result.value, problems: [...problems, ...result.problems], path: filePath };
   }
 
-  function write(value) {
+  function read() {
+    const { raw, ...result } = readDocument();
+    return result;
+  }
+
+  function writeUnlocked(value, raw) {
     const { value: validated, problems } = validate(value);
     if (problems.length > 0) throw new Error(problems.join("; "));
-    const text = `${JSON.stringify(validated, null, 2)}\n`;
-    if (Buffer.byteLength(text, "utf8") > maxBytes) throw new Error(`${fileName} would exceed ${maxBytes} bytes`);
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const unknown = raw && typeof raw === "object" && !Array.isArray(raw)
+      ? Object.fromEntries(Object.entries(raw).filter(([key]) => !knownKeys.has(key))) : {};
+    const text = `${JSON.stringify({ ...unknown, ...validated }, null, 2)}\n`;
+    if (Buffer.byteLength(text) > maxBytes) throw new ProtocolError("limit_exceeded", `${fileName} would exceed ${maxBytes} bytes`);
+    const temporary = `${filePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
     try {
-      chmodSync(directory, 0o700);
-    } catch {
-      // Directory permissions can only be tightened on filesystems that support modes.
+      writeFileSync(temporary, text, { mode: 0o600, flag: "wx" });
+      renameSync(temporary, filePath);
+    } finally {
+      try { unlinkSync(temporary); } catch (error) { if (error.code !== "ENOENT") throw error; }
     }
-    const temporary = `${filePath}.${process.pid}.tmp`;
-    writeFileSync(temporary, text, { mode: 0o600 });
-    renameSync(temporary, filePath);
     return { value: validated, path: filePath };
   }
 
-  // Read, mutate, write in one step; the mutator receives the validated value.
+  function write(value) {
+    return withDocumentLock(filePath, () => writeUnlocked(value, readDocument().raw));
+  }
+
   function update(mutate) {
-    const current = read().value;
-    const next = mutate(current) ?? current;
-    return write(next);
+    return withDocumentLock(filePath, () => {
+      const current = readDocument();
+      const before = JSON.stringify(current.value);
+      const next = mutate(current.value) ?? current.value;
+      if (next && typeof next.then === "function") throw new TypeError("Document mutations must be synchronous");
+      if (current.raw !== null && current.problems.length === 0 && JSON.stringify(next) === before) return { value: next, path: filePath };
+      return writeUnlocked(next, current.raw);
+    });
   }
 
   return { read, write, update, path: filePath, directory };

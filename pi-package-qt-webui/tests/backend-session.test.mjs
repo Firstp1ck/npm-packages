@@ -144,6 +144,37 @@ test("pending dialogs are cancelled when Pi exits and cannot be answered afterwa
   assert.equal(status.statusKind, "error");
 });
 
+for (const count of [1, 5]) {
+  for (const operation of ["exit", "restart", "session_new", "shutdown"]) {
+    test(`pending dialogs are cancelled once (${count}, ${operation})`, { timeout: 15_000 }, async (t) => {
+      const backend = await readyBackend(t);
+      await backend.send("prompt", { message: "__QT_WEBUI_STREAM__" });
+      await backend.waitForEvent("run.end");
+      const ids = backend.events.filter((event) => event.type === "extension.request").map((event) => event.requestId);
+      for (const requestId of ids.slice(count)) {
+        assert.equal((await backend.send("extension_response", { requestId, cancelled: true })).ok, true);
+      }
+      if (operation === "exit") {
+        await backend.send("prompt", { message: "__QT_WEBUI_EXIT__" });
+        await backend.waitForEvent("pi.exit");
+      } else {
+        assert.equal((await backend.send(operation)).ok, true);
+      }
+      if (operation === "shutdown") assert.equal((await backend.waitForExit()).code, 0);
+      else {
+        await backend.waitForEvent("extension.cancelled");
+        const hello = await backend.send("hello");
+        assert.equal(hello.data.session.pendingDialogs, 0);
+        assert.deepEqual(hello.data.session.dialogs, []);
+        const late = await backend.send("extension_response", { requestId: ids[0], cancelled: true });
+        assert.equal(late.error.code, "stale_request");
+      }
+      assert.deepEqual(backend.events.filter((event) => event.type === "extension.cancelled").map((event) => event.requestId).sort(), ids.slice(0, count).sort());
+      assert(!backend.events.some((event) => event.type === "backend.fatal"), backend.stderr);
+    });
+  }
+}
+
 test("markdown streaming renders at a bounded cadence and the final render is authoritative", async (t) => {
   const backend = await readyBackend(t);
   await backend.send("prompt", { message: "__QT_WEBUI_MARKDOWN__" });

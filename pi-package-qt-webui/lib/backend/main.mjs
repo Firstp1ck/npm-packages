@@ -21,8 +21,8 @@ import {
 import { createResourceStore, resolveEffective, resourceModelKey, updateProfile, validateProfile } from "./resources.mjs";
 import { SAMPLING_KEYS, supportedSamplingValues } from "./sampling.mjs";
 import { createSequenceStore } from "./sequences.mjs";
-import { createSessionSyncMonitor, loadPersistedSessionSnapshot, sessionRevisionKey } from "./session-sync.mjs";
-import { listSessions, managedSessionPath, sessionsDirectory } from "./sessions-index.mjs";
+import { createSessionSyncMonitor, loadPersistedSessionSnapshot, sessionRevisionKey, snapshotLoadDiagnostics, stopSnapshotLoads } from "./session-sync.mjs";
+import { createSessionCatalog, managedSessionPath, sessionsDirectory } from "./sessions-index.mjs";
 import { createSettingsStore } from "./settings.mjs";
 import { createStateStore, sessionSettlementKey } from "./state.mjs";
 import { createTabRegistry } from "./tabs.mjs";
@@ -80,25 +80,54 @@ export function createBackend({
   let maxWritableLength = 0;
   let backpressured = false;
   let backpressurePauses = 0;
+  let drainTimer = null;
+  let slowConsumerShutdowns = 0;
+  let peakQueuedRecords = 0;
+  let peakAdmittedWork = 0;
+  const controlRequests = new Set(["abort", "shutdown"]);
+
+  function transportSnapshot() {
+    return { queuedBytes: output.writableLength, queuedRecords, maxWritableLength, peakQueuedRecords,
+      backpressurePauses, producersPaused: backpressured, admittedWork: inflight.size, peakAdmittedWork,
+      admittedResponseBytes: inflight.size * LIMITS.maxOutboundFrameBytes, slowConsumerShutdowns, rss: process.memoryUsage().rss, peakRss: process.resourceUsage().maxRSS * 1024, droppedTotal };
+  }
+
+  function slowConsumer(reason) {
+    if (slowConsumerShutdowns || closing) return;
+    slowConsumerShutdowns++;
+    void shutdown(75, `slow consumer: ${reason}`);
+  }
   let closing = false;
+  let attachmentMetadata = false;
+
+  function attachmentOptions(request, tab) {
+    return { metadataOnly: attachmentMetadata, preflight: data => {
+      if (!attachmentMetadata && Buffer.byteLength(JSON.stringify(data.attachments)) > LIMITS.maxAttachmentLegacyListBytes) throw new ProtocolError("limit_exceeded", "Legacy attachment lists exceeded their wire budget; use metadata attachment negotiation");
+      for (const record of [makeResponse(request.id, data), makeResponse(request.id, { ...tabSnapshot(tab), attachments: data.attachments })]) {
+        if (Buffer.byteLength(encodeFrame(record)) > LIMITS.maxOutboundFrameBytes) throw new ProtocolError("limit_exceeded", "Attachment result would exceed the wire budget");
+      }
+    } };
+  }
   let shutdownPromise = null;
   const inflight = new Map();
   const exclusiveTabOperations = new Set();
   const mutatingTabOperations = new Map();
 
   // Slow-consumer policy: coalescable records (streaming renders, tool progress) are dropped
-  // while the outbound queue is over budget; essential records are always written, and every
-  // Pi child's stdout is paused until the queue drains so memory stays bounded.
+  // while the outbound queue is over budget. Both Pi streams pause, ordinary requests refuse
+  // admission, and a hard ceiling or drain deadline triggers controlled shutdown.
   function engageBackpressure() {
     if (backpressured) return;
     backpressured = true;
     backpressurePauses += 1;
     for (const tab of allTabs()) tab.session.pauseInput();
+    drainTimer = setTimeout(() => slowConsumer("drain deadline exceeded"), LIMITS.transportDrainMs);
     emit("backend.backpressure", { paused: true, queuedBytes: output.writableLength });
     output.once("drain", () => {
+      clearTimeout(drainTimer);
       backpressured = false;
-      for (const tab of allTabs()) tab.session.resumeInput();
-      emit("backend.backpressure", { paused: false, queuedBytes: output.writableLength });
+      for (const tab of allTabs()) { if (backpressured || closing) break; tab.session.resumeInput(); }
+      if (!backpressured && !closing) emit("backend.backpressure", { paused: false, queuedBytes: output.writableLength });
     });
   }
 
@@ -112,7 +141,13 @@ export function createBackend({
     }
     const bytes = Buffer.byteLength(text, "utf8");
     const queuedBytes = output.writableLength;
-    if (queuedBytes > maxWritableLength) maxWritableLength = queuedBytes;
+    const control = record.type === "backend.closing" || record.type === "backend.fatal" || record.data?.closing === true;
+    if (queuedBytes + bytes > LIMITS.maxTransportBytes + (control ? LIMITS.transportControlBytes : 0)
+      || (!control && queuedRecords >= LIMITS.maxTransportRecords)) {
+      slowConsumer("transport retention limit exceeded");
+      return false;
+    }
+    if (slowConsumerShutdowns && !control) return false;
     const overBudget = queuedBytes + bytes > LIMITS.maxQueuedBytes;
     if ((overBudget || queuedRecords >= LIMITS.maxQueuedRecords) && !essential) {
       dropped += 1;
@@ -120,6 +155,8 @@ export function createBackend({
       return false;
     }
     queuedRecords += 1;
+    peakQueuedRecords = Math.max(peakQueuedRecords, queuedRecords);
+    maxWritableLength = Math.max(maxWritableLength, queuedBytes + bytes);
     const flushed = output.write(text, () => {
       queuedRecords = Math.max(0, queuedRecords - 1);
       if (dropped > 0 && queuedRecords === 0) {
@@ -129,7 +166,7 @@ export function createBackend({
       }
     });
     // Node emits "drain" only after a write returned false, so engage only on that path.
-    if (overBudget && !flushed) engageBackpressure();
+    if ((overBudget || queuedRecords >= LIMITS.maxQueuedRecords) && !flushed && !closing) engageBackpressure();
     return true;
   }
 
@@ -155,6 +192,7 @@ export function createBackend({
   const state = createStateStore({ env, now });
   const sequences = createSequenceStore({ env });
   const resources = createResourceStore({ env });
+  const sessionCatalog = createSessionCatalog({ env, now });
   const themes = createThemeService({
     cwd,
     settingsStore: settings,
@@ -189,6 +227,7 @@ export function createBackend({
     const code = typeof error?.code === "string" ? error.code : error?.name || "Error";
     const key = `${operation}:${code}`;
     if (reconciliationWarnings.has(key)) return;
+    if (reconciliationWarnings.size >= LIMITS.maxSessionSyncWarnings) reconciliationWarnings.delete(reconciliationWarnings.values().next().value);
     reconciliationWarnings.add(key);
     emit("notice", { ...(tab ? { tab } : {}), level: "warning", message: `Session synchronization: ${boundedError(error?.message ?? String(error))}` });
   }
@@ -272,7 +311,7 @@ export function createBackend({
 
   function tabForSessionPath(sessionPath) {
     const resolved = path.resolve(sessionPath);
-    return allTabs().find((tab) => tab.sessionFile && path.resolve(tab.sessionFile) === resolved) ?? null;
+    return registry.ownerOf(sessionPath) ?? allTabs().find((tab) => tab.sessionFile && path.resolve(tab.sessionFile) === resolved) ?? null;
   }
 
   function tabSessionSyncBusy(tab) {
@@ -294,6 +333,7 @@ export function createBackend({
   }
 
   async function reconcileSessionChange(change) {
+    if (closing) return;
     const resolvedPath = path.resolve(change.path);
     const normalizedChange = { ...change, path: resolvedPath };
     const previousFailure = reconciliationFailures.get(resolvedPath);
@@ -330,11 +370,12 @@ export function createBackend({
 
         let snapshot;
         try {
-          snapshot = await loadSessionSnapshot(pending.path);
+          snapshot = await loadSessionSnapshot(pending.path, { isCurrent: () => pendingSessionChanges.get(pending.path) === pending
+            && registryPathGeneration === loadRegistryGeneration && registry.sessionSyncGeneration(tab.id) === loadTabGeneration });
         } catch (error) {
-          if (pendingSessionChanges.get(pending.path) !== pending) continue;
+          if (pendingSessionChanges.get(pending.path) !== pending || error.code === "stale_request") continue;
           recordReconciliationFailure(pending);
-          warnSessionSyncOnce("snapshot-load", error, tab.id);
+          warnSessionSyncOnce(`snapshot-load:${pending.path}:${pending.revisionKey}`, error, tab.id);
           break;
         }
         if (pendingSessionChanges.get(pending.path) !== pending) continue;
@@ -366,6 +407,7 @@ export function createBackend({
   }
 
   function retryPendingSessionChanges(tab) {
+    if (closing) return;
     for (const change of pendingSessionChanges.values()) {
       if (!tab.sessionFile || path.resolve(change.path) !== path.resolve(tab.sessionFile)) continue;
       void reconcileSessionChange(change);
@@ -375,10 +417,14 @@ export function createBackend({
   sessionMonitor = createSessionMonitor({
     sessionsRoot: sessionsDirectory(env),
     onCatalogChange: (event) => {
+      sessionCatalog.invalidate();
       emit("sessions.changed", { reason: event.reason });
       if (futureSessionPaths.size > 0) void validateMonitoredPaths();
     },
-    onSessionChange: (change) => void reconcileSessionChange(change),
+    onSessionChange: (change) => {
+      registry.noteSessionRevision(change.path, change.revisionKey);
+      void reconcileSessionChange(change);
+    },
     onWarning: (warning) => warnSessionSyncOnce(warning.operation, warning),
   });
 
@@ -391,7 +437,7 @@ export function createBackend({
   }
 
   function tabSnapshot(tab) {
-    return { tab: registry.list().tabs.find((entry) => entry.id === tab.id), session: tab.session.snapshot(), attachments: tab.attachments.list() };
+    return { selectionGeneration: registry.selectionGeneration, tab: registry.list().tabs.find((entry) => entry.id === tab.id), session: tab.session.snapshot(), attachments: tab.attachments.list({ metadataOnly: attachmentMetadata }) };
   }
 
   function normalizedNames(value, known, field) {
@@ -601,13 +647,17 @@ export function createBackend({
         if (target.session.snapshot().active) throw new ProtocolError("busy", "A broader resource profile cannot change while an affected tab is active");
         if (target.id !== tab.id) {
           if (exclusiveTabOperations.has(target.id)) throw new ProtocolError("busy", "Another resource, model, or session operation is already in progress for an affected tab");
+          const reservation = registry.reserveMutation(target.id);
           exclusiveTabOperations.add(target.id);
-          acquired.push(target.id);
+          acquired.push({ id: target.id, reservation });
         }
       }
 
       const beforeById = new Map();
-      for (const target of targets) beforeById.set(target.id, await resourceContext(target));
+      for (const target of targets) {
+        const owned = acquired.find(entry => entry.id === target.id);
+        beforeById.set(target.id, await (owned ? owned.reservation.run(() => resourceContext(target)) : resourceContext(target)));
+      }
       const before = beforeById.get(tab.id);
       const known = field === "tools" ? before.helper.toolNames : before.helper.skillNames;
       if (field !== "sampling" && value !== null) {
@@ -680,13 +730,16 @@ export function createBackend({
       }
       return requestedResult;
     } finally {
-      for (const id of acquired) exclusiveTabOperations.delete(id);
+      for (const { id, reservation } of acquired) { exclusiveTabOperations.delete(id); reservation.release(); }
     }
   }
 
   const handlers = {
-    async hello() {
+    async hello(request) {
+      if (request.attachmentMetadata) attachmentMetadata = true;
       const active = registry.active();
+      const selectionGeneration = registry.selectionGeneration;
+      const tabList = registry.list();
       if (active) registry.replay(active);
       const themeState = await themes.refresh();
       return {
@@ -695,14 +748,16 @@ export function createBackend({
         cwd,
         limits: LIMITS,
         smokeMode,
-        tabs: registry.list(),
+        tabs: tabList,
+        selectionGeneration,
         session: active ? active.session.snapshot() : null,
-        attachments: active ? active.attachments.list() : [],
+        attachments: active ? active.attachments.list({ metadataOnly: attachmentMetadata }) : [],
+        attachmentMetadata,
         settings: settings.read().settings,
         appearance: appearance.snapshot(),
         themeState,
         recentActions: state.read().value.recentActions,
-        stats: { maxWritableLength, droppedTotal, backpressurePauses, queuedRecords },
+        stats: transportSnapshot(),
       };
     },
     async prompt(request) {
@@ -780,7 +835,9 @@ export function createBackend({
         smokeMode,
         uptimeMs: Math.round(process.uptime() * 1000),
         memoryRssBytes: process.memoryUsage().rss,
-        stats: { maxWritableLength, droppedTotal, backpressurePauses, queuedRecords, sequence, inflight: inflight.size },
+        stats: { ...transportSnapshot(), sequence, inflight: inflight.size },
+        catalog: sessionCatalog.diagnostics(),
+        snapshotLoads: snapshotLoadDiagnostics(),
         tabs: registry.list(),
         recentActions: saved.recentActions,
         paths: { settings: settings.path, state: state.path, sequences: sequences.path, resources: resources.path, sharedResources: resources.sharedPath },
@@ -860,7 +917,7 @@ export function createBackend({
       return { key: request.key, text: state.getDraft(request.key) };
     },
     async draft_set(request) {
-      return { key: request.key, text: state.setDraft(request.key, request.text) };
+      return { key: request.key, text: state.setDraft(request.key, request.text, request.expectedText) };
     },
     async sequences_list() {
       const result = sequences.list();
@@ -891,16 +948,19 @@ export function createBackend({
     },
     async attachment_add(request) {
       const tab = tabFor(request);
-      return { attachment: tab.attachments.add({ path: request.path, granted: request.granted }), attachments: tab.attachments.list() };
+      return { attachment: tab.attachments.add({ path: request.path, granted: request.granted }, attachmentOptions(request, tab)), attachments: tab.attachments.list({ metadataOnly: attachmentMetadata }) };
     },
     async attachment_update(request) {
       const tab = tabFor(request);
-      return { attachment: tab.attachments.update(request.attachmentId, request.text), attachments: tab.attachments.list() };
+      return { attachment: tab.attachments.update(request.attachmentId, request.text, attachmentOptions(request, tab)), attachments: tab.attachments.list({ metadataOnly: attachmentMetadata }) };
     },
     async attachment_remove(request) {
       const tab = tabFor(request);
-      tab.attachments.remove(request.attachmentId);
-      return { attachments: tab.attachments.list() };
+      tab.attachments.remove(request.attachmentId, attachmentOptions(request, tab));
+      return { attachments: tab.attachments.list({ metadataOnly: attachmentMetadata }) };
+    },
+    async attachment_read(request) {
+      return tabFor(request).attachments.readText(request.attachmentId, request.offset, request.revision);
     },
     async path_complete(request) {
       return tabFor(request).workspace.complete(request.query);
@@ -952,7 +1012,7 @@ export function createBackend({
       const catalogNow = now();
       const openSessionPaths = registry.sessionPaths();
       const [result, managedOpenSessions] = await Promise.all([
-        listSessions(catalogCwd, { env, scope: request.scope, offset: request.offset, now: () => catalogNow }),
+        sessionCatalog.list(catalogCwd, { scope: request.scope, offset: request.offset, cursor: request.cursor }),
         Promise.all(openSessionPaths.map(async (entry) => {
           try {
             const managed = await managedSessionPath(entry.path, { env });
@@ -1068,34 +1128,51 @@ export function createBackend({
       else emit("notice", { level: "error", message: `Rejected request: ${boundedError(error.message)}` });
       return;
     }
+    const control = controlRequests.has(request.type);
+    if (backpressured && !control) { respondError(request.id, "busy", "The UI is not draining responses; ordinary work is paused"); return; }
     if (inflight.has(request.id)) {
       respondError(request.id, "duplicate_request", `request id ${request.id} is already in flight`);
       return;
     }
-    if (inflight.size >= LIMITS.maxPendingRequests) {
+    const controls = [...inflight.values()].filter(entry => controlRequests.has(entry.type)).length;
+    if ((!control && (inflight.size - controls >= LIMITS.maxPendingRequests || (inflight.size - controls + 1) * LIMITS.maxOutboundFrameBytes > LIMITS.maxAdmittedResponseBytes))
+      || (control && controls >= LIMITS.maxControlRequests)) {
       respondError(request.id, "busy", "too many requests are in flight");
       return;
+    }
+    let reservation;
+    const lifecycleMutation = ["session_switch", "session_new", "restart", "tab_close"].includes(request.type);
+    const requestedTab = registry.get(request.tab || registry.activeId);
+    const compatibleControl = (request.type === "prompt" && request.mode !== "send" && requestedTab?.session.snapshot().active === true)
+      || (request.type === "tab_close" && request.force);
+    if ((SESSION_MUTATION_REQUESTS.has(request.type) || lifecycleMutation) && !compatibleControl) {
+      try { reservation = registry.reserveMutation(tabFor(request).id); }
+      catch (error) { respondError(request.id, error.code ?? "busy", error.message); return; }
     }
     const timeoutMs = LIMITS.requestTimeoutMs[request.type];
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      inflight.delete(request.id);
+      // Keep timed-out work admitted until its handler actually finishes.
       respondError(request.id, "timeout", `${request.type} did not complete within ${timeoutMs} ms`);
     }, timeoutMs);
     inflight.set(request.id, { type: request.type, timer });
+    peakAdmittedWork = Math.max(peakAdmittedWork, inflight.size);
     let mutatingTabId = "";
     Promise.resolve()
-      .then(async () => {
+      .then(() => (reservation ? reservation.run : operation => operation())(async () => {
         if (SESSION_MUTATION_REQUESTS.has(request.type)) {
           mutatingTabId = tabFor(request).id;
           mutatingTabOperations.set(mutatingTabId, (mutatingTabOperations.get(mutatingTabId) ?? 0) + 1);
+          // A queued external snapshot is not yet evidence that Pi's in-memory branch is current.
+          if ([...pendingSessionChanges.values()].some(change => tabForSessionPath(change.path)?.id === mutatingTabId)) registry.markForRebind(mutatingTabId);
           await registry.prepareMutation(mutatingTabId);
         }
         return handlers[request.type](request);
-      })
+      }))
       .finally(() => {
+        reservation?.release();
         if (!mutatingTabId) return;
         const remaining = (mutatingTabOperations.get(mutatingTabId) ?? 1) - 1;
         if (remaining > 0) mutatingTabOperations.set(mutatingTabId, remaining);
@@ -1104,38 +1181,42 @@ export function createBackend({
         if (tab) retryPendingSessionChanges(tab);
       })
       .then((data) => {
-        if (settled) return;
-        settled = true;
         clearTimeout(timer);
         inflight.delete(request.id);
+        if (settled) return;
+        settled = true;
         respond(request.id, data ?? null);
       }, (error) => {
-        if (settled) return;
-        settled = true;
         clearTimeout(timer);
         inflight.delete(request.id);
+        if (settled) return;
+        settled = true;
         respondError(request.id, error instanceof ProtocolError ? error.code : "internal_error", error?.message ?? String(error));
       });
   }
 
   function killAllNow() {
     themes.stop();
+    sessionCatalog.stop();
     appearance.stopNow();
     void sessionMonitor.stop();
+    void stopSnapshotLoads();
     for (const child of registry.children()) killProcessTreeNow(child);
   }
 
   function shutdown(code, reason) {
     if (shutdownPromise) return shutdownPromise;
     closing = true;
+    clearTimeout(drainTimer);
+    sessionCatalog.stop();
     themes.stop();
     const appearanceStop = appearance.stop();
-    emit("backend.closing", { reason });
+    emit("backend.closing", { reason, transport: transportSnapshot() });
     const forced = setTimeout(() => {
       killAllNow();
       exit(code);
     }, LIMITS.shutdownGraceMs + 1_000);
-    shutdownPromise = Promise.all([appearanceStop, sessionMonitor.stop(), registry.stopAll()]).then(() => {
+    shutdownPromise = Promise.all([appearanceStop, sessionMonitor.stop(), registry.stopAll(), stopSnapshotLoads()]).then(() => {
       clearTimeout(forced);
       for (const entry of inflight.values()) clearTimeout(entry.timer);
       inflight.clear();
@@ -1203,6 +1284,8 @@ export function createBackend({
     emit,
     registry,
     sessionMonitor,
+    transportSnapshot,
+    catalogSnapshot: sessionCatalog.diagnostics,
     sessionSyncSnapshot: () => ({
       pendingPaths: [...pendingSessionChanges.keys()],
       reconcilingPaths: [...reconcilingSessionPaths],

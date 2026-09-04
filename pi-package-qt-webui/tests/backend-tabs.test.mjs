@@ -214,7 +214,8 @@ test("catalog refresh automatically settles exact-threshold sessions while exclu
   await backend.waitForEvent("pi.status", (event) => event.tab === idle.data.tab.id && event.statusKind === "ready");
   const running = await backend.send("tab_open", { cwd, sessionPath: paths.runningOpen });
   await backend.waitForEvent("pi.status", (event) => event.tab === running.data.tab.id && event.statusKind === "ready");
-  await backend.send("prompt", { tab: running.data.tab.id, message: "__QT_WEBUI_DELAYED_ABORT__" });
+  await backend.waitForEvent("tabs.update", event => event.tabs.some(tab => tab.id === running.data.tab.id && tab.sessionFile === paths.runningOpen && tab.ready && !tab.mutating));
+  assert.equal((await backend.send("prompt", { tab: running.data.tab.id, message: "__QT_WEBUI_DELAYED_ABORT__" })).ok, true);
   await backend.waitForEvent("run.start", (event) => event.tab === running.data.tab.id);
 
   const catalog = await backend.send("sessions_list", { scope: "all" });

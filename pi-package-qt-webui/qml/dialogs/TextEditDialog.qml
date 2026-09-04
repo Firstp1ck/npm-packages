@@ -11,10 +11,16 @@ AppDialog {
     property string text: ""
     property int maxCharacters: 262144
     property bool answered: false
+    property bool submitting: false
+    property bool unknown: false
+    property string failure: ""
+    property int presentation: 0
+    readonly property string editedText: editor.text
     readonly property bool overLimit: editor.text.length > maxCharacters
 
     signal saved(string text)
     signal cancelled()
+    signal refreshRequested()
 
     initialFocusItem: editor
 
@@ -25,15 +31,25 @@ AppDialog {
         text = String(config.text || "")
         editor.text = text
         answered = false
+        submitting = false
+        unknown = false
+        failure = ""
+        presentation++
         open()
     }
 
     function save() {
-        if (answered || overLimit) return false
-        answered = true
+        if (answered || overLimit || submitting || unknown) return false
+        submitting = true
         saved(editor.text)
-        close()
         return true
+    }
+
+    function settle(response) {
+        submitting = false
+        if (response.ok) { answered = true; close(); return }
+        unknown = !response.local && ["timeout", "not_running"].indexOf(response.error.code) !== -1
+        failure = response.error.message
     }
 
     function setText(value) {
@@ -80,10 +96,17 @@ AppDialog {
 
         Label {
             Layout.fillWidth: true
-            text: dialog.overLimit ? "Text exceeds " + dialog.maxCharacters + " characters" : editor.text.length + " characters"
+            text: dialog.failure || (dialog.overLimit ? "Text exceeds " + dialog.maxCharacters + " characters" : editor.text.length + " characters")
             textFormat: Text.PlainText
             color: dialog.overLimit ? dialog.theme.destructive : dialog.theme.muted
             font.pixelSize: 11
+        }
+
+        AppButton {
+            theme: dialog.theme
+            visible: dialog.unknown
+            text: "Check outcome"
+            onClicked: dialog.refreshRequested()
         }
 
         AppButton {
@@ -98,7 +121,7 @@ AppDialog {
             variant: "primary"
             text: "Save"
             accessibleName: "Save text"
-            enabled: !dialog.overLimit
+            enabled: !dialog.overLimit && !dialog.submitting && !dialog.unknown
             onClicked: dialog.save()
         }
     }

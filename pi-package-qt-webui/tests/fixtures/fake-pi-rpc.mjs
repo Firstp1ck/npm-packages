@@ -407,6 +407,7 @@ function handle(command) {
   }
 
   if (command.type === "get_messages") {
+    if (process.env.QT_WEBUI_FIXTURE_HISTORY_FAIL === "1") { response(command, false, { error: "history projection failed after switch" }); return; }
     response(command, true, { data: { messages: historyFor(currentSessionFile) } });
     return;
   }
@@ -589,6 +590,9 @@ function handle(command) {
     case "__QT_WEBUI_MARKDOWN__":
       runMarkdown(command);
       break;
+    case "__QT_WEBUI_ACCEPT_DELAY__":
+      setTimeout(() => response(command), 500);
+      break;
     case "__QT_WEBUI_IMMEDIATE__":
       response(command);
       break;
@@ -611,6 +615,18 @@ function handle(command) {
     case "__QT_WEBUI_LIMITS__":
       runLimits(command);
       break;
+    case "__QT_WEBUI_STDERR_FLOOD__": {
+      response(command);
+      let index = 0;
+      const produce = () => {
+        while (index < 4000) {
+          const writable = process.stderr.write(`pressure-stderr-${index++} ${"x".repeat(450)}\n`);
+          if (!writable) { process.stderr.once("drain", produce); return; }
+        }
+      };
+      setTimeout(produce, 20);
+      break;
+    }
     case "__QT_WEBUI_FLOOD__":
       runFlood(command);
       break;

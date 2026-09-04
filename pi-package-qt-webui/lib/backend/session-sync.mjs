@@ -1,4 +1,6 @@
-import { readFile, readdir, stat, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { open, readFile, readdir, stat, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { Worker } from "node:worker_threads";
+import { LIMITS, ProtocolError } from "./protocol.mjs";
 import { watch } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,7 +13,7 @@ export const SESSION_SYNC_DEFAULTS = Object.freeze({
   maxProjectWatchers: 256,
 });
 
-const DEFAULT_FILESYSTEM = Object.freeze({ readFile, readdir, stat, mkdtemp, writeFile, rm, watch });
+const DEFAULT_FILESYSTEM = Object.freeze({ open, readFile, readdir, stat, mkdtemp, writeFile, rm, watch });
 const DEFAULT_TIMERS = Object.freeze({
   setTimeout: globalThis.setTimeout,
   clearTimeout: globalThis.clearTimeout,
@@ -72,14 +74,28 @@ function assertCompleteJsonl(content, filePath) {
  * the source. Pi opens an isolated byte-for-byte copy and supplies the authoritative branch and
  * compaction projection through buildSessionContext().
  */
-export async function loadPersistedSessionSnapshot(sessionPath, {
+export async function loadPersistedSessionSnapshotInProcess(sessionPath, {
   filesystem = DEFAULT_FILESYSTEM,
   SessionManagerClass = SessionManager,
   temporaryRoot = os.tmpdir(),
+  temporaryDirectory: ownedDirectory,
 } = {}) {
   const resolvedPath = path.resolve(sessionPath);
   const before = revisionFromStats(await filesystem.stat(resolvedPath));
-  const content = await filesystem.readFile(resolvedPath);
+  if (before.size > LIMITS.maxSnapshotInputBytes) throw new ProtocolError("limit_exceeded", `Persisted session exceeds ${LIMITS.maxSnapshotInputBytes} input bytes`);
+  const fd = await filesystem.open(resolvedPath, "r");
+  let content;
+  try {
+    const storage = Buffer.alloc(LIMITS.maxSnapshotInputBytes + 1);
+    let count = 0;
+    while (count < storage.length) {
+      const read = await fd.read(storage, count, Math.min(64 * 1024, storage.length - count), null);
+      if (!read.bytesRead) break;
+      count += read.bytesRead;
+    }
+    if (count > LIMITS.maxSnapshotInputBytes) throw new ProtocolError("limit_exceeded", "Persisted session grew beyond the snapshot input limit");
+    content = storage.subarray(0, count);
+  } finally { await fd.close(); }
   const sourceHeader = assertCompleteJsonl(content, resolvedPath);
   const after = revisionFromStats(await filesystem.stat(resolvedPath));
   if (content.length !== after.size || !sameFileRevision(before, after)) {
@@ -88,7 +104,7 @@ export async function loadPersistedSessionSnapshot(sessionPath, {
 
   let temporaryDirectory;
   try {
-    temporaryDirectory = await filesystem.mkdtemp(path.join(temporaryRoot, "qt-webui-session-snapshot-"));
+    temporaryDirectory = ownedDirectory ?? await filesystem.mkdtemp(path.join(temporaryRoot, "qt-webui-session-snapshot-"));
     const isolatedPath = path.join(temporaryDirectory, "session.jsonl");
     await filesystem.writeFile(isolatedPath, content, { mode: 0o600 });
     const manager = SessionManagerClass.open(isolatedPath, temporaryDirectory);
@@ -110,6 +126,98 @@ export async function loadPersistedSessionSnapshot(sessionPath, {
   } finally {
     if (temporaryDirectory) await filesystem.rm(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+const snapshotQueue = [];
+const activeSnapshotJobs = new Set();
+let activeSnapshotLoads = 0;
+let peakSnapshotLoads = 0;
+let peakSnapshotRss = 0;
+let snapshotCleanupFailures = 0;
+export function snapshotLoadDiagnostics() {
+  peakSnapshotRss = Math.max(peakSnapshotRss, process.resourceUsage().maxRSS * 1024);
+  return { active: activeSnapshotLoads, queued: snapshotQueue.length, reservedBytes: activeSnapshotLoads * LIMITS.maxSnapshotInputBytes,
+    peakReservedBytes: peakSnapshotLoads * LIMITS.maxSnapshotInputBytes, peakRss: peakSnapshotRss, cleanupFailures: snapshotCleanupFailures };
+}
+
+function pumpSnapshots() {
+  while (snapshotQueue.length && activeSnapshotLoads < LIMITS.maxConcurrentSnapshotLoads) {
+    const job = snapshotQueue.shift();
+    if (job.done) continue;
+    if (job.options.isCurrent && !job.options.isCurrent()) { job.finish(new ProtocolError("stale_request", "Snapshot load was superseded")); continue; }
+    activeSnapshotLoads++;
+    activeSnapshotJobs.add(job);
+    peakSnapshotLoads = Math.max(peakSnapshotLoads, activeSnapshotLoads);
+    job.cleanup = (async () => {
+      let worker, directory;
+      try {
+        directory = await mkdtemp(path.join(job.options.temporaryRoot ?? os.tmpdir(), "qt-webui-session-snapshot-"));
+        if (job.done) return;
+        worker = new Worker(job.options.workerUrl ?? new URL("./snapshot-worker.mjs", import.meta.url), {
+          execArgv: [],
+          workerData: { path: job.path, directory },
+          resourceLimits: { maxOldGenerationSizeMb: LIMITS.snapshotWorkerHeapMiB },
+        });
+        job.cancel = () => { void worker.terminate(); };
+        await new Promise(resolve => {
+          worker.once("message", message => {
+            if (message.error) job.finish(Object.assign(new Error(message.error.message), { code: message.error.code }));
+            else if (job.options.isCurrent && !job.options.isCurrent()) job.finish(new ProtocolError("stale_request", "Snapshot load was superseded"));
+            else {
+              peakSnapshotRss = Math.max(peakSnapshotRss, process.memoryUsage().rss);
+              try { job.finish(null, JSON.parse(message.json)); } catch (error) { job.finish(error); }
+            }
+            resolve();
+          });
+          worker.once("error", error => { job.finish(error); resolve(); });
+          worker.once("exit", code => { if (!job.done) job.finish(new ProtocolError("unavailable", `Snapshot worker exited (${code})`)); resolve(); });
+        });
+      } catch (error) { job.finish(error); }
+      finally {
+        try {
+          if (worker) await worker.terminate();
+          if (directory) await rm(directory, { recursive: true, force: true });
+        } catch {
+          snapshotCleanupFailures++;
+        } finally {
+          activeSnapshotLoads--;
+          activeSnapshotJobs.delete(job);
+          pumpSnapshots();
+        }
+      }
+    })();
+  }
+}
+
+export async function stopSnapshotLoads() {
+  const jobs = [...snapshotQueue.splice(0), ...activeSnapshotJobs];
+  for (const job of jobs) {
+    job.finish(new ProtocolError("stale_request", "Snapshot loading stopped"));
+    job.cancel?.();
+  }
+  await Promise.allSettled(jobs.map(job => job.cleanup).filter(Boolean));
+}
+
+export function loadPersistedSessionSnapshot(sessionPath, options = {}) {
+  // Trusted injected implementations remain directly testable; production always uses a killable worker.
+  if (options.filesystem || options.SessionManagerClass) return loadPersistedSessionSnapshotInProcess(sessionPath, options);
+  if (snapshotQueue.length >= LIMITS.maxQueuedSnapshotLoads) return Promise.reject(new ProtocolError("busy", "The snapshot load queue is full; the previous transcript is retained"));
+  return new Promise((resolve, reject) => {
+    const job = { path: path.resolve(sessionPath), options, done: false, cancel: null, finish(error, result) {
+      if (job.done) return;
+      job.done = true;
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(result);
+    } };
+    const timer = setTimeout(() => {
+      const index = snapshotQueue.indexOf(job);
+      if (index >= 0) snapshotQueue.splice(index, 1);
+      job.finish(new ProtocolError("timeout", "Persisted snapshot load timed out; the previous transcript is retained"));
+      job.cancel?.();
+    }, Math.min(options.timeoutMs ?? LIMITS.snapshotLoadMs, LIMITS.snapshotLoadMs));
+    snapshotQueue.push(job);
+    pumpSnapshots();
+  });
 }
 
 function isPathInside(root, candidate) {

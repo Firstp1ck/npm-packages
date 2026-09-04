@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { LIMITS } from "./protocol.mjs";
+import { LIMITS, ProtocolError } from "./protocol.mjs";
 import { createJsonFileStore, stateDirectory } from "./store.mjs";
 
 // Window state that should survive a restart but is not a user preference: composer drafts per
@@ -116,8 +116,9 @@ export function createStateStore({ env = process.env, directory = stateDirectory
     return draft ? draft.text : "";
   }
 
-  function setDraft(key, text) {
+  function setDraft(key, text, expectedText) {
     return store.update((state) => {
+      if (expectedText !== undefined && (state.drafts[key]?.text ?? "") !== expectedText) throw new ProtocolError("stale_request", "The saved draft has changed");
       if (text.length === 0) delete state.drafts[key];
       else state.drafts[key] = { text, updatedAt: now() };
       return state;
@@ -176,34 +177,28 @@ export function createStateStore({ env = process.env, directory = stateDirectory
   function reconcileAutomaticSessionSettlement(sessions, { openSessionIdentities = [], thresholdMs, nowMs = now() } = {}) {
     if (!Number.isSafeInteger(thresholdMs) || thresholdMs <= 0) throw new TypeError("thresholdMs must be a positive safe integer");
     if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new TypeError("nowMs must be a non-negative safe integer");
-    const current = store.read().value;
-    const settledKeys = new Set([...current.settledSessions, ...current.automaticSettledSessions]);
-    const automaticKeys = new Set(current.automaticSettledSessions);
-    const openKeys = new Set(Array.from(openSessionIdentities, (identity) => sessionSettlementKey(identity)));
-    const toSettle = [];
-    let available = LIMITS.maxAutomaticSettledSessions - automaticKeys.size;
-    for (const session of sessions.slice(0, LIMITS.maxSessionListEntries)) {
-      if (available <= 0 || !session || typeof session.identity !== "string" || !Number.isFinite(session.modified)) continue;
-      const key = sessionSettlementKey(session.identity);
-      if (settledKeys.has(key) || openKeys.has(key) || nowMs - session.modified < thresholdMs) continue;
-      const restoredAt = current.sessionRestoreGrace[key];
-      if (Number.isSafeInteger(restoredAt) && Math.max(0, nowMs - restoredAt) < thresholdMs) continue;
-      settledKeys.add(key);
-      automaticKeys.add(key);
-      toSettle.push(key);
-      available -= 1;
-    }
-    if (toSettle.length === 0) return settledKeys;
-    const updated = store.update((state) => {
-      const saved = new Set([...state.settledSessions, ...state.automaticSettledSessions]);
-      for (const key of toSettle) {
-        if (!saved.has(key) && state.automaticSettledSessions.length < LIMITS.maxAutomaticSettledSessions) {
-          state.automaticSettledSessions.push(key);
-          saved.add(key);
-        }
-        delete state.sessionRestoreGrace[key];
+    const updated = store.update(current => {
+      const settledKeys = new Set([...current.settledSessions, ...current.automaticSettledSessions]);
+      const automaticKeys = new Set(current.automaticSettledSessions);
+      const openKeys = new Set(Array.from(openSessionIdentities, (identity) => sessionSettlementKey(identity)));
+      const toSettle = [];
+      let available = LIMITS.maxAutomaticSettledSessions - automaticKeys.size;
+      for (const session of sessions.slice(0, LIMITS.maxSessionListEntries)) {
+        if (available <= 0 || !session || typeof session.identity !== "string" || !Number.isFinite(session.modified)) continue;
+        const key = sessionSettlementKey(session.identity);
+        if (settledKeys.has(key) || openKeys.has(key) || nowMs - session.modified < thresholdMs) continue;
+        const restoredAt = current.sessionRestoreGrace[key];
+        if (Number.isSafeInteger(restoredAt) && Math.max(0, nowMs - restoredAt) < thresholdMs) continue;
+        settledKeys.add(key);
+        automaticKeys.add(key);
+        toSettle.push(key);
+        available -= 1;
       }
-      return state;
+      for (const key of toSettle) {
+        current.automaticSettledSessions.push(key);
+        delete current.sessionRestoreGrace[key];
+      }
+      return current;
     }).value;
     return new Set([...updated.settledSessions, ...updated.automaticSettledSessions]);
   }

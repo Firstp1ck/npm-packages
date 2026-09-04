@@ -46,13 +46,25 @@ ShellRoot {
     property bool modelPickerLoading: false
     property bool thinkingPickerLoading: false
     property bool themePickerLoading: false
+    property bool changingDraft: false
+    property int draftRestoreGeneration: 0
+    property var draftRecords: ({})
     property string pendingPathQuery: ""
+    property int pendingPathGeneration: 0
     property bool searchOpen: false
     property string searchQuery: ""
     property var searchMatches: []
     property int searchIndex: -1
     readonly property int searchMatchCount: searchMatches.length
-    readonly property int searchCurrentRow: searchIndex >= 0 && searchIndex < searchMatches.length ? searchMatches[searchIndex] : -1
+    property int searchAnchorIndex: -1
+    readonly property string searchSelectedId: searchIndex >= 0 && searchIndex < searchMatches.length ? searchMatches[searchIndex] : ""
+    readonly property int searchCurrentRow: {
+        const revision = bridge.transcriptRevision
+        const index = bridge.rowIndexById(searchSelectedId)
+        return revision >= 0 && index >= 0 && searchQuery.trim().length > 0
+            && rowSearchText(bridge.transcriptModel.get(index)).toLowerCase().indexOf(searchQuery.trim().toLowerCase()) !== -1 ? index : -1
+    }
+    onSearchCurrentRowChanged: if (searchCurrentRow >= 0) searchAnchorIndex = searchCurrentRow
     readonly property int workspaceRailMinimumWidth: 148
     readonly property int workspaceRailMaximumWidth: Math.max(workspaceRailMinimumWidth, contentRoot.width - workspaceRailMinimumWidth)
     property real workspaceRailRequestedWidth: 0
@@ -344,11 +356,26 @@ ShellRoot {
         onDialogRequested: dialog => extensionDialogItem.present(dialog)
         onDialogFinished: requestId => {
             if (extensionDialogItem.opened && extensionDialogItem.requestId === requestId) {
-                extensionDialogItem.answered = true
-                extensionDialogItem.close()
+                extensionDialogItem.finish()
             }
         }
-        onTranscriptModelChanged: root.runSearch()
+        onDialogStateChanged: (requestId, state, message) => {
+            if (extensionDialogItem.requestId === requestId) extensionDialogItem.settle(state, message)
+        }
+        onTranscriptRevisionChanged: {
+            if (root.searchOpen && !searchRefreshTimer.running) {
+                searchRefreshTimer.ownerGeneration = bridge.selectionGeneration
+                searchRefreshTimer.start()
+            }
+        }
+    }
+
+    Timer {
+        id: searchRefreshTimer
+        property int ownerGeneration: 0
+        interval: 60
+        repeat: false
+        onTriggered: if (ownerGeneration === bridge.selectionGeneration && root.searchOpen) root.runSearch()
     }
 
     // ---- search ---------------------------------------------------------------------------
@@ -365,13 +392,18 @@ ShellRoot {
             searchIndex = -1
             return
         }
+        const selected = searchSelectedId
+        const anchor = searchAnchorIndex
         const matches = []
         for (let index = 0; index < bridge.transcriptModel.count; index++) {
-            if (rowSearchText(bridge.transcriptModel.get(index)).toLowerCase().indexOf(query) !== -1) matches.push(index)
+            const row = bridge.transcriptModel.get(index)
+            if (rowSearchText(row).toLowerCase().indexOf(query) !== -1) matches.push(String(row.rowId))
         }
+        let next = matches.indexOf(selected)
+        if (next < 0 && selected.length > 0) next = matches.findIndex(id => bridge.rowIndexById(id) >= anchor)
+        if (next < 0 && matches.length > 0) next = matches.length - 1
         searchMatches = matches
-        if (matches.length === 0) searchIndex = -1
-        else if (searchIndex < 0 || searchIndex >= matches.length) searchIndex = matches.length - 1
+        searchIndex = next
         revealSearchRow()
     }
 
@@ -391,6 +423,8 @@ ShellRoot {
     }
 
     function closeSearch() {
+        searchRefreshTimer.stop()
+        searchAnchorIndex = -1
         searchOpen = false
         searchQuery = ""
         searchMatches = []
@@ -690,10 +724,87 @@ ShellRoot {
 
     // The composer belongs to the tab: save the unsent text under the previous key before the
     // new tab's draft is loaded.
-    function handleDraftKeyChanged() {
-        if (draftKeyInUse.length > 0 && draftKeyInUse !== bridge.draftKey && composer.text.trim().length > 0) bridge.saveDraftFor(draftKeyInUse, composer.text)
+    function boundedDraftRecords(records) {
+        const keys = Object.keys(records)
+        for (let i = 0; i < keys.length - 64; i++) delete records[keys[i]]
+        return records
+    }
+
+    function rememberDraft(text) {
+        if (changingDraft || draftKeyInUse.length === 0) return
+        draftRestoreGeneration++
+        const records = Object.assign({}, draftRecords)
+        delete records[draftKeyInUse]
+        records[draftKeyInUse] = { text: text, revision: draftRestoreGeneration }
+        draftRecords = boundedDraftRecords(records)
+    }
+
+    function beginDraftReplacement() {
+        draftRestoreGeneration++
+        draftTimer.stop()
+        if (draftKeyInUse.length > 0) bridge.saveDraftFor(draftKeyInUse, composer.text)
+        changingDraft = true
+        composer.text = ""
+    }
+
+    function commitDraftReplacement() {
         draftKeyInUse = bridge.draftKey
-        if (bridge.ready) bridge.loadDraft()
+        changingDraft = false
+        restoreCurrentDraft()
+    }
+
+    function restoreCurrentDraft() {
+        if (!bridge.ready || changingDraft) return
+        const generation = ++draftRestoreGeneration
+        const key = draftKeyInUse
+        const cached = draftRecords[key]
+        if (cached && cached.text.length > 0) { restoreDraft(key, cached.text); return }
+        bridge.loadDraft(response => {
+            if (!response.ok || generation !== draftRestoreGeneration || key !== draftKeyInUse) return
+            restoreDraft(key, String(response.data.text || ""))
+        })
+    }
+
+    function handleDraftKeyChanged() {
+        if (changingDraft) return
+        draftTimer.stop()
+        // A first durable filename promotes the current draft; only a committed replacement clears it.
+        if (draftKeyInUse.length > 0 && draftKeyInUse !== bridge.draftKey) bridge.saveDraftFor(draftKeyInUse, composer.text)
+        const previous = draftRecords[draftKeyInUse]
+        draftKeyInUse = bridge.draftKey
+        draftRestoreGeneration++
+        if (previous && previous.text === composer.text) {
+            const records = Object.assign({}, draftRecords)
+            records[draftKeyInUse] = previous
+            draftRecords = boundedDraftRecords(records)
+        } else rememberDraft(composer.text)
+        if (composer.text.length > 0) bridge.saveDraftFor(draftKeyInUse, composer.text)
+        else restoreCurrentDraft()
+    }
+
+    function submitComposer(text, mode) {
+        rememberDraft(composer.text)
+        const key = draftKeyInUse
+        const original = draftRecords[key]
+        const submitted = composer.text
+        const originTab = bridge.activeTabId
+        bridge.saveDraftFor(key, submitted)
+        return bridge.sendPrompt(text, mode, (response, operation) => {
+            if (!response.ok || operation.superseded || draftRecords[key] !== original) return
+            const currentMatches = draftRecords[draftKeyInUse] === original
+            const records = Object.assign({}, draftRecords)
+            for (const savedKey of Object.keys(records)) {
+                if (records[savedKey] !== original) continue
+                bridge.saveDraftFor(savedKey, "", submitted)
+                records[savedKey] = { text: "", revision: ++draftRestoreGeneration }
+            }
+            draftRecords = records
+            if (bridge.activeTabId === originTab && currentMatches && composer.text === submitted) {
+                draftTimer.stop()
+                composer.clearAndFocus()
+                draftTimer.stop()
+            }
+        }, submitted)
     }
 
     function compactContext() {
@@ -715,40 +826,38 @@ ShellRoot {
         return items
     }
 
-    function requestCompletion(kind, query) {
+    function requestCompletion(kind, query, generation) {
+        pathCompletionTimer.stop()
         if (kind === "command") {
             if (bridge.commandsLoaded) {
-                composer.completions = commandSuggestions(query)
-                composer.completionEmptyText = composer.completions.length === 0 ? "No matching command" : ""
+                const items = commandSuggestions(query)
+                composer.setCompletionResults(generation, items, items.length === 0 ? "No matching command" : "")
             } else {
                 bridge.loadCommands(response => {
-                    if (composer.completionKind !== "command") return
-                    composer.completions = commandSuggestions(composer.completionQuery)
-                    composer.completionEmptyText = composer.completions.length === 0 ? (response.ok ? "No matching command" : "Commands are unavailable") : ""
+                    const items = response.ok ? commandSuggestions(query) : []
+                    composer.setCompletionResults(generation, items, response.ok ? "No matching command" : "Commands are unavailable")
                 })
             }
         } else if (kind === "path") {
             pendingPathQuery = query
+            pendingPathGeneration = generation
             pathCompletionTimer.restart()
-        } else {
-            composer.completions = []
-            composer.completionEmptyText = ""
         }
     }
 
     function completePendingPath() {
         const query = pendingPathQuery
+        const generation = pendingPathGeneration
         bridge.completePath(query, response => {
             if (composer.completionKind !== "path" || composer.completionQuery !== query) return
             if (!response.ok) {
-                composer.completions = []
-                composer.completionEmptyText = "Paths are unavailable"
+                composer.setCompletionResults(generation, [], "Paths are unavailable")
                 return
             }
-            composer.completions = response.data.suggestions.map(entry => ({
+            const items = response.data.suggestions.map(entry => ({
                 value: entry.path, label: entry.path + (entry.directory ? "/" : ""), detail: entry.directory ? "directory" : "", directory: entry.directory === true
             }))
-            composer.completionEmptyText = composer.completions.length === 0 ? "No matching workspace path" : ""
+            composer.setCompletionResults(generation, items, items.length === 0 ? "No matching workspace path" : "")
         })
     }
 
@@ -765,8 +874,13 @@ ShellRoot {
     function editAttachment(attachmentId) {
         for (const attachment of bridge.attachments) {
             if (String(attachment.id) !== String(attachmentId) || attachment.kind !== "text") continue
-            attachmentEditorItem.attachmentId = String(attachmentId)
-            attachmentEditorItem.present({ title: "Edit " + attachment.name, text: attachment.text, maxCharacters: 262144 })
+            const tab = bridge.activeTabId
+            bridge.readAttachment(attachmentId, response => {
+                if (!response.ok) { bridge.postNotice("error", response.error.message); return }
+                if (bridge.activeTabId !== tab) return
+                attachmentEditorItem.attachmentId = String(attachmentId)
+                attachmentEditorItem.present({ title: "Edit " + attachment.name, text: response.data.text, maxCharacters: 262144 })
+            })
             return true
         }
         return false
@@ -780,7 +894,10 @@ ShellRoot {
 
     function restoreDraft(key, text) {
         if (key !== bridge.draftKey || text.length === 0 || composer.text.trim().length > 0) return
+        changingDraft = true
         composer.setText(text)
+        changingDraft = false
+        if (!draftRecords[key] || draftRecords[key].text !== text) rememberDraft(text)
     }
 
     // ---- links and dialogs ---------------------------------------------------------------
@@ -939,7 +1056,7 @@ ShellRoot {
                 id: draftTimer
                 interval: 600
                 repeat: false
-                onTriggered: bridge.saveDraft(composer.text)
+                onTriggered: bridge.saveDraftFor(root.draftKeyInUse, composer.text)
             }
 
             Timer {
@@ -956,7 +1073,7 @@ ShellRoot {
                         root.invalidateComposerPickers()
                     } else {
                         root.draftKeyInUse = bridge.draftKey
-                        bridge.loadDraft()
+                        root.restoreCurrentDraft()
                     }
                 }
                 function onActiveChanged() {
@@ -965,12 +1082,12 @@ ShellRoot {
                 function onDraftKeyChanged() {
                     root.handleDraftKeyChanged()
                 }
-                function onDraftLoaded(key, text) {
-                    root.restoreDraft(key, text)
-                }
+                function onTabSwitching() { root.beginDraftReplacement() }
+                function onSessionReplacing() { root.beginDraftReplacement() }
+                function onSessionReplaced() { root.commitDraftReplacement() }
                 function onTabSwitched(tabId) {
                     root.invalidateComposerPickers()
-                    composer.text = ""
+                    root.commitDraftReplacement()
                     root.closeSearch()
                 }
             }
@@ -1383,7 +1500,7 @@ ShellRoot {
                                             compact: bridge.compactTranscript
                                             showThinking: bridge.showThinking
                                             highlightCode: bridge.syntaxHighlighting
-                                            searchMatch: root.searchMatches.indexOf(index) !== -1
+                                            searchMatch: root.searchMatches.indexOf(rowId) !== -1
                                             searchCurrent: root.searchCurrentRow === index
                                             onCopyRequested: text => bridge.copyToClipboard(text)
                                             onLinkActivated: link => root.confirmLink(link)
@@ -1461,20 +1578,18 @@ ShellRoot {
                                     theme: appTheme
                                     maxCharacters: bridge.maxMessageCharacters
                                     attachments: bridge.attachments
-                                    onSendRequested: (text, mode) => {
-                                        if (bridge.sendPrompt(text, mode)) {
-                                            clearAndFocus()
-                                            draftTimer.stop()
-                                            bridge.saveDraft("")
-                                        }
-                                    }
+                                    onSendRequested: (text, mode) => root.submitComposer(text, mode)
                                     onAbortRequested: bridge.abortRun()
                                     onRestartRequested: bridge.restartProcess()
                                     onAttachRequested: fileDialog.open()
                                     onAttachmentRemoveRequested: attachmentId => bridge.removeAttachment(attachmentId)
                                     onAttachmentEditRequested: attachmentId => root.editAttachment(attachmentId)
-                                    onCompletionRequested: (kind, query) => root.requestCompletion(kind, query)
-                                    onDraftEdited: text => draftTimer.restart()
+                                    onCompletionRequested: (kind, query, generation) => root.requestCompletion(kind, query, generation)
+                                    onDraftEdited: text => {
+                                        if (root.changingDraft) return
+                                        root.rememberDraft(text)
+                                        draftTimer.restart()
+                                    }
                                 }
 
                                 // Response and transcript controls belong with the prompt they affect,
@@ -1733,7 +1848,21 @@ ShellRoot {
                 property string attachmentId: ""
                 theme: appTheme
                 returnFocusItem: composer
-                onSaved: text => bridge.updateAttachment(attachmentId, text)
+                onSaved: text => {
+                    const version = presentation
+                    bridge.updateAttachment(attachmentId, text, response => {
+                        if (opened && version === presentation) settle(response)
+                    })
+                }
+                onRefreshRequested: {
+                    const version = presentation
+                    bridge.readAttachment(attachmentId, response => {
+                        if (!opened || version !== presentation) return
+                        if (response.ok && response.data.text === editedText) settle({ ok: true })
+                        else if (response.ok) { unknown = false; failure = "Stored content refreshed; your edit is still available to save" }
+                        else failure = response.error.message
+                    })
+                }
             }
 
             Loader {
