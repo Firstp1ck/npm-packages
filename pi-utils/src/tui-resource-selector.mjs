@@ -11,12 +11,17 @@ export class TuiResourceSelectorComponent extends Container {
     super();
     this.resources = [...new Set(config.resources)];
     this.enabled = new Set(config.enabledResourceNames.filter((name) => this.resources.includes(name)));
+    this.presentation = new Map(
+      (config.resourcePresentation ?? [])
+        .filter((item) => this.resources.includes(item.name))
+        .map((item) => [item.name, item]),
+    );
     this.theme = theme;
     this.callbacks = callbacks;
     this.filteredResources = [...this.resources];
     this.selectedIndex = 0;
     this.maxVisible = 10;
-    this.statusColumnOffset = Math.max(0, ...this.resources.map((name) => name.length));
+    this.statusColumnOffset = Math.max(0, ...this.resources.map((name) => this.displayLabel(name).length));
     this.isDirty = false;
     this._focused = false;
 
@@ -54,9 +59,18 @@ export class TuiResourceSelectorComponent extends Container {
     return this.isDirty ? `${this.theme.fg("dim", text)} ${this.theme.fg("warning", "(unsaved)")}` : this.theme.fg("dim", text);
   }
 
+  displayLabel(name) {
+    return this.presentation.get(name)?.label ?? name;
+  }
+
+  searchText(name) {
+    const item = this.presentation.get(name);
+    return [name, item?.label, item?.description].filter(Boolean).join(" ");
+  }
+
   refresh() {
     const query = this.searchInput.getValue();
-    this.filteredResources = query ? fuzzyFilter(this.resources, query, (name) => name) : [...this.resources];
+    this.filteredResources = query ? fuzzyFilter(this.resources, query, (name) => this.searchText(name)) : [...this.resources];
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredResources.length - 1));
     this.updateList();
     this.footerText.setText(this.footer());
@@ -79,8 +93,8 @@ export class TuiResourceSelectorComponent extends Container {
       const name = this.filteredResources[index];
       const selected = index === this.selectedIndex;
       const prefix = selected ? this.theme.fg("accent", "→ ") : "  ";
-      const paddedName = name.padEnd(this.statusColumnOffset);
-      const label = selected ? this.theme.fg("accent", paddedName) : paddedName;
+      const paddedLabel = this.displayLabel(name).padEnd(this.statusColumnOffset);
+      const label = selected ? this.theme.fg("accent", paddedLabel) : paddedLabel;
       const status = this.enabled.has(name)
         ? this.theme.fg("success", "enabled")
         : this.theme.fg("dim", "disabled");
@@ -91,6 +105,13 @@ export class TuiResourceSelectorComponent extends Container {
       this.listContainer.addChild(
         new Text(this.theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredResources.length})`), 0, 0),
       );
+    }
+
+    const selectedName = this.filteredResources[this.selectedIndex];
+    const description = this.presentation.get(selectedName)?.description;
+    if (description) {
+      this.listContainer.addChild(new Spacer(1));
+      this.listContainer.addChild(new Text(this.theme.fg("muted", description), 0, 0));
     }
   }
 

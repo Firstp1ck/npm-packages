@@ -27,6 +27,7 @@ type DayUsage = {
   total: number;
   cost: number;
   messages: number;
+  unpricedMessages: number;
 };
 
 type UsageRecord = {
@@ -37,11 +38,22 @@ type UsageRecord = {
   cacheWrite: number;
   total: number;
   cost: number;
+  provider: string;
   model: string;
+  costUnavailable: boolean;
   sessionFile: string;
   sessionId: string;
   sessionName?: string;
   sessionTitle?: string;
+};
+
+type CostInfo = {
+  source: "session-recorded";
+  status: "complete" | "partial";
+  isEstimate: boolean;
+  ollamaCloudMessageCount: number;
+  unpricedMessageCount: number;
+  warning: string | null;
 };
 
 type Totals = DayUsage;
@@ -942,8 +954,13 @@ function formatCost(cost: number): string {
   return `$${cost.toFixed(2)}`;
 }
 
+function formatCostWithCoverage(cost: number, unpricedMessages: number): string {
+  if (unpricedMessages <= 0) return formatCost(cost);
+  return cost > 0 ? `${formatCost(cost)} recorded + unavailable` : "unavailable";
+}
+
 function emptyUsage(): DayUsage {
-  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, messages: 0 };
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, messages: 0, unpricedMessages: 0 };
 }
 
 function finiteNumberOrZero(value: unknown): number {
@@ -1103,6 +1120,8 @@ function collectUsageRecords(sessionFiles: string[]): UsageRecord[] {
       const cost = finiteNumberOrZero(usage?.cost?.total);
       const provider = String(entry?.message?.provider ?? "unknown");
       const model = String(entry?.message?.responseModel ?? entry?.message?.model ?? "unknown");
+      const hasTokenUsage = total > 0 || input + output + cacheRead + cacheWrite > 0;
+      const costUnavailable = provider === "ollama-cloud" && hasTokenUsage && cost <= 0;
 
       records.push({
         day,
@@ -1112,7 +1131,9 @@ function collectUsageRecords(sessionFiles: string[]): UsageRecord[] {
         cacheWrite,
         total,
         cost,
+        provider,
         model: `${provider}/${model}`,
+        costUnavailable,
         sessionFile: file,
         sessionId,
         sessionName,
@@ -1135,6 +1156,7 @@ function aggregateUsageByDay(records: UsageRecord[]): Map<string, DayUsage> {
     prev.total += r.total;
     prev.cost += r.cost;
     prev.messages += 1;
+    prev.unpricedMessages += r.costUnavailable ? 1 : 0;
     byDay.set(r.day, prev);
   }
   return byDay;
@@ -1175,6 +1197,7 @@ function sumUsage(byDay: Map<string, DayUsage>, dayKeys: string[]): Totals {
     acc.total += usage.total;
     acc.cost += usage.cost;
     acc.messages += usage.messages;
+    acc.unpricedMessages += usage.unpricedMessages;
     return acc;
   }, emptyUsage());
 }
@@ -1188,6 +1211,32 @@ function countScopedSessions(records: UsageRecord[], dayKeys: string[]): number 
   return new Set(scopedRecords(records, dayKeys).map((record) => record.sessionFile)).size;
 }
 
+function buildCostInfo(records: UsageRecord[], dayKeys: string[]): CostInfo {
+  const ollamaCloudRecords = scopedRecords(records, dayKeys).filter((record) => record.provider === "ollama-cloud");
+  const ollamaCloudMessageCount = ollamaCloudRecords.length;
+  const unpricedMessageCount = ollamaCloudRecords.filter((record) => record.costUnavailable).length;
+  const partial = unpricedMessageCount > 0;
+  const messageLabel = unpricedMessageCount === 1 ? "message has" : "messages have";
+  const warning = ollamaCloudMessageCount === 0
+    ? null
+    : partial
+      ? `Ollama Cloud costs are recorded estimates based on rates from the provider package active when each request ran and may differ from current pricing. ${unpricedMessageCount} token-bearing ${messageLabel} no recorded cost, so this total is partial.`
+      : "Ollama Cloud costs are recorded estimates based on rates from the provider package active when each request ran and may differ from current pricing.";
+
+  return {
+    source: "session-recorded",
+    status: partial ? "partial" : "complete",
+    isEstimate: ollamaCloudMessageCount > 0,
+    ollamaCloudMessageCount,
+    unpricedMessageCount,
+    warning,
+  };
+}
+
+function withCostWarning(lines: string[], costInfo: CostInfo): string[] {
+  return costInfo.warning ? [`Cost note: ${costInfo.warning}`, "", ...lines] : lines;
+}
+
 function buildSpendComparison(byDay: Map<string, DayUsage>, dayKeys: string[]) {
   const recentEndDay = dayKeys.at(-1) ?? null;
   const windowDays = Math.min(7, dayKeys.length);
@@ -1197,9 +1246,11 @@ function buildSpendComparison(byDay: Map<string, DayUsage>, dayKeys: string[]) {
       recentStartDay: null,
       recentEndDay: null,
       recentCost: 0,
+      recentUnpricedMessages: 0,
       priorStartDay: null,
       priorEndDay: null,
       priorCost: 0,
+      priorUnpricedMessages: 0,
       changeCost: 0,
       changePercent: null,
     };
@@ -1208,8 +1259,10 @@ function buildSpendComparison(byDay: Map<string, DayUsage>, dayKeys: string[]) {
   const recentStartDay = shiftDayKey(recentEndDay, -(windowDays - 1));
   const priorEndDay = shiftDayKey(recentStartDay, -1);
   const priorStartDay = shiftDayKey(priorEndDay, -(windowDays - 1));
-  const recentCost = sumUsage(byDay, buildInclusiveDayRange(recentStartDay, recentEndDay)).cost;
-  const priorCost = sumUsage(byDay, buildInclusiveDayRange(priorStartDay, priorEndDay)).cost;
+  const recentUsage = sumUsage(byDay, buildInclusiveDayRange(recentStartDay, recentEndDay));
+  const priorUsage = sumUsage(byDay, buildInclusiveDayRange(priorStartDay, priorEndDay));
+  const recentCost = recentUsage.cost;
+  const priorCost = priorUsage.cost;
   const changeCost = recentCost - priorCost;
 
   return {
@@ -1217,26 +1270,29 @@ function buildSpendComparison(byDay: Map<string, DayUsage>, dayKeys: string[]) {
     recentStartDay,
     recentEndDay,
     recentCost,
+    recentUnpricedMessages: recentUsage.unpricedMessages,
     priorStartDay,
     priorEndDay,
     priorCost,
+    priorUnpricedMessages: priorUsage.unpricedMessages,
     changeCost,
     changePercent: nullableRatio(changeCost, priorCost, 100),
   };
 }
 
-function aggregateModelUsage(records: UsageRecord[], dayKeys: string[], limit = 10): Array<{ model: string; tokens: number; percent: number; cost: number; costPercent: number; avgCostPerMillion: number; avgOutputTokens: number; messages: number }> {
+function aggregateModelUsage(records: UsageRecord[], dayKeys: string[], limit = 10): Array<{ model: string; tokens: number; percent: number; cost: number; costPercent: number; avgCostPerMillion: number; avgOutputTokens: number; messages: number; unpricedMessages: number }> {
   const scoped = scopedRecords(records, dayKeys);
-  const modelTotals = new Map<string, { tokens: number; output: number; cost: number; messages: number }>();
+  const modelTotals = new Map<string, { tokens: number; output: number; cost: number; messages: number; unpricedMessages: number }>();
   const totalTokens = scoped.reduce((acc, r) => acc + r.total, 0);
   const totalCost = scoped.reduce((acc, r) => acc + r.cost, 0);
 
   for (const r of scoped) {
-    const prev = modelTotals.get(r.model) ?? { tokens: 0, output: 0, cost: 0, messages: 0 };
+    const prev = modelTotals.get(r.model) ?? { tokens: 0, output: 0, cost: 0, messages: 0, unpricedMessages: 0 };
     prev.tokens += r.total;
     prev.output += r.output;
     prev.cost += r.cost;
     prev.messages += 1;
+    prev.unpricedMessages += r.costUnavailable ? 1 : 0;
     modelTotals.set(r.model, prev);
   }
 
@@ -1252,19 +1308,21 @@ function aggregateModelUsage(records: UsageRecord[], dayKeys: string[], limit = 
       avgCostPerMillion: v.tokens > 0 ? (v.cost / v.tokens) * 1_000_000 : 0,
       avgOutputTokens: v.messages > 0 ? v.output / v.messages : 0,
       messages: v.messages,
+      unpricedMessages: v.unpricedMessages,
     }))
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens)
     .slice(0, limit);
 }
 
-function aggregateExpensiveSessions(records: UsageRecord[], dayKeys: string[], limit = 10): Array<{ day: string; model: string; tokens: number; cost: number; sessionId: string; sessionName?: string; sessionTitle?: string; displayName: string }> {
-  const sessions = new Map<string, { day: string; modelTokens: Map<string, number>; tokens: number; cost: number; sessionId: string; sessionName?: string; sessionTitle?: string }>();
+function aggregateExpensiveSessions(records: UsageRecord[], dayKeys: string[], limit = 10): Array<{ day: string; model: string; tokens: number; cost: number; unpricedMessages: number; sessionId: string; sessionName?: string; sessionTitle?: string; displayName: string }> {
+  const sessions = new Map<string, { day: string; modelTokens: Map<string, number>; tokens: number; cost: number; unpricedMessages: number; sessionId: string; sessionName?: string; sessionTitle?: string }>();
 
   for (const r of scopedRecords(records, dayKeys)) {
-    const prev = sessions.get(r.sessionFile) ?? { day: r.day, modelTokens: new Map(), tokens: 0, cost: 0, sessionId: r.sessionId, sessionName: r.sessionName, sessionTitle: r.sessionTitle };
+    const prev = sessions.get(r.sessionFile) ?? { day: r.day, modelTokens: new Map(), tokens: 0, cost: 0, unpricedMessages: 0, sessionId: r.sessionId, sessionName: r.sessionName, sessionTitle: r.sessionTitle };
     if (r.day < prev.day) prev.day = r.day;
     prev.tokens += r.total;
     prev.cost += r.cost;
+    prev.unpricedMessages += r.costUnavailable ? 1 : 0;
     if (!prev.sessionName && r.sessionName) prev.sessionName = r.sessionName;
     if (!prev.sessionTitle && r.sessionTitle) prev.sessionTitle = r.sessionTitle;
     prev.modelTokens.set(r.model, (prev.modelTokens.get(r.model) ?? 0) + r.total);
@@ -1277,6 +1335,7 @@ function aggregateExpensiveSessions(records: UsageRecord[], dayKeys: string[], l
       model: Array.from(s.modelTokens.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "unknown",
       tokens: s.tokens,
       cost: s.cost,
+      unpricedMessages: s.unpricedMessages,
       sessionId: s.sessionId,
       sessionName: s.sessionName,
       sessionTitle: s.sessionTitle,
@@ -1309,14 +1368,14 @@ function buildGraphLines(byDay: Map<string, DayUsage>, dayKeys: string[], omitZe
     const costBar = "$".repeat(costBarLen).padEnd(COST_BAR_WIDTH, "·");
 
     lines.push(
-      `${day} ${tokenBar} ${formatTokens(usage.total)} tok ${costBar} ${formatCost(usage.cost)} (↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)} R${formatTokens(usage.cacheRead)} W${formatTokens(usage.cacheWrite)})`,
+      `${day} ${tokenBar} ${formatTokens(usage.total)} tok ${costBar} ${formatCostWithCoverage(usage.cost, usage.unpricedMessages)} (↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)} R${formatTokens(usage.cacheRead)} W${formatTokens(usage.cacheWrite)})`,
     );
   }
 
   const totals = sumUsage(byDay, dayKeys);
   lines.push(
     "",
-    `Σ ${formatTokens(totals.total)} tok (↑${formatTokens(totals.input)} ↓${formatTokens(totals.output)} R${formatTokens(totals.cacheRead)} W${formatTokens(totals.cacheWrite)}) · ${formatCost(totals.cost)}`,
+    `Σ ${formatTokens(totals.total)} tok (↑${formatTokens(totals.input)} ↓${formatTokens(totals.output)} R${formatTokens(totals.cacheRead)} W${formatTokens(totals.cacheWrite)}) · ${formatCostWithCoverage(totals.cost, totals.unpricedMessages)}`,
   );
 
   return lines;
@@ -1329,14 +1388,14 @@ function buildCostTrendLines(byDay: Map<string, DayUsage>, dayKeys: string[]): s
   const activeAvg = totals.cost / Math.max(activeKeys.length, 1);
   const projectedMonthly = calendarAvg * 30;
   const highest = dayKeys
-    .map((day) => ({ day, cost: byDay.get(day)?.cost ?? 0, tokens: byDay.get(day)?.total ?? 0 }))
+    .map((day) => ({ day, cost: byDay.get(day)?.cost ?? 0, tokens: byDay.get(day)?.total ?? 0, unpricedMessages: byDay.get(day)?.unpricedMessages ?? 0 }))
     .sort((a, b) => b.cost - a.cost)[0];
   const lastActive = activeKeys.at(-1);
-  const lastActiveCost = lastActive ? (byDay.get(lastActive)?.cost ?? 0) : 0;
+  const lastActiveUsage = lastActive ? (byDay.get(lastActive) ?? emptyUsage()) : emptyUsage();
 
   return [
-    `Cost trend: avg/day ${formatCost(calendarAvg)} · active-day avg ${formatCost(activeAvg)} · projected 30d ${formatCost(projectedMonthly)} · highest ${highest && highest.cost > 0 ? `${highest.day} ${formatCost(highest.cost)} (${formatTokens(highest.tokens)} tok)` : "n/a"} · active days ${activeKeys.length}/${dayKeys.length}`,
-    `Latest active day: ${lastActive ? `${lastActive} ${formatCost(lastActiveCost)} · ${formatTokens(byDay.get(lastActive)?.total ?? 0)} tok` : "n/a"}`,
+    `Cost trend: avg/day ${formatCostWithCoverage(calendarAvg, totals.unpricedMessages)} · active-day avg ${formatCostWithCoverage(activeAvg, totals.unpricedMessages)} · projected 30d ${formatCostWithCoverage(projectedMonthly, totals.unpricedMessages)} · highest ${highest && (highest.cost > 0 || highest.unpricedMessages > 0) ? `${highest.day} ${formatCostWithCoverage(highest.cost, highest.unpricedMessages)} (${formatTokens(highest.tokens)} tok)` : "n/a"} · active days ${activeKeys.length}/${dayKeys.length}`,
+    `Latest active day: ${lastActive ? `${lastActive} ${formatCostWithCoverage(lastActiveUsage.cost, lastActiveUsage.unpricedMessages)} · ${formatTokens(lastActiveUsage.total)} tok` : "n/a"}`,
   ];
 }
 
@@ -1509,9 +1568,10 @@ export default function statsExtension(pi: ExtensionAPI) {
     const byDay = aggregateUsageByDay(records);
     const dayKeys = getScopeDayKeys(byDay, parsedArgs);
     const totals = sumUsage(byDay, dayKeys);
+    const costInfo = buildCostInfo(records, dayKeys);
     const calibration = collectInitialPromptCalibration(sessionDir);
     const scopeLabel = parsedArgs.mode === "all" ? "all days" : `last ${parsedArgs.days} days`;
-    return { files, records, byDay, dayKeys, totals, calibration, scopeLabel, scope: parsedArgs };
+    return { files, records, byDay, dayKeys, totals, costInfo, calibration, scopeLabel, scope: parsedArgs };
   };
 
   const parseStatsCommandArgs = (args: string, ctx: ExtensionCommandContext) => {
@@ -1536,7 +1596,8 @@ export default function statsExtension(pi: ExtensionAPI) {
           "Model comparison:",
           ...topModels.map((m, i) => {
             const costPart = totals.cost > 0 ? ` · ${m.costPercent.toFixed(1)}% spend` : "";
-            return `${i + 1}. ${m.model} — ${m.percent.toFixed(1)}% tokens (${formatTokens(m.tokens)}) · ${formatCost(m.cost)}${costPart} · ${formatCost(m.avgCostPerMillion)}/1M tok · avg ↓${formatTokens(Math.round(m.avgOutputTokens))}/msg · ${m.messages} msgs`;
+            const ratePart = m.unpricedMessages > 0 ? "unavailable/1M tok" : `${formatCost(m.avgCostPerMillion)}/1M tok`;
+            return `${i + 1}. ${m.model} — ${m.percent.toFixed(1)}% tokens (${formatTokens(m.tokens)}) · ${formatCostWithCoverage(m.cost, m.unpricedMessages)}${costPart} · ${ratePart} · avg ↓${formatTokens(Math.round(m.avgOutputTokens))}/msg · ${m.messages} msgs`;
           }),
         ];
   };
@@ -1547,7 +1608,7 @@ export default function statsExtension(pi: ExtensionAPI) {
       ? ["Most expensive sessions: none in selected range"]
       : [
           "Most expensive sessions:",
-          ...topSessions.map((s, i) => `${i + 1}. ${s.day} ${s.displayName} — ${formatCost(s.cost)} · ${formatTokens(s.tokens)} tok · ${s.model}`),
+          ...topSessions.map((s, i) => `${i + 1}. ${s.day} ${s.displayName} — ${formatCostWithCoverage(s.cost, s.unpricedMessages)} · ${formatTokens(s.tokens)} tok · ${s.model}`),
         ];
   };
 
@@ -1596,6 +1657,7 @@ export default function statsExtension(pi: ExtensionAPI) {
       dayCount: data.dayKeys.length,
       activeDayCount: activeDays.length,
       totals: data.totals,
+      costInfo: data.costInfo,
       promptEstimate: {
         total: promptEstimate.total,
         low: promptEstimate.low,
@@ -1684,15 +1746,15 @@ export default function statsExtension(pi: ExtensionAPI) {
   };
 
   registerScopedStatsCommand("stats-most-expense", "Show most expensive sessions. Usage: /stats-most-expense [days|all]", (data) =>
-    formatExpensiveSessionLines(data.records, data.dayKeys),
+    withCostWarning(formatExpensiveSessionLines(data.records, data.dayKeys), data.costInfo),
   );
 
   registerScopedStatsCommand("stats-model-compare", "Show model token/cost comparison. Usage: /stats-model-compare [days|all]", (data) =>
-    formatModelComparisonLines(data.records, data.dayKeys, data.totals),
+    withCostWarning(formatModelComparisonLines(data.records, data.dayKeys, data.totals), data.costInfo),
   );
 
   registerScopedStatsCommand("stats-cost-trend", "Show cost trend and projections. Usage: /stats-cost-trend [days|all]", (data) =>
-    buildCostTrendLines(data.byDay, data.dayKeys),
+    withCostWarning(buildCostTrendLines(data.byDay, data.dayKeys), data.costInfo),
   );
 
   registerScopedStatsCommand("stats-cache", "Show cache efficiency and token mix. Usage: /stats-cache [days|all]", (data) =>
@@ -1701,7 +1763,7 @@ export default function statsExtension(pi: ExtensionAPI) {
 
   registerScopedStatsCommand("stats-last", "Show non-zero daily usage graph. Usage: /stats-last [days|all]", (data, ctx) => {
     const promptEstimate = estimateInitialPromptForContext(ctx.getSystemPrompt(), data.calibration);
-    return [`📊 Token stats (${data.scopeLabel}, ${data.files.length} sessions) · PI: ~${formatTokens(promptEstimate.total)} tok`, "", ...buildGraphLines(data.byDay, data.dayKeys, true)];
+    return withCostWarning([`📊 Token stats (${data.scopeLabel}, ${data.files.length} sessions) · PI: ~${formatTokens(promptEstimate.total)} tok`, "", ...buildGraphLines(data.byDay, data.dayKeys, true)], data.costInfo);
   });
 
   pi.registerCommand("stats-pi", {
@@ -1796,9 +1858,10 @@ export default function statsExtension(pi: ExtensionAPI) {
         "Detailed commands:",
         "/stats-last · /stats-most-expense · /stats-model-compare · /stats-pi detailed · /stats-cost-trend · /stats-cache · /stats-tokens",
       ];
+      const costWarning = data.costInfo.warning ? `\nCost note: ${data.costInfo.warning}` : "";
 
       ctx.ui.notify(
-        `📊 Token stats (${data.scopeLabel}, ${data.files.length} sessions) · PI: ~${formatTokens(promptEstimate.total)} tok\n\n${graphLines.join("\n")}\n\n${promptInjectionLines.join("\n")}\n\n${buildCostTrendLines(data.byDay, data.dayKeys).join("\n")}\n${buildCacheEfficiencyLines(data.totals).join("\n")}\n\n${modelLines.join("\n")}\n\n${sessionLines.join("\n")}\n\n${commandLines.join("\n")}`,
+        `📊 Token stats (${data.scopeLabel}, ${data.files.length} sessions) · PI: ~${formatTokens(promptEstimate.total)} tok${costWarning}\n\n${graphLines.join("\n")}\n\n${promptInjectionLines.join("\n")}\n\n${buildCostTrendLines(data.byDay, data.dayKeys).join("\n")}\n${buildCacheEfficiencyLines(data.totals).join("\n")}\n\n${modelLines.join("\n")}\n\n${sessionLines.join("\n")}\n\n${commandLines.join("\n")}`,
         "info",
       );
     },

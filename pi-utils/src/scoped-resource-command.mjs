@@ -28,6 +28,7 @@ export function registerScopedResourceCommand(pi, config) {
     selectionKey,
     customType,
     getVisibleNames,
+    getResourcePresentation,
     getRuntimeNames,
     getEnabledNames,
     recompute,
@@ -45,6 +46,7 @@ export function registerScopedResourceCommand(pi, config) {
       let scope;
       let defaults;
       let visibleNames = [];
+      let resourcePresentation = [];
       let runtimeNames = [];
       let previousNames = null;
       let provider = "";
@@ -59,6 +61,7 @@ export function registerScopedResourceCommand(pi, config) {
           if (scope === null || !scope) return;
           defaults = await readResourceDefaults();
           visibleNames = await getVisibleNames(ctx);
+          resourcePresentation = getResourcePresentation ? await getResourcePresentation(ctx) : [];
           runtimeNames = await getRuntimeNames(ctx);
           previousNames = null;
           provider = "";
@@ -165,6 +168,7 @@ export function registerScopedResourceCommand(pi, config) {
           title: `${resourceLabel} Configuration`,
           subtitle: `${selectionTarget}. Changes apply only after Ctrl+S.`,
           resources: visibleNames,
+          resourcePresentation,
           enabledResourceNames: previousNames || [],
         });
         if (selected === null) return;

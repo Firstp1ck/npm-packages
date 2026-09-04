@@ -3,7 +3,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DefaultPackageManager } from "@earendil-works/pi-coding-agent";
-import setupSkillsExtension, { collectLoadedSkills, collectPackageSkillFiles, collectSkillFilesFromDir, hasNoSkillsFlag } from "../index";
+import setupSkillsExtension, {
+  collectLoadedSkills,
+  collectPackageSkillFiles,
+  collectSkillFilesFromDir,
+  hasNoSkillsFlag,
+  skillSourceLabel,
+} from "../index";
 
 const temporaryDirectories: string[] = [];
 
@@ -54,6 +60,22 @@ describe("CLI boundaries", () => {
 
     expect(hookCount).toBeGreaterThan(0);
     expect([...commands.keys()]).toEqual(["skills"]);
+  });
+});
+
+describe("skill source presentation", () => {
+  test("prefers package and runtime source metadata over the local fallback", () => {
+    const base = {
+      name: "example",
+      description: "Example skill",
+      skillPath: "/skills/example/SKILL.md",
+      enableKind: "settings-skill" as const,
+      enablePath: "/skills/example/SKILL.md",
+      disableModelInvocation: false,
+    };
+    expect(skillSourceLabel({ ...base, packageSource: "npm:@firstpick/example" })).toBe("npm:@firstpick/example");
+    expect(skillSourceLabel({ ...base, sourceInfo: { source: "cli" } as never })).toBe("cli");
+    expect(skillSourceLabel(base)).toBe("local");
   });
 });
 

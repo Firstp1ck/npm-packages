@@ -10,6 +10,7 @@ See where your Pi tokens and model costs are going over time.
 - Compares model usage and expensive sessions.
 - Explains how much of the initial prompt comes from Pi, tools, and context.
 - Shows cache use, trends, and projected cost.
+- Marks incomplete Ollama Cloud cost data instead of presenting missing prices as free usage.
 
 ## Install
 
@@ -41,6 +42,12 @@ Focused views:
 - `/stats-cache` — show Cached-input share (cache-read tokens as a share of prompt-side input and cache tokens), cache reads and writes, and the token mix.
 
 Estimation and calibration details are kept in the technical reference.
+
+## Cost estimates
+
+The extension displays the cost saved in each Pi session. For Ollama Cloud, that value is an estimate based on the rates supplied by the provider package when the request ran. Historical totals may not match current Ollama pricing or your billed amount.
+
+When an Ollama Cloud message has token usage but no recorded cost, `/stats` reports its cost as unavailable and marks the total as partial.
 
 ## Technical details
 

@@ -36,9 +36,17 @@ Pi’s own exported session information is preferred when available. Before a fi
 
 Calibration compares an estimate with provider-reported usage from a real first response. Provider-reported session usage remains the authoritative value after a model call.
 
+## Cost data and coverage
+
+The extension uses the token counts and cost saved in each Pi session. It does not replace historical costs with current provider rates.
+
+Ollama Cloud costs are estimates based on the rates supplied by the installed provider package when each request ran. Those pinned rates can differ from current Ollama pricing. Subscription credits, peak pricing, and billing adjustments can also make the displayed estimate differ from the amount billed by Ollama.
+
+When an Ollama Cloud message has token usage but a zero or missing recorded cost, the extension treats that message as unpriced. Cost views show `unavailable` instead of `$0.000`, mark aggregate cost as partial, and report the number of unpriced messages. Other providers retain their recorded zero costs because a zero may be valid for local or free models.
+
 ## Privacy and limitations
 
-The extension reads local Pi session history for the current workspace. Cost projections are estimates based on recent use, not billing guarantees. Cache share describes reused input volume; it is not a request success rate or a guaranteed monetary saving.
+The extension reads local Pi session history for the current workspace. Cost projections use recorded session costs and are not billing guarantees. Cache share describes reused input volume; it is not a request success rate or a guaranteed monetary saving.
 
 ## Example
 

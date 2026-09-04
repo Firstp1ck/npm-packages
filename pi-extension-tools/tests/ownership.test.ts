@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import toolsExtension from "../index";
+import toolsExtension, { toolSourceLabel } from "../index";
+
+describe("tool source presentation", () => {
+  test("labels built-in, SDK, and extension tools", () => {
+    expect(toolSourceLabel({ sourceInfo: { source: "builtin" } } as never)).toBe("Pi built-in");
+    expect(toolSourceLabel({ sourceInfo: { source: "sdk" } } as never)).toBe("SDK custom tools");
+    expect(toolSourceLabel({ sourceInfo: { source: "extension:npm:@firstpick/example" } } as never)).toBe("npm:@firstpick/example");
+  });
+});
 
 describe("command ownership", () => {
   test("owns exactly one scoped /tools command", () => {

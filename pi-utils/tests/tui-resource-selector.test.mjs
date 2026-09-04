@@ -7,7 +7,7 @@ const theme = {
   bold: (text) => text,
 };
 
-function createSelector(enabledResourceNames = ["alpha", "gamma"]) {
+function createSelector(enabledResourceNames = ["alpha", "gamma"], resourcePresentation = []) {
   const saved = [];
   let cancelled = 0;
   let exited = 0;
@@ -16,6 +16,7 @@ function createSelector(enabledResourceNames = ["alpha", "gamma"]) {
       title: "Tools Configuration",
       subtitle: "Session only. Changes apply only after Ctrl+S.",
       resources: ["alpha", "beta", "gamma"],
+      resourcePresentation,
       enabledResourceNames,
     },
     theme,
@@ -41,6 +42,23 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
   assert.match(alphaRow, /alpha\s{2}enabled/);
   assert.match(betaRow, /beta\s{3}disabled/);
   assert.equal(alphaRow.indexOf("enabled"), betaRow.indexOf("disabled"), "status values should share one column");
+}
+
+{
+  const { selector } = createSelector(["alpha", "gamma"], [
+    { name: "alpha", label: "alpha (Pi built-in)", description: "Pi built-in: Alpha tool" },
+    { name: "beta", label: "beta (extension:sample)", description: "npm:sample: Beta tool" },
+  ]);
+  assert.match(selector.render(100).join("\n"), /alpha \(Pi built-in\).*enabled[\s\S]*Pi built-in: Alpha tool/);
+
+  selector.handleInput("\x1b[B");
+  assert.match(selector.render(100).join("\n"), /npm:sample: Beta tool/);
+  assert.doesNotMatch(selector.render(100).join("\n"), /Pi built-in: Alpha tool/);
+
+  selector.handleInput("n");
+  selector.handleInput("p");
+  selector.handleInput("m");
+  assert.match(selector.render(100).join("\n"), /beta \(extension:sample\)/, "source and description text should be searchable");
 }
 
 {

@@ -11,7 +11,7 @@ import { registerScopedResourceCommand } from "@firstpick/pi-utils/scoped-resour
 type PackageEntry = string | { source?: string; skills?: string[]; extensions?: string[]; prompts?: string[]; [key: string]: unknown };
 type SettingsShape = { packages?: PackageEntry[]; skills?: string[]; [key: string]: unknown };
 
-type SkillCandidate = {
+export type SkillCandidate = {
   name: string;
   description: string;
   skillPath: string;
@@ -293,6 +293,12 @@ function applySelection(settings: SettingsShape, candidates: SkillCandidate[], s
   return next;
 }
 
+export function skillSourceLabel(candidate: SkillCandidate): string {
+  return candidate.packageSource
+    ?? candidate.sourceInfo?.source
+    ?? (candidate.enableKind === "package" ? "package" : "local");
+}
+
 async function selectSkills(
   ctx: ExtensionCommandContext,
   candidates: SkillCandidate[],
@@ -504,6 +510,10 @@ export default function setupSkillsExtension(
       await refreshCatalog(ctx);
       return catalog.map((candidate) => candidate.name);
     },
+    getResourcePresentation: async () => catalog.map((candidate) => ({
+      name: candidate.name,
+      description: `${skillSourceLabel(candidate)}: ${candidate.description}`,
+    })),
     getRuntimeNames: async () => runtimeSkillNames(),
     getEnabledNames: async () => {
       if (enabledSkills instanceof Set) return [...enabledSkills];

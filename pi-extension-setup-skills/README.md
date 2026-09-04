@@ -7,6 +7,7 @@ Choose which skills Pi can use for a session, by default, or with a specific mod
 ## What you can do
 
 - Lists installed skills, including skills disabled in Pi settings.
+- Shows the selected skill's source and description.
 - Saves a selection for the current session branch.
 - Sets a global default or an exact provider/model profile.
 - Applies model profiles when the active model changes.
@@ -29,7 +30,7 @@ Run `/skills`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-In the resource list, each skill shows `enabled` or `disabled` in a separate status column. Type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching skills, `Ctrl+A` to enable all matching skills, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+In the resource list, each skill shows `enabled` or `disabled` in a separate status column. The selected skill's source and description appear below the list. Type to search by name, source, or description, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching skills, `Ctrl+A` to enable all matching skills, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
 
 ## Before you start
 

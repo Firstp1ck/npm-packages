@@ -2,7 +2,7 @@
 
 Advanced user setup, configuration, compatibility, and troubleshooting information.
 
-[Back to README](README.md)
+[Back to README](README.md) · [Contributor guide](DEVELOPMENT.md)
 
 ## Command
 
@@ -14,7 +14,7 @@ Advanced user setup, configuration, compatibility, and troubleshooting informati
 
 Session choices take precedence over an exact case-sensitive provider/model profile. A model profile takes precedence over the global default, which takes precedence over Pi's runtime skill set. **Use inherited defaults** removes the selected override. An empty saved selection intentionally enables no skills.
 
-The selector discovers skills from Pi's standard user and project locations and configured Pi packages. It keeps saved names that are temporarily unavailable so reinstalling a package does not silently erase a profile.
+The selector discovers skills from Pi's standard user and project locations and configured Pi packages. It shows the selected skill's package, CLI, or local source together with its description. Name, source, and description text are searchable. The selector keeps saved names that are temporarily unavailable so reinstalling a package does not silently erase a profile.
 
 ## Runtime behavior
 

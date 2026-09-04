@@ -59,6 +59,17 @@ The historical multiplier is learned opportunistically from future sessions by c
 
 The version-1 Web UI payload also includes an optional `promptContext` object with independently consumable `initialPrompt`, `snapshot`, and `currentContext` sections. Initial-prompt components are calibrated to sum exactly to the reported estimate. Current-context provider usage remains separate from heuristic character-derived source composition. Structured inventories are deterministic and capped, omit tool parameter schemas and skill locations, and reduce context-file paths to workspace-relative or basename-only display values. Existing `promptEstimate`, `lines.*`, and command text remain available for compatibility.
 
+## Cost coverage metadata
+
+Session-recorded cost remains the source for every aggregate. The extension does not maintain a second provider rate table or rewrite historical values.
+
+For records whose provider is exactly `ollama-cloud`, token-bearing messages with a zero or missing total cost are marked unpriced. The additive version-1 Web UI fields are:
+
+- top-level `costInfo`, with the source, complete or partial status, estimate flag, Ollama Cloud message count, unpriced message count, and one display warning;
+- `unpricedMessages` on totals, daily rows, model aggregates, and session aggregates.
+
+Terminal and Web UI formatters display an all-unpriced cost as `unavailable`. Mixed aggregates show their recorded subtotal followed by `recorded + unavailable`. Other providers preserve recorded zero costs because the extension cannot infer whether those models are paid, local, or free.
+
 ## Tools
 
 None.

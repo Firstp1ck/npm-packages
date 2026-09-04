@@ -39,6 +39,16 @@ assert.match(statsUi, /Cached-input share/, "cached-input share label should be 
 assert.match(overview, /statsCachedInputShare\(summary, totals\)/, "overview should use the accurately named cached-input share");
 assert.match(costCache, /statsCachedInputShare\(summary, totals\)/, "cost & cache should use the accurately named cached-input share");
 
+// Recorded-cost coverage stays visible throughout the dashboard.
+assert.match(app, /function formatStatsCostWithCoverage/, "cost formatting should distinguish unavailable cost from a real zero");
+assert.match(helpers, /function statsCostWarning/, "the payload warning should be normalized before display");
+assert.match(charts, /function renderStatsCostWarning/, "the dashboard should build one report-level cost warning");
+assert.match(overview, /formatStatsCostWithCoverage\(totals\.cost, totals\.unpricedMessages\)/, "overview cost should disclose incomplete coverage");
+assert.match(daily, /formatStatsCostWithCoverage\(row\.cost, row\.unpricedMessages\)/, "daily costs should disclose incomplete coverage");
+assert.match(models, /formatStatsCostWithCoverage\(model\.cost, model\.unpricedMessages\)/, "model costs should disclose incomplete coverage");
+assert.match(sessions, /formatStatsCostWithCoverage\(session\.cost, session\.unpricedMessages\)/, "session costs should disclose incomplete coverage");
+assert.match(overlay, /const costWarning = renderStatsCostWarning\(payload\)/, "the overlay should render the report-level warning once outside its tab panes");
+
 // Legacy v1 fallbacks: absent fields are computed client-side, explicit null renders as n/a (never fake zeroes).
 assert.match(helpers, /key in summary/, "fallback resolvers should distinguish absent fields from explicit nulls");
 assert.match(helpers, /cachedInputShare[\s\S]*statsNumber\(totals\?\.input\) \+ statsNumber\(totals\?\.cacheRead\) \+ statsNumber\(totals\?\.cacheWrite\)/, "legacy cached-input share fallback should use the prompt-side denominator");
@@ -243,6 +253,7 @@ for (const selector of [
   ".stats-overlay-bar-lane",
   ".stats-overlay-bar-fill.cost",
   ".stats-overlay-table-caption",
+  ".stats-overlay-cost-warning",
 ]) {
   assert.ok(css.includes(selector), `styles.css should define ${selector}`);
 }

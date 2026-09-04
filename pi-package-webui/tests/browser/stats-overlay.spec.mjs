@@ -139,6 +139,19 @@ test("stats overlay exposes stable tab/tabpanel semantics", async ({ page }) => 
   await expect(panel).toHaveAttribute("aria-labelledby", "statsOverlayTab-sessions");
 });
 
+test("stats overlay shows one report-level warning for partial Ollama Cloud costs", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openStatsOverlay(page);
+  await emitStatsPromptFixture(page, "/stats-webui 14");
+
+  const warnings = page.locator("#statsOverlayBody .stats-overlay-cost-warning");
+  await expect(warnings).toHaveCount(1);
+  await expect(warnings).toContainText("Ollama Cloud cost estimate is partial");
+
+  await page.locator("#statsOverlayTab-daily").click();
+  await expect(warnings).toHaveCount(1);
+});
+
 test("stats overlay tablist supports arrow, Home, and End keyboard navigation", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await openStatsOverlay(page);

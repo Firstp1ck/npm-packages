@@ -23,13 +23,13 @@ function dayKey(offset) {
   return localDayKey(date);
 }
 
-function usageEntry(day, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, totalTokens, cost = 0, model = "model" } = {}) {
+function usageEntry(day, { input = 0, output = 0, cacheRead = 0, cacheWrite = 0, totalTokens, cost = 0, provider = "test", model = "model" } = {}) {
   return {
     type: "message",
     timestamp: `${day}T12:00:00.000`,
     message: {
       role: "assistant",
-      provider: "test",
+      provider,
       model,
       usage: {
         input,
@@ -54,6 +54,7 @@ async function buildPayload(files, args, fixture = {}) {
 
     const commands = new Map();
     const eventHandlers = new Map();
+    const notifications = [];
     let payload;
     const tools = fixture.tools ?? [];
     const pi = {
@@ -78,7 +79,7 @@ async function buildPayload(files, args, fixture = {}) {
         getSessionId() { return "stats-payload-test"; },
       },
       ui: {
-        notify() {},
+        notify(message, level) { notifications.push({ message, level }); },
         setStatus(_key, value) {
           if (value) payload = JSON.parse(value);
         },
@@ -95,7 +96,9 @@ async function buildPayload(files, args, fixture = {}) {
     }
     if (fixture.resetAfterOptions) await eventHandlers.get("session_start")?.({}, ctx);
 
-    await commands.get("stats-webui").handler(args, ctx);
+    const commandName = fixture.commandName ?? "stats-webui";
+    await commands.get(commandName).handler(args, ctx);
+    if (commandName !== "stats-webui") return { notifications, payload };
     assert.ok(payload, "stats-webui should publish a payload before clearing its transport status");
     return payload;
   } finally {
@@ -119,6 +122,15 @@ test("range payload uses scoped sessions, nullable-safe formulas, and equal spen
   assert.equal(payload.sessionCount, 3, "legacy sessionCount remains the workspace file count");
   assert.equal(payload.scopedSessionCount, 2);
   assert.equal(payload.dayCount, 7);
+  assert.deepEqual(payload.costInfo, {
+    source: "session-recorded",
+    status: "complete",
+    isEstimate: false,
+    ollamaCloudMessageCount: 0,
+    unpricedMessageCount: 0,
+    warning: null,
+  });
+  assert.equal(payload.totals.unpricedMessages, 0);
   assert.equal(payload.summary.promptSideTokens, 700);
   assert.equal(payload.summary.cachedInputShare, (400 / 700) * 100);
   assert.equal(payload.summary.effectiveCostPerMillionTokens, 12_500);
@@ -135,6 +147,59 @@ test("range payload uses scoped sessions, nullable-safe formulas, and equal spen
   assert.equal(payload.expensiveSessions.length, 2);
   assert.doesNotMatch(payload.lines.cache.join("\n"), /cache hit|cache savings/i);
   assert.match(payload.lines.cache[0], /^Cached-input share:/);
+});
+
+test("Ollama Cloud estimates expose partial coverage instead of reporting token-bearing zero costs as free", async () => {
+  const payload = await buildPayload({
+    ollama: [
+      usageEntry(dayKey(0), { provider: "ollama-cloud", model: "deepseek-v4-flash:0731", input: 1_000, cost: 1 }),
+      usageEntry(dayKey(0), { provider: "ollama-cloud", model: "deepseek-v4-flash:0731", output: 500, cost: 0 }),
+    ],
+    other: [usageEntry(dayKey(0), { provider: "test", model: "free-fixture", input: 100, cost: 0 })],
+  }, "all");
+
+  assert.equal(payload.costInfo.source, "session-recorded");
+  assert.equal(payload.costInfo.status, "partial");
+  assert.equal(payload.costInfo.isEstimate, true);
+  assert.equal(payload.costInfo.ollamaCloudMessageCount, 2);
+  assert.equal(payload.costInfo.unpricedMessageCount, 1);
+  assert.match(payload.costInfo.warning, /recorded estimates/);
+  assert.match(payload.costInfo.warning, /1 token-bearing message has no recorded cost/);
+  assert.equal(payload.totals.cost, 1);
+  assert.equal(payload.totals.unpricedMessages, 1);
+  assert.equal(payload.daily.at(-1).unpricedMessages, 1);
+
+  const ollamaModel = payload.models.find((model) => model.model === "ollama-cloud/deepseek-v4-flash:0731");
+  assert.equal(ollamaModel.unpricedMessages, 1);
+  assert.match(payload.lines.graph.join("\n"), /\$1\.000 recorded \+ unavailable/);
+  assert.match(payload.lines.modelComparison.join("\n"), /unavailable\/1M tok/);
+  assert.match(payload.lines.expensiveSessions.join("\n"), /recorded \+ unavailable/);
+});
+
+test("terminal stats shows one report-level Ollama Cloud cost warning", async () => {
+  const result = await buildPayload({
+    ollama: [usageEntry(dayKey(0), { provider: "ollama-cloud", model: "deepseek-v4-flash:0731", input: 1_000, cost: 0 })],
+  }, "all", { commandName: "stats" });
+
+  assert.equal(result.notifications.length, 1);
+  const output = result.notifications[0].message;
+  assert.equal((output.match(/Cost note:/g) ?? []).length, 1);
+  assert.match(output, /1 token-bearing message has no recorded cost/);
+  assert.match(output, /unavailable/);
+  assert.doesNotMatch(output, /\$0\.000/);
+});
+
+test("Ollama Cloud non-zero recorded costs remain estimates without making the total partial", async () => {
+  const payload = await buildPayload({
+    ollama: [usageEntry(dayKey(0), { provider: "ollama-cloud", model: "deepseek-v4-flash:0731", input: 1_000, cost: 1 })],
+  }, "all");
+
+  assert.equal(payload.costInfo.status, "complete");
+  assert.equal(payload.costInfo.isEstimate, true);
+  assert.equal(payload.costInfo.ollamaCloudMessageCount, 1);
+  assert.equal(payload.costInfo.unpricedMessageCount, 0);
+  assert.match(payload.costInfo.warning, /may differ from current pricing/);
+  assert.equal(payload.totals.unpricedMessages, 0);
 });
 
 test("all scope spans every local calendar day between sparse usage records", async () => {

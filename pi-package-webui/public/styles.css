@@ -13219,6 +13219,15 @@ body.subagent-terminal-active .composer-remote-mic-consent {
   color: var(--ctp-red);
   border-color: rgba(243, 139, 168, 0.38);
 }
+.stats-overlay-cost-warning {
+  margin: 0 0 0.72rem;
+  padding: 0.62rem 0.75rem;
+  border: 1px solid rgba(249, 226, 175, 0.38);
+  border-radius: 0.75rem;
+  background: rgba(249, 226, 175, 0.08);
+  color: var(--ctp-yellow);
+  line-height: 1.45;
+}
 .stats-overlay-tabs {
   display: flex;
   gap: 0.42rem;

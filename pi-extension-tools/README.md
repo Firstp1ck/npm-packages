@@ -6,7 +6,7 @@ Choose which tools Pi can use for a session, by default, or with a specific mode
 
 ## What you can do
 
-- Lists every tool available to the current Pi session.
+- Lists every tool available to the current Pi session and shows where it came from.
 - Saves a selection for the current session branch.
 - Sets a global default or an exact provider/model profile.
 - Applies model profiles when the active model changes.
@@ -28,7 +28,7 @@ Run `/tools`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-In the resource list, each tool shows `enabled` or `disabled` in a separate status column. Type to search, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+In the resource list, each tool name includes its source in parentheses and shows `enabled` or `disabled` in a separate status column. Type to search by name or source, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
 
 ## Before you start
 

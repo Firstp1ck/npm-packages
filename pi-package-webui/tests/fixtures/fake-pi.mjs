@@ -1395,7 +1395,15 @@ function statsPromptContextFixturePayload({ malformedSnapshot = false } = {}) {
     scopedSessionCount: 0,
     dayCount: 14,
     activeDayCount: 0,
-    totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 },
+    totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0, messages: 1, unpricedMessages: 1 },
+    costInfo: {
+      source: "session-recorded",
+      status: "partial",
+      isEstimate: true,
+      ollamaCloudMessageCount: 1,
+      unpricedMessageCount: 1,
+      warning: "Fixture Ollama Cloud cost estimate is partial because one token-bearing message has no recorded cost.",
+    },
     promptEstimate: {
       total: 300, low: 270, high: 330, confidence: "fixture", calibrationMultiplier: 1,
       calibrationSamples: 0, source: "export-html", settled: true, attempts: 0,

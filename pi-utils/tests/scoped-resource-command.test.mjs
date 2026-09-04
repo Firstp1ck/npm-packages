@@ -23,6 +23,9 @@ function createUi(steps, notifications, visited = []) {
         const component = factory({ requestRender() {} }, theme, {}, done);
         const rendered = component.render(120).join("\n");
         assert.ok(rendered.includes(step.title), `expected ${step.title} screen, received:\n${rendered}`);
+        for (const text of step.includes ?? []) {
+          assert.ok(rendered.includes(text), `expected ${step.title} screen to include ${text}, received:\n${rendered}`);
+        }
         visited.push(step.title);
         for (const input of step.inputs) component.handleInput(input);
       });
@@ -50,6 +53,10 @@ try {
     selectionKey: "enabledSkills",
     customType: "webui-skills-config",
     getVisibleNames: async () => ["alpha", "beta"],
+    getResourcePresentation: async () => [
+      { name: "alpha", description: "npm:package-a: Alpha skill" },
+      { name: "beta", description: "local: Beta skill" },
+    ],
     getRuntimeNames: async () => ["alpha"],
     getEnabledNames: async () => ["alpha"],
     recompute: async () => {
@@ -71,7 +78,11 @@ try {
   const saveSteps = [
     { title: "Skills setup", inputs: ["\x1b[B", "\r"] },
     { title: "Global skills default", inputs: ["\r"] },
-    { title: "Skills Configuration", inputs: ["\x1b[B", "\r", "\x13"] },
+    {
+      title: "Skills Configuration",
+      includes: ["npm:package-a: Alpha skill"],
+      inputs: ["\x1b[B", "\r", "\x13"],
+    },
   ];
   await command.handler("", context(createUi(saveSteps, notifications)));
 

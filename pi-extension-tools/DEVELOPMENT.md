@@ -8,4 +8,6 @@ Contributor-only implementation, testing, and maintenance information.
 
 The extension owns `/tools` and applies tool state only in TUI mode. `@firstpick/pi-utils/scoped-resource-command` owns the shared Session, Global, and Model command flow. `@firstpick/pi-utils/resource-management` owns profile resolution and compatible settings writes.
 
+Tool names remain the stable selection identifiers. The extension passes separate presentation labels to the shared selector so each row can include `ToolInfo.sourceInfo.source` without storing that label in resource profiles.
+
 Use `webui-tools-config` for session branch entries so WebUI and TUI resume the same explicit or inherited choice. Capture Pi's runtime tool baseline before applying a saved selection. Do not let WebUI register a second `/tools` command.

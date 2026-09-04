@@ -30812,6 +30812,12 @@ function formatStatsCost(value) {
   return `$${cost.toFixed(2)}`;
 }
 
+function formatStatsCostWithCoverage(value, unpricedMessages) {
+  const cost = statsNumber(value);
+  if (statsNumber(unpricedMessages) <= 0) return formatStatsCost(cost);
+  return cost > 0 ? `${formatStatsCost(cost)} recorded + unavailable` : "unavailable";
+}
+
 function formatStatsPercent(value) {
   return `${statsNumber(value).toFixed(1)}%`;
 }
@@ -30833,6 +30839,10 @@ function formatStatsNullablePercent(value) {
 function formatStatsNullableCost(value) {
   const number = statsNullableNumber(value);
   return number === null ? "n/a" : formatStatsCost(number);
+}
+
+function formatStatsNullableCostWithCoverage(value, unpricedMessages) {
+  return statsNumber(unpricedMessages) > 0 ? formatStatsCostWithCoverage(value, unpricedMessages) : formatStatsNullableCost(value);
 }
 
 function formatStatsNullableTokens(value) {
@@ -30903,7 +30913,9 @@ function statsSpendComparison(summary) {
     recentStartDay: typeof comparison.recentStartDay === "string" ? comparison.recentStartDay : "",
     recentEndDay: typeof comparison.recentEndDay === "string" ? comparison.recentEndDay : "",
     recentCost: statsNumber(comparison.recentCost),
+    recentUnpricedMessages: Math.max(0, statsNumber(comparison.recentUnpricedMessages)),
     priorCost: statsNumber(comparison.priorCost),
+    priorUnpricedMessages: Math.max(0, statsNumber(comparison.priorUnpricedMessages)),
     changeCost: statsNullableNumber(comparison.changeCost),
     changePercent: statsNullableNumber(comparison.changePercent),
   };
@@ -30915,6 +30927,7 @@ function statsModelDriverEntries(payload) {
     name: model?.model || "unknown",
     cost: statsNumber(model?.cost),
     share: statsCostShareOf(model?.cost, totalCost),
+    unpricedMessages: statsNumber(model?.unpricedMessages),
   }));
 }
 
@@ -30924,7 +30937,13 @@ function statsSessionDriverEntries(payload) {
     name: session?.displayName || session?.sessionId || "unknown",
     cost: statsNumber(session?.cost),
     share: statsCostShareOf(session?.cost, totalCost),
+    unpricedMessages: statsNumber(session?.unpricedMessages),
   }));
+}
+
+function statsCostWarning(payload) {
+  const warning = payload?.costInfo?.warning;
+  return typeof warning === "string" ? warning.trim().slice(0, 600) : "";
 }
 
 function parseStatsWebuiPayloadRaw(raw) {
@@ -31080,14 +31099,14 @@ function renderStatsBarRows(daily = []) {
       make("span", "stats-overlay-bar-day", row.day || "—"),
       bar,
       make("span", "stats-overlay-bar-value", `${formatStatsTokens(row.total)} tok`),
-      make("span", "stats-overlay-bar-cost", formatStatsCost(row.cost)),
+      make("span", "stats-overlay-bar-cost", formatStatsCostWithCoverage(row.cost, row.unpricedMessages)),
     );
     list.append(item);
   }
   wrapper.append(
     legend,
     list,
-    make("p", "stats-overlay-chart-caption muted", `${capped[0]?.day || "—"} → ${capped.at(-1)?.day || "—"} · peak ${formatStatsTokens(peakTokens?.total)} tok on ${peakTokens?.day || "—"} · peak spend ${formatStatsCost(peakCost?.cost)} on ${peakCost?.day || "—"}`),
+    make("p", "stats-overlay-chart-caption muted", `${capped[0]?.day || "—"} → ${capped.at(-1)?.day || "—"} · peak ${formatStatsTokens(peakTokens?.total)} tok on ${peakTokens?.day || "—"} · peak spend ${formatStatsCostWithCoverage(peakCost?.cost, peakCost?.unpricedMessages)} on ${peakCost?.day || "—"}`),
   );
   const note = statsChartWindowNote(windowed, "active days");
   if (note) wrapper.append(note);
@@ -31095,13 +31114,14 @@ function renderStatsBarRows(daily = []) {
 }
 
 function renderStatsSpendChart(daily = []) {
-  const rows = statsArray(daily).map((row) => ({ day: String(row?.day || "—"), cost: Math.max(0, statsNumber(row?.cost)) }));
+  const rows = statsArray(daily).map((row) => ({ day: String(row?.day || "—"), cost: Math.max(0, statsNumber(row?.cost)), unpricedMessages: Math.max(0, statsNumber(row?.unpricedMessages)) }));
   if (!rows.length) return make("p", "stats-overlay-empty muted", "No daily usage in this range.");
   const windowed = statsChartWindow(rows);
   const capped = windowed.capped;
   const maxCost = Math.max(0, ...capped.map((row) => row.cost));
   const total = capped.reduce((acc, row) => acc + row.cost, 0);
-  if (total <= 0) return make("p", "stats-overlay-empty muted", "No spend recorded in this range.");
+  const unpricedMessages = capped.reduce((acc, row) => acc + row.unpricedMessages, 0);
+  if (total <= 0) return make("p", "stats-overlay-empty muted", unpricedMessages > 0 ? `Recorded spend is unavailable for ${unpricedMessages} message${unpricedMessages === 1 ? "" : "s"} in this range.` : "No spend recorded in this range.");
   const peak = capped.reduce((best, row) => (row.cost > (best?.cost ?? -1) ? row : best), null);
   const wrapper = make("div", "stats-overlay-spend");
   const chart = make("div", "stats-overlay-spend-chart");
@@ -31112,11 +31132,11 @@ function renderStatsSpendChart(daily = []) {
     const bar = make("span", "stats-overlay-spend-bar");
     const height = maxCost > 0 ? Math.min(100, Math.max(row.cost > 0 ? 3 : 0, (row.cost / maxCost) * 100)) : 0;
     bar.style.height = `${height}%`;
-    col.title = `${row.day}: ${formatStatsCost(row.cost)}`;
+    col.title = `${row.day}: ${formatStatsCostWithCoverage(row.cost, row.unpricedMessages)}`;
     col.append(bar);
     chart.append(col);
   }
-  const caption = make("p", "stats-overlay-chart-caption muted", `Daily spend ${capped[0].day} → ${capped.at(-1).day} · total ${formatStatsCost(total)} · peak ${formatStatsCost(peak?.cost ?? 0)} on ${peak?.day ?? "—"}${windowed.truncated ? ` · latest ${capped.length} of ${windowed.total} days` : ""}`);
+  const caption = make("p", "stats-overlay-chart-caption muted", `Daily spend ${capped[0].day} → ${capped.at(-1).day} · total ${formatStatsCostWithCoverage(total, unpricedMessages)} · peak ${formatStatsCostWithCoverage(peak?.cost ?? 0, peak?.unpricedMessages)} on ${peak?.day ?? "—"}${windowed.truncated ? ` · latest ${capped.length} of ${windowed.total} days` : ""}`);
   wrapper.append(chart, caption);
   return wrapper;
 }
@@ -31154,8 +31174,8 @@ function renderStatsComposition(totals = {}) {
 
 function renderStatsDriverList(entries = [], emptyText = "No cost drivers in this range.") {
   const rows = statsArray(entries)
-    .map((entry) => ({ name: entry?.name || "unknown", cost: Math.max(0, statsNumber(entry?.cost)), share: statsNullableNumber(entry?.share) }))
-    .filter((entry) => entry.cost > 0)
+    .map((entry) => ({ name: entry?.name || "unknown", cost: Math.max(0, statsNumber(entry?.cost)), share: statsNullableNumber(entry?.share), unpricedMessages: Math.max(0, statsNumber(entry?.unpricedMessages)) }))
+    .filter((entry) => entry.cost > 0 || entry.unpricedMessages > 0)
     .slice(0, 8);
   if (!rows.length) return make("p", "stats-overlay-empty muted", emptyText);
   const maxCost = Math.max(...rows.map((entry) => entry.cost));
@@ -31172,7 +31192,7 @@ function renderStatsDriverList(entries = [], emptyText = "No cost drivers in thi
       make("span", "stats-overlay-driver-rank", String(index + 1)),
       make("span", "stats-overlay-driver-name", entry.name),
       bar,
-      make("span", "stats-overlay-driver-value", `${formatStatsCost(entry.cost)} · ${formatStatsNullablePercent(entry.share)}`),
+      make("span", "stats-overlay-driver-value", `${formatStatsCostWithCoverage(entry.cost, entry.unpricedMessages)} · ${formatStatsNullablePercent(entry.share)}`),
     );
     list.append(row);
   }
@@ -31194,6 +31214,14 @@ function renderStatsTopDrivers(payload) {
   return grid;
 }
 
+function renderStatsCostWarning(payload) {
+  const warning = statsCostWarning(payload);
+  if (!warning) return null;
+  const note = make("p", "stats-overlay-cost-warning", warning);
+  note.setAttribute("role", "note");
+  return note;
+}
+
 function renderStatsOverview(payload) {
   const node = make("div", "stats-overlay-pane stats-overlay-overview");
   const totals = payload?.totals || {};
@@ -31205,12 +31233,12 @@ function renderStatsOverview(payload) {
   const cards = make("div", "stats-overlay-cards");
   cards.append(
     statsMetricCard("Total tokens", formatStatsTokens(totals.total), `↑${formatStatsTokens(totals.input)} ↓${formatStatsTokens(totals.output)}`, "tone-blue"),
-    statsMetricCard("Cost", formatStatsCost(totals.cost), `projected 30d ${formatStatsCost(summary.projected30DayCost)}`, "tone-green"),
-    statsMetricCard("Effective $/1M", formatStatsNullableCost(statsEffectiveCostRate(summary, totals)), "blended rate, not provider list pricing", "tone-sky"),
+    statsMetricCard("Cost", formatStatsCostWithCoverage(totals.cost, totals.unpricedMessages), `projected 30d ${formatStatsCostWithCoverage(summary.projected30DayCost, totals.unpricedMessages)}`, "tone-green"),
+    statsMetricCard("Effective $/1M", formatStatsNullableCostWithCoverage(statsEffectiveCostRate(summary, totals), totals.unpricedMessages), "blended rate, not provider list pricing", "tone-sky"),
     statsMetricCard("Messages", String(statsNumber(totals.messages)), sessionDetail, "tone-mauve"),
     statsMetricCard("PI initial prompt", `~${formatStatsTokens(payload?.promptEstimate?.total)} tok`, `${statsPromptEstimateSourceLabel(payload?.promptEstimate)} · ${payload?.promptEstimate?.confidence || "estimate"}`, "tone-yellow"),
     statsMetricCard("Cached-input share", formatStatsNullablePercent(cachedShare), `reads ${formatStatsTokens(totals.cacheRead)} · writes ${formatStatsTokens(totals.cacheWrite)} of ${formatStatsTokens(statsPromptSideTokens(summary, totals))} prompt-side tok`, "tone-teal"),
-    statsMetricCard("Active days", `${payload?.activeDayCount ?? 0}/${payload?.dayCount ?? 0}`, highest ? `peak ${highest.day} · ${formatStatsCost(highest.cost)}` : "no peak yet", "tone-pink"),
+    statsMetricCard("Active days", `${payload?.activeDayCount ?? 0}/${payload?.dayCount ?? 0}`, highest ? `peak ${highest.day} · ${formatStatsCostWithCoverage(highest.cost, highest.unpricedMessages)}` : "no peak yet", "tone-pink"),
   );
   node.append(cards, make("h3", undefined, "Daily usage"), renderStatsBarRows(payload?.daily));
   return node;
@@ -31224,7 +31252,7 @@ function renderStatsDaily(payload) {
     statsArray(payload?.daily).map((row) => [
       row.day || "—",
       formatStatsTokens(row.total),
-      formatStatsCost(row.cost),
+      formatStatsCostWithCoverage(row.cost, row.unpricedMessages),
       formatStatsTokens(row.input),
       formatStatsTokens(row.output),
       `${formatStatsTokens(row.cacheRead)} / ${formatStatsTokens(row.cacheWrite)}`,
@@ -31248,9 +31276,9 @@ function renderStatsModels(payload) {
       model.model || "unknown",
       formatStatsTokens(model.tokens),
       formatStatsPercent(model.percent),
-      formatStatsCost(model.cost),
+      formatStatsCostWithCoverage(model.cost, model.unpricedMessages),
       formatStatsPercent(model.costPercent),
-      formatStatsCost(model.avgCostPerMillion),
+      statsNumber(model.unpricedMessages) > 0 ? "unavailable" : formatStatsCost(model.avgCostPerMillion),
       formatStatsTokens(Math.round(statsNumber(model.avgOutputTokens))),
       String(statsNumber(model.messages)),
     ]),
@@ -31271,7 +31299,7 @@ function renderStatsSessions(payload) {
     statsArray(payload?.expensiveSessions).map((session) => [
       session.day || "—",
       session.displayName || session.sessionId || "unknown",
-      formatStatsCost(session.cost),
+      formatStatsCostWithCoverage(session.cost, session.unpricedMessages),
       formatStatsTokens(session.tokens),
       session.model || "unknown",
     ]),
@@ -31288,18 +31316,19 @@ function renderStatsCostCache(payload) {
   const comparison = statsSpendComparison(summary);
   const scopedSessions = statsNullableNumber(payload?.scopedSessionCount);
   const sessionDetail = scopedSessions !== null ? `per session in range (${scopedSessions})` : "per session file (legacy count)";
+  const comparisonPartial = !!comparison && (comparison.recentUnpricedMessages > 0 || comparison.priorUnpricedMessages > 0);
   const cards = make("div", "stats-overlay-cards compact");
   cards.append(
-    statsMetricCard("Avg/day", formatStatsCost(summary.calendarAvgCost), "calendar average", "tone-green"),
-    statsMetricCard("Active avg", formatStatsCost(summary.activeAvgCost), "per active day", "tone-teal"),
-    statsMetricCard("Effective $/1M", formatStatsNullableCost(statsEffectiveCostRate(summary, totals)), "blended rate, not provider list pricing", "tone-blue"),
+    statsMetricCard("Avg/day", formatStatsCostWithCoverage(summary.calendarAvgCost, totals.unpricedMessages), "calendar average", "tone-green"),
+    statsMetricCard("Active avg", formatStatsCostWithCoverage(summary.activeAvgCost, totals.unpricedMessages), "per active day", "tone-teal"),
+    statsMetricCard("Effective $/1M", formatStatsNullableCostWithCoverage(statsEffectiveCostRate(summary, totals), totals.unpricedMessages), "blended rate, not provider list pricing", "tone-blue"),
     statsMetricCard("Cached-input share", formatStatsNullablePercent(statsCachedInputShare(summary, totals)), `reads ${formatStatsTokens(totals.cacheRead)} of ${formatStatsTokens(statsPromptSideTokens(summary, totals))} prompt-side tok`, "tone-yellow"),
-    statsMetricCard("Avg cost/session", formatStatsNullableCost(statsAverageCostPerSession(summary, payload)), `${formatStatsNullableTokens(statsAverageTokensPerSession(summary, payload))} · ${sessionDetail}`, "tone-mauve"),
+    statsMetricCard("Avg cost/session", formatStatsNullableCostWithCoverage(statsAverageCostPerSession(summary, payload), totals.unpricedMessages), `${formatStatsNullableTokens(statsAverageTokensPerSession(summary, payload))} · ${sessionDetail}`, "tone-mauve"),
     statsMetricCard(
       "Recent spend",
-      comparison ? formatStatsCost(comparison.recentCost) : "n/a",
+      comparison ? formatStatsCostWithCoverage(comparison.recentCost, comparison.recentUnpricedMessages) : "n/a",
       comparison
-        ? `${comparison.recentStartDay} → ${comparison.recentEndDay} (${comparison.windowDays}d) vs prior ${comparison.windowDays}d ${formatStatsCost(comparison.priorCost)} · ${formatStatsSignedCost(comparison.changeCost)} (${formatStatsNullablePercent(comparison.changePercent)})`
+        ? `${comparison.recentStartDay} → ${comparison.recentEndDay} (${comparison.windowDays}d) vs prior ${comparison.windowDays}d ${formatStatsCostWithCoverage(comparison.priorCost, comparison.priorUnpricedMessages)} · ${comparisonPartial ? "change unavailable" : `${formatStatsSignedCost(comparison.changeCost)} (${formatStatsNullablePercent(comparison.changePercent)})`}`
         : "requires the latest stats extension",
       "tone-pink",
     ),
@@ -31848,7 +31877,8 @@ function renderStatsOverlay() {
   elements.statsOverlayBody.setAttribute("aria-labelledby", `statsOverlayTab-${statsOverlayActiveTab}`);
 
   elements.statsOverlayRefreshButton.disabled = statsOverlayLoading;
-  elements.statsOverlayBody.replaceChildren(renderStatsOverlayPane(payload));
+  const costWarning = renderStatsCostWarning(payload);
+  elements.statsOverlayBody.replaceChildren(...(costWarning ? [costWarning, renderStatsOverlayPane(payload)] : [renderStatsOverlayPane(payload)]));
 }
 
 function scheduleStatsRefreshAfterCalibration(tabContext, delays = [1200]) {

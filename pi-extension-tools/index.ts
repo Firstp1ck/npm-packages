@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@earendil-works/pi-coding-agent";
 import {
   branchResourceDirective,
   readResourceDefaults,
@@ -11,6 +11,13 @@ const CUSTOM_TYPE = "webui-tools-config";
 type ToolsState = {
   enabledTools?: string[];
 };
+
+export function toolSourceLabel(tool: ToolInfo): string {
+  const source = tool.sourceInfo?.source ?? "unknown";
+  if (source === "builtin") return "Pi built-in";
+  if (source === "sdk") return "SDK custom tools";
+  return source.replace(/^extension:/, "");
+}
 
 function lastBranchConfig(ctx: ExtensionContext): ToolsState | undefined {
   let found: ToolsState | undefined;
@@ -59,6 +66,10 @@ export default function toolsExtension(pi: ExtensionAPI) {
     selectionKey: "enabledTools",
     customType: CUSTOM_TYPE,
     getVisibleNames: async () => allToolNames(),
+    getResourcePresentation: async () => pi.getAllTools().map((tool) => ({
+      name: tool.name,
+      label: `${tool.name} (${toolSourceLabel(tool)})`,
+    })),
     getRuntimeNames: async () => runtimeTools(),
     getEnabledNames: async () => [...enabledTools],
     recompute,
