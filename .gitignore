@@ -26,3 +26,6 @@ pi-package-webui/test-results/
 /.pi/subagents/
 /pi-package-webui/.pi/subagents/
 pi-session-*
+pi-package-qt-webui/plans/handoffs/
+pi-package-qt-webui/plans/reviews/
+pi-package-qt-webui/handoffs/
