@@ -6175,6 +6175,8 @@ body.footer-model-picker-open .statusbar {
   overflow: hidden;
 }
 .footer-model-picker-advanced .footer-model-picker-source {
+  /* Let provider columns set the picker width, not the keyboard-help sentence. */
+  contain: inline-size;
   width: 100%;
   max-width: none;
 }

@@ -239,7 +239,7 @@ npx playwright test --project=chromium tests/browser/subagent-observability.spec
 
 The footer picker keeps presentation state browser-local under `pi-webui-footer-scoped-model-layout-v1`; only normalized `flat` and `advanced` values are accepted. Storage events adopt the value across same-origin tabs without a settings write. The context-menu checkbox names the destination layout: **Toggle advanced** in flat mode and **Toggle Simple** in advanced mode. Advanced rendering groups `orderedFooterScopedModels()` by provider, sorts only the provider groups, and retains the existing order inside every group. Provider containers are labelled ARIA groups, and option buttons carry stable provider/model indices for clamped directional focus movement.
 
-Advanced options use a roving tab stop. Arrow, `Home`, and `End` keys move focus only; `Enter` and `Space` call the existing model-selection path, while `Escape` closes and restores the footer trigger. Pointer drag and `Alt+ArrowUp` / `Alt+ArrowDown` listeners remain in the flat branch only. The desktop picker uses intrinsic provider-column width, temporarily escapes the chat-panel clip, and raises the workspace stacking context above side panels. Its width is capped to a viewport gutter and the provider row becomes internally scrollable at that cap. Narrow-screen groups stack vertically, so neither layout creates page-level horizontal overflow.
+Advanced options use a roving tab stop. Arrow, `Home`, and `End` keys move focus only; `Enter` and `Space` call the existing model-selection path, while `Escape` closes and restores the footer trigger. Pointer drag and `Alt+ArrowUp` / `Alt+ArrowDown` listeners remain in the flat branch only. The desktop picker uses intrinsic provider-column width, temporarily escapes the chat-panel clip, and raises the workspace stacking context above side panels. Keyboard help uses inline-size containment so it wraps to the picker width without its full sentence widening the popup. Its width is capped to a viewport gutter and the provider row becomes internally scrollable at that cap. Narrow-screen groups stack vertically, so neither layout creates page-level horizontal overflow.
 
 Focused validation:
 
@@ -249,7 +249,7 @@ node --check public/app.js
 npx playwright test tests/browser/footer-model-advanced-layout.spec.mjs --project=chromium
 ```
 
-The static contract covers Model-only menu visibility, normalized persistence and storage adoption, grouping, semantics, keyboard behavior, flat reorder isolation, bounded side-panel overlay stacking, and responsive CSS hooks. The Chromium fixtures cover toggle synchronization/reload, group and model order, directional focus, model application, `Escape` focus restoration, flat `Alt+Arrow` and pointer selection, narrow-viewport overflow, and a ten-provider case that verifies viewport capping, side-panel overlap, paint order, and horizontal scrolling.
+The static contract covers Model-only menu visibility, normalized persistence and storage adoption, grouping, semantics, keyboard behavior, flat reorder isolation, bounded side-panel overlay stacking, and responsive CSS hooks. The Chromium fixtures cover toggle synchronization/reload, group and model order, directional focus, model application, `Escape` focus restoration, flat `Alt+Arrow` and pointer selection, narrow-viewport overflow, intrinsic sizing with one, three, and six providers, and a ten-provider case that verifies viewport capping, side-panel overlap, paint order, and horizontal scrolling.
 
 ## Control Deck side-panel architecture
 

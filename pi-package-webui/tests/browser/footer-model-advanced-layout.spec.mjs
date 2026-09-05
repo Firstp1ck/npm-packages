@@ -193,6 +193,43 @@ test.afterAll(async () => {
   await rm(tempRoot, { recursive: true, force: true });
 });
 
+for (const providerCount of [1, 3, 6]) {
+  test(`${providerCount} provider columns determine desktop picker width instead of keyboard help`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await installFixture(page, manyProviderModels.slice(0, providerCount));
+    await preparePage(page);
+    const menu = await openModelMenu(page);
+    await menu.toggle.click();
+    const picker = await openPicker(page, /footer-model-picker-advanced/, providerCount);
+    const geometry = await picker.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      const columns = node.querySelector(".footer-model-provider-columns");
+      const help = node.querySelector("#footerModelPickerHelp");
+      return {
+        width: rect.width,
+        contentWidth: node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+        columnsWidth: columns.getBoundingClientRect().width,
+        helpWidth: help.getBoundingClientRect().width,
+        helpHeight: help.getBoundingClientRect().height,
+        helpLineHeight: parseFloat(getComputedStyle(help).lineHeight),
+        helpClientWidth: help.clientWidth,
+        helpScrollWidth: help.scrollWidth,
+        left: rect.left,
+        right: rect.right,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    assert.ok(geometry.contentWidth - geometry.columnsWidth < 60, `picker should hug its provider columns: ${JSON.stringify(geometry)}`);
+    assert.ok(Math.abs(geometry.helpWidth - geometry.contentWidth) <= 1, `help should use the resulting content width: ${JSON.stringify(geometry)}`);
+    if (providerCount <= 3) {
+      assert.ok(geometry.helpHeight > geometry.helpLineHeight, `help should wrap instead of widening the picker: ${JSON.stringify(geometry)}`);
+    }
+    assert.equal(geometry.helpScrollWidth, geometry.helpClientWidth, "wrapped help should not overflow horizontally");
+    assert.ok(geometry.left >= 7 && geometry.right <= geometry.viewportWidth - 7, `picker should remain within viewport gutters: ${JSON.stringify(geometry)}`);
+  });
+}
+
 test("many provider columns grow over side panels, stop at the viewport, and scroll internally", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await installFixture(page, manyProviderModels);

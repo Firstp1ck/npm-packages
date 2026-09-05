@@ -138,7 +138,7 @@ assert.match(
 );
 assert.match(
   css,
-  /\.footer-model-picker-advanced \{[\s\S]*width:\s*max-content;[\s\S]*max-width:\s*calc\(100vw - 1rem\);[\s\S]*\.footer-model-picker-advanced \.footer-model-picker-source \{[\s\S]*width:\s*100%;[\s\S]*max-width:\s*none;[\s\S]*\.footer-model-provider-columns \{[\s\S]*grid-auto-flow:\s*column;[\s\S]*grid-auto-columns:\s*13rem;[\s\S]*width:\s*fit-content;[\s\S]*max-width:\s*calc\(100vw - 2\.5rem\);[\s\S]*overflow:\s*auto;/,
+  /\.footer-model-picker-advanced \{[\s\S]*width:\s*max-content;[\s\S]*max-width:\s*calc\(100vw - 1rem\);[\s\S]*\.footer-model-picker-advanced \.footer-model-picker-source \{[\s\S]*contain:\s*inline-size;[\s\S]*width:\s*100%;[\s\S]*max-width:\s*none;[\s\S]*\.footer-model-provider-columns \{[\s\S]*grid-auto-flow:\s*column;[\s\S]*grid-auto-columns:\s*13rem;[\s\S]*width:\s*fit-content;[\s\S]*max-width:\s*calc\(100vw - 2\.5rem\);[\s\S]*overflow:\s*auto;/,
   "desktop advanced layout should give help text the full picker width, grow by provider count, stop at the viewport, and scroll internally",
 );
 assert.match(
