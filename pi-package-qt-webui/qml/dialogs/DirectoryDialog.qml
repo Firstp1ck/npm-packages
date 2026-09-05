@@ -255,12 +255,12 @@ AppDialog {
         }
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.listError.length > 0
+        theme: dialog.theme
         text: dialog.listError
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         color: dialog.theme.destructive
         font.pixelSize: 12
         Accessible.role: Accessible.AlertMessage
@@ -328,11 +328,11 @@ AppDialog {
         }
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.visibleEntries.length === 0
+        theme: dialog.theme
         text: dialog.loading ? "Loading…" : dialog.entries.length === 0 ? "No subfolders" : "No matching folders"
-        textFormat: Text.PlainText
         color: dialog.theme.muted
         font.pixelSize: 12
     }
@@ -382,14 +382,14 @@ AppDialog {
                 anchors.margins: dialog.theme.spaceSm
                 spacing: dialog.theme.spaceMd
 
-                Label {
+                SelectableText {
                     id: entryLabel
                     Layout.fillWidth: true
+                    theme: dialog.theme
                     text: String(entryRow.modelData.name)
-                    textFormat: Text.PlainText
-                    elide: Text.ElideMiddle
                     color: entryRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
                     font.pixelSize: dialog.theme.typeBody + 1
+                    onTapped: entryList.currentIndex = entryRow.index
                 }
 
                 StatusBadge {
@@ -406,10 +406,18 @@ AppDialog {
                 cursorShape: Qt.PointingHandCursor
             }
 
+            function tapHitsText(eventPoint) {
+                const point = entryLabel.mapFromItem(entryRow, eventPoint.position.x, eventPoint.position.y)
+                return entryLabel.contains(point)
+            }
+
             TapHandler {
                 id: entryTap
+                acceptedButtons: Qt.LeftButton
+                gesturePolicy: TapHandler.DragThreshold
                 onTapped: entryList.currentIndex = entryRow.index
-                onDoubleTapped: {
+                onDoubleTapped: eventPoint => {
+                    if (entryRow.tapHitsText(eventPoint)) return
                     entryList.currentIndex = entryRow.index
                     dialog.enterCurrent()
                 }
@@ -421,11 +429,10 @@ AppDialog {
         Layout.fillWidth: true
         spacing: 8
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.currentPath
-            textFormat: Text.PlainText
-            elide: Text.ElideMiddle
             color: dialog.theme.muted
             font.family: dialog.theme.monospaceFamily
             font.pixelSize: dialog.theme.typeSmall

@@ -13,7 +13,7 @@ async function readQml(relative) {
   return readFile(path.join(qmlRoot, relative), "utf8");
 }
 
-const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, fixture] = await Promise.all([
+const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, selectableText, fixture] = await Promise.all([
   readQml("shell.qml"),
   readQml("BackendBridge.qml"),
   readQml("Theme.qml"),
@@ -30,6 +30,7 @@ const [shell, bridge, theme, smoke, composer, row, blocks, toolCard, searchBar, 
   readQml(path.join("dialogs", "AppDialog.qml")),
   readQml(path.join("dialogs", "ExtensionDialog.qml")),
   readQml(path.join("dialogs", "LinkDialog.qml")),
+  readQml(path.join("components", "SelectableText.qml")),
   readFile(path.join(root, "tests", "fixtures", "fake-pi-rpc.mjs"), "utf8"),
 ]);
 
@@ -43,7 +44,7 @@ const [eventsDialog, diagnosticsDialog, resourceProfilesDialog] = await Promise.
   readQml(path.join("dialogs", "DiagnosticsDialog.qml")),
   readQml(path.join("dialogs", "ResourceProfilesDialog.qml")),
 ]);
-const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, workingIndicator, statusSegment, statusOverlay, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
+const components = { shell, composer, row, blocks, toolCard, searchBar, emptyState, appButton, statusBadge, noticeBar, appDialog, extensionDialog, linkDialog, selectableText, workingIndicator, statusSegment, statusOverlay, dropUpPicker, pickerDialog, completionPopup, sequencesDialog, textEditDialog, tabStrip, sessionList, confirmDialog, inputDialog, worktreeDialog, directoryDialog, eventsDialog, diagnosticsDialog, resourceProfilesDialog };
 
 function balancedBody(source, open, description) {
   let depth = 0;
@@ -95,7 +96,7 @@ test("shell composes one window from the shared bridge, theme, transcript, compo
   for (const component of ["BackendBridge", "Theme", "Composer", "SearchBar", "EmptyState", "NoticeBar", "TranscriptRow", "ExtensionDialog", "LinkDialog", "PickerDialog", "ResourceProfilesDialog"]) {
     assert.match(shell, new RegExp(`\\b${component}\\s*\\{`), `shell should use ${component}`);
   }
-  for (const sequence of ["Ctrl+F", "Ctrl+T", "Ctrl+Shift+M", "Ctrl+Shift+X", "Ctrl+L", "Ctrl+M", "Ctrl+Shift+P", "Ctrl+E", "Ctrl+Shift+E", "Ctrl+Shift+R", "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+N", "Ctrl+O", "Ctrl+W", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+O", "Ctrl+Shift+N", "Ctrl+Shift+B", "F2", "Ctrl+K", "Ctrl+Shift+L", "Ctrl+Shift+D"]) {
+  for (const sequence of ["Ctrl+F", "Ctrl+T", "Ctrl+Shift+X", "Ctrl+L", "Ctrl+M", "Ctrl+Shift+P", "Ctrl+E", "Ctrl+Shift+E", "Ctrl+Shift+R", "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+N", "Ctrl+O", "Ctrl+W", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+O", "Ctrl+Shift+N", "Ctrl+Shift+B", "F2", "Ctrl+K", "Ctrl+Shift+L", "Ctrl+Shift+D"]) {
     assert.match(shell, new RegExp(`sequence:\\s*"${sequence.replace(/\+/g, "\\+")}"`), `shortcut ${sequence}`);
   }
   assert.match(shell, /onLinkActivated:\s*link\s*=>\s*root\.confirmLink\(link\)/);
@@ -250,8 +251,9 @@ test("global sessions page safely into accessible Working and default-expanded S
   assert.match(settleAllButton, /visible:\s*sessionList\.unsettledSavedSessionCount > 100/, "Settle All is hidden at exactly 100 unsettled sessions");
   assert.match(settleAllButton, /variant:\s*"primary"[\s\S]*text:\s*sessionList\.settleAllPending \? "Settling…" : "Settle All"[\s\S]*enabled:\s*!sessionList\.settleAllPending[\s\S]*sessionList\.settleAllRequested\(\)/);
   assert.match(shell, /settleAllPending:\s*bridge\.sessionSettleAllPending[\s\S]*onSettleAllRequested:\s*bridge\.settleAllSessions\(\)/, "the floating action is wired to the bridge batch");
-  const catalogStatus = objectBodyContaining(sessionList, "Label", 'text: sessionList.loading ? "Loading saved sessions…" : sessionList.errorText');
+  const catalogStatus = objectBodyContaining(sessionList, "SelectableText", 'text: sessionList.loading ? "Loading saved sessions…" : sessionList.errorText');
   assert.match(catalogStatus, /visible:\s*\(sessionList\.loading && sessionList\.sessions\.length === 0\) \|\| sessionList\.errorText\.length > 0/, "background refreshes do not show a loading placeholder over an existing settled session");
+  assert.match(catalogStatus, /wrapMode:\s*TextEdit\.Wrap[\s\S]*maximumLineCount:\s*2/, "catalog errors remain bounded while their source stays selectable");
   assert.match(sessionList, /id:\s*workingList[\s\S]*model:\s*sessionList\.workingSessions[\s\S]*activeFocusOnTab:\s*count > 0[\s\S]*Accessible\.name:\s*"Working sessions"/);
   assert.match(sessionList, /id:\s*settledToggle[\s\S]*accessibleName:\s*\(sessionList\.settledExpanded \? "Collapse" : "Expand"\) \+ " settled sessions"/);
   assert.match(sessionList, /id:\s*settledList[\s\S]*model:\s*sessionList\.settledSessions[\s\S]*Accessible\.name:\s*"Settled sessions"/);
@@ -261,22 +263,21 @@ test("global sessions page safely into accessible Working and default-expanded S
   assert.match(workingRow, /visible:\s*workingRow\.ageText\.length > 0[\s\S]*text:\s*workingRow\.ageText/);
   assert.match(workingRow, /text:\s*sessionList\.statusFor\(workingRow\.modelData\)/);
   assert.match(workingRow, /width:\s*4[\s\S]*height:\s*12[\s\S]*radius:\s*0/, "working status uses rectangular punctuation rather than a round dot");
-  const workingRowMouseArea = objectBodyWithId(workingRow, "MouseArea", "workingRowMouseArea");
-  assert.match(workingRowMouseArea, /anchors\.fill:\s*parent[\s\S]*acceptedButtons:\s*Qt\.LeftButton[\s\S]*hoverEnabled:\s*true[\s\S]*cursorShape:\s*Qt\.PointingHandCursor/);
-  assert.match(workingRowMouseArea, /onClicked:[\s\S]*workingList\.currentIndex = workingRow\.index[\s\S]*sessionList\.openRow\(workingRow\.modelData\)/, "the complete working-session card activates its session");
-  assert(workingRow.indexOf("id: workingRowMouseArea") < workingRow.indexOf("ColumnLayout {"), "the card click area stays behind Settle and Close so their controls keep pointer priority");
-  assert.doesNotMatch(workingRow, /id:\s*working(?:Title|Status)Tap\b/, "labels no longer split card navigation into partial hit areas");
+  const workingRowTap = objectBodyWithId(workingRow, "TapHandler", "workingRowTap");
+  assert.match(workingRowTap, /acceptedButtons:\s*Qt\.LeftButton[\s\S]*gesturePolicy:\s*TapHandler\.DragThreshold[\s\S]*workingRow\.activateRow\(\)/);
+  assert.match(functionBody(workingRow, "activateRow"), /workingList\.currentIndex = workingRow\.index[\s\S]*sessionList\.openRow\(workingRow\.modelData\)/, "the complete working-session card activates from a normal tap");
+  assert.match(workingRow, /SelectableText\s*\{[\s\S]*text:\s*workingRow\.modelData\.title[\s\S]*onTapped:\s*workingRow\.activateRow\(\)/, "text taps share the row action without replacing native selection drags");
+  assert.match(workingRow, /HoverHandler\s*\{[\s\S]*Qt\.PointingHandCursor/, "blank row space retains the navigation cursor");
   assert.match(workingRow, /Layout\.preferredWidth:\s*78[\s\S]*implicitWidth:\s*78[\s\S]*"Settle"/, "Settle reserves enough width for its full label");
   assert.match(workingRow, /enabled:\s*!workingRow\.modelData\.active/);
   assert.match(workingRow, /accessibleName:\s*"Close tab " \+ workingRow\.modelData\.title/);
   const settledRow = objectBodyWithId(sessionList, "Rectangle", "settledRow");
   assert.match(settledRow, /readonly property string ageText:\s*sessionList\.sessionAgeLabel\(modelData\)/);
   assert.match(settledRow, /text:\s*settledRow\.modelData\.title[\s\S]*visible:\s*settledRow\.ageText\.length > 0[\s\S]*text:\s*settledRow\.ageText/);
-  const settledRowMouseArea = objectBodyWithId(settledRow, "MouseArea", "settledRowMouseArea");
-  assert.match(settledRowMouseArea, /anchors\.fill:\s*parent[\s\S]*acceptedButtons:\s*Qt\.LeftButton[\s\S]*hoverEnabled:\s*true[\s\S]*cursorShape:\s*Qt\.PointingHandCursor/);
-  assert.match(settledRowMouseArea, /onClicked:[\s\S]*settledList\.currentIndex = settledRow\.index[\s\S]*sessionList\.openRow\(settledRow\.modelData\)/, "the complete settled-session card activates its session");
-  assert(settledRow.indexOf("id: settledRowMouseArea") < settledRow.indexOf("RowLayout {"), "the card click area stays behind Restore so the control keeps pointer priority");
-  assert.doesNotMatch(settledRow, /id:\s*settledTitleTap\b/, "the title no longer owns the only settled-session hit area");
+  const settledRowTap = objectBodyWithId(settledRow, "TapHandler", "settledRowTap");
+  assert.match(settledRowTap, /acceptedButtons:\s*Qt\.LeftButton[\s\S]*gesturePolicy:\s*TapHandler\.DragThreshold[\s\S]*settledRow\.activateRow\(\)/);
+  assert.match(functionBody(settledRow, "activateRow"), /settledList\.currentIndex = settledRow\.index[\s\S]*sessionList\.openRow\(settledRow\.modelData\)/, "the complete settled-session card activates from a normal tap");
+  assert.match(settledRow, /SelectableText\s*\{[\s\S]*text:\s*settledRow\.modelData\.title[\s\S]*onTapped:\s*settledRow\.activateRow\(\)/, "settled text taps share the row action without replacing native selection drags");
   assert.match(settledRow, /Layout\.preferredWidth:\s*86[\s\S]*implicitWidth:\s*86[\s\S]*"Restore"/, "Restore reserves enough width for its full label");
   assert.doesNotMatch(settledRow, /statusFor|shortPath|messageCount|statusKind|\.cwd\b/, "settled rows do not repeat status details or folder paths");
   for (const signal of ["settleAllRequested()", "closeRequested(string tabId)", "newTabRequested()", "openDirectoryRequested()"] ) {
@@ -318,7 +319,7 @@ test("open session rows and tab controls present backend-owned activity states w
   assert.match(tabItem, /readonly property string activityState:\s*strip\.activityStateFor\(modelData\)/);
   assert.match(tabItem, /Accessible\.name:[\s\S]*activityState[\s\S]*conditionText/, "tab accessibility includes activity and orthogonal conditions");
   assert.match(tabItem, /ToolTip\.text:\s*strip\.tooltipDescription\(modelData\)/, "tab tooltips include activity and orthogonal conditions");
-  assert.match(tabItem, /Label\s*\{[\s\S]*text:\s*tabItem\.activityState/, "tab controls visibly show the lowercase activity label");
+  assert.match(tabItem, /SelectableText\s*\{[\s\S]*text:\s*tabItem\.activityState/, "tab controls visibly show the lowercase activity label");
   const tabPunctuation = objectBodyContaining(tabItem, "Rectangle", "width: 8");
   assert.match(tabPunctuation, /statusKind === "error" \? strip\.theme\.destructive/, "tab errors retain destructive precedence");
   for (const [state, token] of [["blocked", "warning"], ["working", "runningForeground"], ["done", "readyForeground"]]) {
@@ -371,13 +372,13 @@ test("composer burger menu exposes secondary actions without duplicating visible
   assert.match(composerMenuButton, /accessibleDescription:\s*"Resources, saved prompt sequences, automatic settlement, display settings, events, and diagnostics"/);
   assert.match(composerMenuButton, /Layout\.alignment:\s*Qt\.AlignRight \| Qt\.AlignTop/);
   assert.doesNotMatch(responseControls, /Layout\.rightMargin/, "the burger button should align with the prompt's full right edge");
-  assert(responseControls.indexOf("id: composerMenuButton") > responseControls.indexOf('text: bridge.compactTranscript ? "Compact" : "Detailed"'), "the burger menu should be the rightmost response control");
+  assert(responseControls.indexOf("id: composerMenuButton") > responseControls.indexOf("id: statusButton"), "the burger menu should be the rightmost response control");
   assert.doesNotMatch(responseControls, /id:\s*resourceProfilesButton|text:\s*bridge\.resourceLoading \? "Resources…" : "Resources"/, "Resources should live in the menu instead of a standalone control");
   assert.doesNotMatch(composer, /id:\s*sequencesButton|signal\s+sequencesRequested/, "Sequences should live in the menu instead of a standalone composer control");
   for (const action of ["resource-profiles", "sequences", "toggle-thinking", "toggle-highlighting", "toggle-notifications", "cycle-appearance", "toggle-reduced-motion", "events", "diagnostics"]) {
     assert.match(menuItems, new RegExp(`value: "${action}"`), `secondary action ${action}`);
   }
-  for (const duplicate of ["compact-context", "toggle-compact", "choose-model", "choose-thinking", "search", "resume-session", "worktree", "restart"]) {
+  for (const duplicate of ["compact-context", "choose-model", "choose-thinking", "search", "resume-session", "worktree", "restart"]) {
     assert.doesNotMatch(menuItems, new RegExp(`value: "${duplicate}"`), `visible action ${duplicate} should not be duplicated`);
   }
   assert.match(shell, /DropUpPicker\s*\{[\s\S]*id:\s*composerMenuDropUpItem[\s\S]*anchorItem:\s*composerMenuButton[\s\S]*returnFocusItem:\s*composerMenuButton/);
@@ -784,8 +785,9 @@ test("untrusted content renders as plain or whitelisted styled text and links op
   for (const roleName of ["rowId", "messageId", "role", "kind", "text", "blocksJson", "truncated", "streaming", "modeLabel", "attachments", "toolName", "toolSummary", "toolStatus", "toolDurationMs", "toolOutput", "toolError"]) {
     assert.match(row, new RegExp(`required property \\w+ ${roleName}\\b`), `TranscriptRow should require ${roleName}`);
   }
-  const contextLabel = objectBodyContaining(shell, "Label", "text: bridge.displayCwd");
-  assert.match(contextLabel, /textFormat:\s*Text\.PlainText/);
+  const contextLabel = objectBodyContaining(shell, "SelectableText", "text: bridge.displayCwd");
+  assert.match(contextLabel, /theme:\s*appTheme/);
+  assert.match(selectableText, /textFormat:\s*TextEdit\.PlainText/);
   assert.match(functionBody(bridge, "handleExtensionStatus"), /indexOf\("cwd "\) === 0\) continue/, "the cd status repeats the header");
   assert.match(functionBody(bridge, "handleExtensionStatus"), /name\.indexOf\("git-footer"\) === 0 && name !== "git-footer-webui"\) continue/);
   assert.match(functionBody(bridge, "handleExtensionStatus"), /shownLabel/);
@@ -793,6 +795,50 @@ test("untrusted content renders as plain or whitelisted styled text and links op
   assert.match(toolCard, /TextEdit\s*\{[\s\S]*textFormat:\s*TextEdit\.PlainText/);
   assert.match(fixture, /toolName: "<b>read<\/b>"/);
   assert.match(fixture, /<script>alert\(1\)<\/script>/);
+});
+
+test("shared selectable text keeps one native PlainText selection layout", () => {
+  assert.match(selectableText, /^Item \{/m);
+  assert.match(selectableText, /property string text:\s*""/);
+  assert.match(selectableText, /TextEdit\s*\{[\s\S]*text:\s*root\.text[\s\S]*textFormat:\s*TextEdit\.PlainText[\s\S]*readOnly:\s*true/);
+  assert.match(selectableText, /selectByMouse:\s*true[\s\S]*selectByKeyboard:\s*true/);
+  assert.match(selectableText, /selectionColor:\s*root\.theme\.selection[\s\S]*selectedTextColor:\s*root\.theme\.selectionForeground/);
+  assert.match(selectableText, /clip:\s*true/);
+  assert.doesNotMatch(selectableText, /Label\s*\{/, "one editor owns both glyph and selection layout so selection cannot ghost a separately elided label");
+  assert.match(selectableText, /maximumLineCount > 0[\s\S]*Math\.min\(editor\.contentHeight, maximumLineCount \* oneLineHeight\)/, "wrapped fields bound their visible editor without changing its source");
+  assert.match(selectableText, /TapHandler\s*\{[\s\S]*gesturePolicy:\s*TapHandler\.DragThreshold[\s\S]*root\.tapped\(\)/, "text taps can share row actions without treating a drag as a click");
+  assert.doesNotMatch(selectableText, /RichText|MarkdownText|AutoText|Quickshell\.clipboardText|copyToClipboard/, "the shared surface never parses or writes text outside a user copy gesture");
+  for (const source of [shell, sessionList, statusOverlay, noticeBar, statusBadge, toolCard, emptyState, workingIndicator]) {
+    assert.match(source, /SelectableText\s*\{/, "readable main-window status, error, notice, heading, or detail text should use the shared surface");
+  }
+});
+
+test("dialogs and interactive rows use PlainText selection without accidental activation", () => {
+  for (const [name, source] of [["app dialog", appDialog], ["confirmation", confirmDialog], ["extension", extensionDialog], ["picker", pickerDialog], ["directory", directoryDialog], ["events", eventsDialog], ["resources", resourceProfilesDialog], ["sequences", sequencesDialog], ["text editor", textEditDialog], ["worktree", worktreeDialog], ["composer", composer], ["completion", completionPopup], ["drop-up", dropUpPicker], ["tabs", tabStrip]]) {
+    assert.match(source, /SelectableText\s*\{/, `${name} exposes its readable text through the shared PlainText selector`);
+    assert.doesNotMatch(source, /textFormat:\s*Text\.(RichText|StyledText|AutoText)/, `${name} does not widen its text format policy`);
+  }
+  assert.match(appDialog, /SelectableText\s*\{[\s\S]*text:\s*dialog\.title[\s\S]*wrapMode:\s*TextEdit\.Wrap[\s\S]*maximumLineCount:\s*3/, "dialog titles stay bounded while their source is selectable");
+  assert.match(appDialog, /text:\s*dialog\.message[\s\S]*TextEdit\.Wrap[\s\S]*maximumLineCount:\s*12/, "dialog explanations remain plain selectable text");
+  assert.match(linkDialog, /TextEdit\s*\{[\s\S]*textFormat:\s*TextEdit\.PlainText[\s\S]*readOnly:\s*true[\s\S]*selectByMouse:\s*true[\s\S]*selectByKeyboard:\s*true/, "link confirmation keeps its full address in a keyboard-copyable native PlainText editor");
+  assert.match(composer, /SelectableText\s*\{[\s\S]*chip\.modelData\.name[\s\S]*SelectableText\s*\{[\s\S]*composer\.sizeLabel/, "attachment names and metadata remain readable without changing Edit or Remove actions");
+
+  for (const [name, source, rowId, action] of [["completion", completionPopup, "entry", "popup.accepted"], ["drop-up", dropUpPicker, "optionRow", "popup.pickCurrent"], ["picker", pickerDialog, "optionRow", "dialog.pickCurrent"], ["extension", extensionDialog, "optionRow", "dialog.selectCurrent"], ["tabs", tabStrip, "tabItem", "strip.selectRequested"]]) {
+    const row = objectBodyWithId(source, "Rectangle", rowId);
+    assert.match(row, /function activateRow\(\)/, `${name} keeps normal row activation explicit`);
+    assert.match(row, new RegExp(action.replace(".", "\\.") + "\\("), `${name} retains its existing click action`);
+    assert.match(row, /TapHandler\s*\{[\s\S]*acceptedButtons:\s*Qt\.LeftButton[\s\S]*gesturePolicy:\s*TapHandler\.DragThreshold[\s\S]*onTapped:\s*\w+\.activateRow\(\)/, `${name} separates a tap from a selection drag`);
+    assert.match(row, /SelectableText\s*\{[\s\S]*onTapped:\s*\w+\.activateRow\(\)/, `${name} only activates on a text tap, never on a selection drag`);
+  }
+  for (const [name, source] of [["directory", directoryDialog], ["events", eventsDialog], ["sequences", sequencesDialog]]) {
+    assert.match(source, /TapHandler\s*\{[\s\S]*gesturePolicy:\s*TapHandler\.DragThreshold/, `${name} metadata rows preserve native drag selection`);
+  }
+  const directoryRow = objectBodyWithId(directoryDialog, "Rectangle", "entryRow");
+  assert.match(functionBody(directoryRow, "tapHitsText"), /entryLabel\.mapFromItem\(entryRow,[\s\S]*entryLabel\.contains/, "directory rows distinguish selectable text geometry from blank-card activation");
+  assert.match(directoryRow, /onDoubleTapped:\s*eventPoint\s*=>\s*\{[\s\S]*tapHitsText\(eventPoint\)\) return[\s\S]*dialog\.enterCurrent\(\)/, "directory double-click navigation remains available only outside selectable text");
+  assert.doesNotMatch(functionBody(composer, "acceptCompletion"), /trySend|sendRequested/, "completion acceptance still only edits the prompt");
+  assert.doesNotMatch(functionBody(pickerDialog, "moveSelection"), /pick/, "picker navigation stays non-selecting");
+  assert.doesNotMatch(functionBody(dropUpPicker, "moveSelection"), /pick/, "drop-up navigation stays non-selecting");
 });
 
 test("composer exposes send, a steer/follow-up toggle, abort, and restart with keyboard paths", () => {
@@ -964,7 +1010,7 @@ test("the palette, usage, events, and diagnostics stay keyboard-first, bounded, 
   assert.doesNotMatch(picked, /sendPrompt|trySend/, "the palette never sends a prompt");
   assert.match(picked, /kind === "skill"[\s\S]*confirmDialogItem\.present\(\{[\s\S]*action: "open-path"/, "skill files open only after confirmation");
   assert.match(functionBody(shell, "confirmAccepted"), /context\.action === "open-path"\) bridge\.openPath\(String\(context\.path\)\)/);
-  assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-compact": bridge\.updateSetting\("compactTranscript"/);
+  assert.doesNotMatch(shell, /toggle-compact|Ctrl\+Shift\+M/, "density switching is absent from the palette, menu, and shortcuts");
   assert.match(functionBody(shell, "runPaletteAction"), /case "cycle-appearance": return root\.cycleAppearanceMode\(\)/);
   assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-reduced-motion": bridge\.updateSetting\("reducedMotion"/);
   assert.match(functionBody(shell, "cycleAppearanceMode"), /\["automatic", "light", "dark"\]/);
@@ -1009,7 +1055,7 @@ test("session details stay collapsed behind a bounded complete status overlay", 
   assert.match(statusOverlay, /detailText:\s*String\(modelData\.title \|\| ""\)/);
   assert.match(statusOverlay, /String\(statusEntry\.modelData\.icon \|\| ""\)/);
   assert.match(statusOverlay, /color:\s*popup\.valueColor\(statusEntry\.tone\)/);
-  assert.match(statusOverlay, /wrapMode:\s*Text\.WrapAnywhere/);
+  assert.match(statusOverlay, /wrapMode:\s*TextEdit\.WrapAnywhere/);
   assert.doesNotMatch(statusOverlay, /\belide:/, "expanded status values and details remain fully readable");
   assert.match(functionBody(statusOverlay, "present"), /entryCount === 0[\s\S]*open\(\)[\s\S]*closeButton\.forceActiveFocus\(\)/);
   assert.match(statusOverlay, /onClosed:\s*if \(returnFocusItem\) returnFocusItem\.forceActiveFocus\(\)/);
@@ -1054,14 +1100,17 @@ test("controls carry accessible names, roles, and focus behavior", () => {
   assert.match(statusSegment, /readonly property real contentImplicitHeight:\s*childrenRect\.height/, "status flow derives its natural height from positioned entries");
   assert.match(statusSegment, /implicitWidth:\s*statusFlow\.contentImplicitWidth \+ theme\.spaceXl[\s\S]*implicitHeight:\s*statusFlow\.contentImplicitHeight \+ theme\.spaceMd/, "the frame consumes the flow's content dimensions instead of the read-only zero defaults");
   assert.match(statusSegment, /width:\s*Math\.min\(implicitWidth, statusFlow\.width\)/);
-  assert.match(statusSegment, /Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48[\s\S]*elide:\s*Text\.ElideRight/);
+  assert.match(statusSegment, /SelectableText\s*\{[\s\S]*Layout\.fillWidth:\s*true[\s\S]*Layout\.minimumWidth:\s*48/, "status values clip through the shared selectable text surface instead of eliding differently from selection");
   const responseControls = objectBodyContaining(shell, "RowLayout", "id: responseControls");
   assert.doesNotMatch(responseControls, /active:\s*bridge\.showThinking|updateSetting\("showThinking"/, "the visible thinking-section toggle leaves the response controls");
   assert.match(shell, /sequence:\s*"Ctrl\+T"[\s\S]*updateSetting\("showThinking"/, "the thinking visibility shortcut remains");
   assert.match(functionBody(shell, "runPaletteAction"), /case "toggle-thinking": bridge\.updateSetting\("showThinking"/, "the palette thinking visibility action remains");
   assert.match(shell, /showThinking:\s*bridge\.showThinking/, "transcript filtering remains wired");
-  assert.match(responseControls, /active:\s*bridge\.compactTranscript/);
-  assert.match(responseControls, /text:\s*bridge\.compactTranscript \? "Compact" : "Detailed"/);
+  assert.doesNotMatch(objectBodyWithId(shell, "RowLayout", "responseControls"), /compactTranscript|"Detailed"/, "the composer has no transcript density control");
+  assert.match(bridge, /readonly property bool compactTranscript:\s*true/, "compact layout is fixed");
+  assert.doesNotMatch(functionBody(bridge, "applySettings"), /compactTranscript/, "legacy saved density settings cannot restore detailed layout");
+  assert.match(shell, /spacing:\s*bridge\.compactTranscript \? 6 : 12/);
+  assert.match(shell, /compact:\s*bridge\.compactTranscript/, "transcript rows use the fixed compact layout");
   for (const [name, source] of [["composer", composer], ["searchBar", searchBar], ["toolCard", toolCard], ["row", row], ["statusBadge", statusBadge], ["noticeBar", noticeBar], ["emptyState", emptyState], ["blocks", blocks]]) {
     assert.match(source, /Accessible\.(role|name)/, `${name} should describe itself to assistive technology`);
   }

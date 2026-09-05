@@ -23,18 +23,17 @@ Rectangle {
 
     Behavior on color { ColorAnimation { duration: badge.theme.animationDuration } }
 
-    Label {
+    SelectableText {
         id: label
         anchors.centerIn: parent
+        theme: badge.theme
         text: badge.text
-        textFormat: Text.PlainText
         color: badge.theme.statusForeground(badge.kind)
         font.family: badge.theme.monospaceFamily
         font.pixelSize: badge.fontSize
         font.bold: true
         font.capitalization: Font.AllUppercase
         font.letterSpacing: badge.theme.labelTracking
-        elide: Text.ElideRight
         maximumLineCount: 1
     }
 }

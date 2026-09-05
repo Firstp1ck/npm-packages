@@ -123,11 +123,11 @@ AppDialog {
         onTextChanged: dialog.textFilter = text
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.count === 0
+        theme: dialog.theme
         text: dialog.bridge.noticeModel.count === 0 ? "No events yet" : "No events match the filter"
-        textFormat: Text.PlainText
         color: dialog.theme.muted
         font.pixelSize: 12
     }
@@ -182,22 +182,23 @@ AppDialog {
                     Layout.fillWidth: true
                     spacing: dialog.theme.spaceXxs
 
-                    Label {
+                    SelectableText {
                         Layout.fillWidth: true
+                        theme: dialog.theme
                         text: eventRow.modelData.message
-                        textFormat: Text.PlainText
-                        wrapMode: Text.Wrap
+                        wrapMode: TextEdit.Wrap
                         maximumLineCount: 4
-                        elide: Text.ElideRight
                         color: eventRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
                         font.pixelSize: dialog.theme.typeBody
+                        onTapped: eventList.currentIndex = eventRow.index
                     }
 
-                    Label {
+                    SelectableText {
+                        theme: dialog.theme
                         text: dialog.timeLabel(eventRow.modelData.at) + (eventRow.modelData.tab.length > 0 ? " · " + eventRow.modelData.tab : "") + (eventRow.modelData.count > 1 ? " · ×" + eventRow.modelData.count : "")
-                        textFormat: Text.PlainText
                         color: dialog.theme.muted
                         font.pixelSize: dialog.theme.typeCaption
+                        onTapped: eventList.currentIndex = eventRow.index
                     }
                 }
             }
@@ -209,6 +210,8 @@ AppDialog {
 
             TapHandler {
                 id: eventTap
+                acceptedButtons: Qt.LeftButton
+                gesturePolicy: TapHandler.DragThreshold
                 onTapped: eventList.currentIndex = eventRow.index
             }
         }
@@ -218,10 +221,10 @@ AppDialog {
         Layout.fillWidth: true
         spacing: 8
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.count + " of " + dialog.bridge.noticeModel.count + " events (last " + dialog.bridge.maxNotices + " are kept)"
-            textFormat: Text.PlainText
             color: dialog.theme.muted
             font.pixelSize: 11
         }

@@ -2113,7 +2113,26 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
     await gitInitialFetchPromise;
   };
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    if (
+      ctx.hasUI && (event.reason === "startup" || event.reason === "new") &&
+      ctx.model?.provider === "openai-codex" && ctx.modelRegistry.isUsingOAuth(ctx.model)
+    ) {
+      try {
+        // ExtensionContext exposes no live transport setting; use Pi's saved
+        // settings reader so defaults, agent directory, and project trust agree.
+        const { SettingsManager } = await import("@earendil-works/pi-coding-agent");
+        const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+        if (settings.drainErrors().length === 0 && settings.getTransport() === "auto") {
+          ctx.ui.notify(
+            "Codex subscription detected with Auto transport. To show weekly usage in the footer, select SSE transport in /settings, then send a model request.",
+            "warning",
+          );
+        }
+      } catch {
+        // An advisory settings check must not prevent the footer from starting.
+      }
+    }
     await reloadPersistedFooterVisibility();
     backgroundWorkEnabled = ctx.hasUI;
     if (!backgroundWorkEnabled) return;
@@ -2270,7 +2289,9 @@ export default function gitFooterStatus(pi: ExtensionAPI) {
                   Boolean(value),
                 )
                 .sort(([a], [b]) => a.localeCompare(b))
-                .map(([, value]) => value as string)
+                .map(([key, value]) => key === "codex-fast-mode" && (value === "on" || value === "off")
+                  ? `Codex fast: ${value}`
+                  : value as string)
             : [];
 
           const combinedStatusParts = [gitStatus, ...otherStatuses].filter(Boolean) as string[];

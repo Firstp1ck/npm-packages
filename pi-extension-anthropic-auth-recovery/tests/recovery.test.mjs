@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
+import anthropicSubscriptionAuthRecovery, {
   buildManualRecoveryCommand,
   buildPlanOnlyPrompt,
   buildRecoveryPiArgs,
@@ -58,6 +58,44 @@ test("startup compatibility warnings require an active Anthropic subscription lo
   assert.equal(shouldNotifyAnthropicCompatibility(summary, registry({ oauth: false })), false);
   assert.equal(shouldNotifyAnthropicCompatibility(summary, registry({ subscription: false })), false);
   assert.equal(shouldNotifyAnthropicCompatibility("native-tui: already-applied (0.85.0)", registry()), false);
+});
+
+test("startup hides the footer and skips discovery without Anthropic subscription auth", async () => {
+  const anthropic = { provider: "anthropic", id: "claude" };
+  for (const mode of ["tui", "rpc"]) {
+    for (const scenario of [
+      { available: [], configured: false, oauth: false, subscription: true },
+      { available: [{ provider: "openai-codex", id: "gpt" }], configured: true, oauth: true, subscription: true },
+      { available: [anthropic], configured: false, oauth: true, subscription: true },
+      { available: [anthropic], configured: true, oauth: false, subscription: true },
+      { available: [anthropic], configured: true, oauth: true, subscription: false },
+    ]) {
+      const handlers = new Map();
+      const commands = new Map();
+      const statuses = new Map([["anthropic-dist-compat", "stale unsupported-layout status"]]);
+      anthropicSubscriptionAuthRecovery({
+        on: (event, handler) => handlers.set(event, handler),
+        registerCommand: (name, command) => commands.set(name, command),
+      });
+      await handlers.get("session_start")({ reason: "reload" }, {
+        mode,
+        hasUI: true,
+        get cwd() { throw new Error("Logged-out startup must not discover patch resources"); },
+        modelRegistry: {
+          getAvailable: () => scenario.available,
+          hasConfiguredAuth: () => scenario.configured,
+          isUsingOAuth: () => scenario.oauth,
+          getProvider: () => ({ auth: { oauth: { isSubscription: scenario.subscription } } }),
+        },
+        ui: {
+          setStatus: (key, value) => statuses.set(key, value),
+          notify: () => assert.fail("Logged-out startup must not notify"),
+        },
+      });
+      assert.equal(statuses.get("anthropic-dist-compat"), undefined);
+      assert.equal(typeof commands.get("anthropic-auth-status")?.handler, "function");
+    }
+  }
 });
 
 test("error classifiers are provider-scoped, normalized, and stable", () => {

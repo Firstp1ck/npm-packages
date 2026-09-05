@@ -346,11 +346,12 @@ test("real Quickshell completes the deterministic backend and Pi behavior scenar
   t.diagnostic(`observed smoke markers: ${smokeMarkers.length}`);
   await assertCapture(workspace.capturePath);
   const settings = JSON.parse(await readFile(path.join(workspace.configHome, "qt-webui", "settings.json"), "utf8"));
-  assert.equal(settings.compactTranscript, false, "the compact setting was turned on in the settings phase and back off through the palette");
+  assert.equal(settings.compactTranscript, false, "the legacy density setting remains untouched while the UI uses compact layout");
+  assert.equal(settings.showThinking, true, "thinking was hidden in the settings phase and shown again through the palette");
   assert.equal(settings.appearanceMode, "light", "the typed built-in selection updated only Qt WebUI's built-in fallback mode");
   assert.equal(settings.selectedThemeName, "light", "the colliding external theme identity persisted separately from the built-in fallback");
   const state = JSON.parse(await readFile(path.join(workspace.temporary, "state", "qt-webui", "state.json"), "utf8"));
-  assert.deepEqual(state.recentActions, ["action:toggle-compact"]);
+  assert.deepEqual(state.recentActions, ["action:toggle-thinking"]);
   assert.equal(state.tabs.length, 1);
 });
 

@@ -94,10 +94,10 @@ AppDialog {
         Layout.fillWidth: true
         spacing: 8
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.failure || (dialog.overLimit ? "Text exceeds " + dialog.maxCharacters + " characters" : editor.text.length + " characters")
-            textFormat: Text.PlainText
             color: dialog.overLimit ? dialog.theme.destructive : dialog.theme.muted
             font.pixelSize: 11
         }

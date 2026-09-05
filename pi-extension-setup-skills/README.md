@@ -7,7 +7,7 @@ Choose which skills Pi can use for a session, by default, or with a specific mod
 ## What you can do
 
 - Lists installed skills, including skills disabled in Pi settings.
-- Shows each skill's discovery source and the selected skill's description.
+- Searches skill names first and sorts by status or discovery keywords.
 - Saves a selection for the current session branch.
 - Sets a global default or an exact provider/model profile.
 - Applies model profiles when the active model changes.
@@ -30,7 +30,9 @@ Run `/skills`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-The resource list has separate **Name**, **Discovery**, and **Status** columns. Discovery shows how Pi found the skill, such as `auto`, while Status shows `enabled` or `disabled`. The selected skill's description appears below the list. Type to search by name, discovery value, or description, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching skills, `Ctrl+A` to enable all matching skills, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+The resource list has separate **Name**, **Discovery**, and **Status** columns. Discovery shows how Pi found the skill, such as `auto`, while Status shows `enabled` or `disabled`. The selected skill's description appears below the list. Type to fuzzy-search by name, discovery value, or description. Name matches appear first, then source matches, then description matches. Use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching skills, `Ctrl+A` to enable all matching skills, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+
+To keep all skills visible but move a group to the top, enter `enabled` or `disabled` as the whole search. Enter `auto` or `Pi built-in` to put an exact Discovery value first. If no skill has that value, the list stays in its original order. In these sort-only modes, **Ctrl+A and Ctrl+X affect all skills**, not just the group at the top.
 
 ## Before you start
 

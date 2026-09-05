@@ -13,6 +13,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const settingsModuleUrl = new URL("core/settings-manager.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href;
 
 // Module-level constants in ../index.ts read these at import time.
 process.env.PI_GIT_FOOTER_AUTO_REFRESH_MS = "0";
@@ -28,11 +33,15 @@ const envFlag = (name, fallback) => {
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === "@earendil-works/pi-coding-agent") return { url: "virtual:pi-coding-agent", shortCircuit: true };
     if (specifier === "@firstpick/pi-utils") return { url: "virtual:pi-utils", shortCircuit: true };
     if (specifier === "@earendil-works/pi-tui") return { url: "virtual:pi-tui", shortCircuit: true };
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
+    if (url === "virtual:pi-coding-agent") {
+      return { format: "module", shortCircuit: true, source: `export { SettingsManager } from ${JSON.stringify(settingsModuleUrl)};` };
+    }
     if (url === "virtual:pi-utils") {
       return {
         format: "module",
@@ -91,6 +100,8 @@ const createHarness = () => {
   const state = {
     model: { id: "gpt-5.5", provider: "openai-codex", contextWindow: 272000, reasoning: true },
     usingOAuth: true,
+    projectTrusted: true,
+    notifications: [],
     setStatusCalls: [],
     footerFactory: null,
   };
@@ -109,7 +120,7 @@ const createHarness = () => {
   const ui = {
     setStatus: (key, value) => state.setStatusCalls.push([key, value]),
     setFooter: (factory) => { state.footerFactory = factory; },
-    notify: () => {},
+    notify: (message, level) => state.notifications.push({ message, level }),
     theme: { fg: (_tone, text) => text, bold: (text) => text },
   };
   const sessionManager = {
@@ -123,6 +134,7 @@ const createHarness = () => {
     ui,
     sessionManager,
     modelRegistry: { isUsingOAuth: () => state.usingOAuth },
+    isProjectTrusted: () => state.projectTrusted,
     getContextUsage: () => null,
   };
   Object.defineProperty(ctx, "model", { get: () => state.model });
@@ -161,6 +173,75 @@ const startSession = async (harness) => {
   await harness.emit("session_start", {});
 };
 
+test("Codex Auto startup warning respects saved settings, auth, UI, and lifecycle", async (t) => {
+  const cases = [
+    { name: "default Auto on startup", warn: true },
+    { name: "explicit Auto on new session", global: { transport: "auto" }, reason: "new", warn: true },
+    { name: "SSE", global: { transport: "sse" } },
+    { name: "WebSocket", global: { transport: "websocket" } },
+    { name: "cached WebSocket", global: { transport: "websocket-cached" } },
+    { name: "trusted project SSE overrides global Auto", global: { transport: "auto" }, project: { transport: "sse" } },
+    { name: "trusted project Auto overrides global SSE", global: { transport: "sse" }, project: { transport: "auto" }, warn: true },
+    { name: "untrusted project ignored", global: { transport: "auto" }, project: { transport: "sse" }, trusted: false, warn: true },
+    { name: "malformed global settings", rawGlobal: "{" },
+    { name: "malformed trusted project", global: { transport: "auto" }, rawProject: "{" },
+    { name: "non-OAuth Codex", oauth: false },
+    { name: "other provider", provider: "anthropic" },
+    { name: "no active model", noModel: true },
+    { name: "no UI", hasUI: false },
+    { name: "reload", reason: "reload" },
+    { name: "resume", reason: "resume" },
+    { name: "fork", reason: "fork" },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const root = await mkdtemp(join(tmpdir(), "git-footer-transport-"));
+      const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+      const harness = createHarness();
+      const files = [];
+      try {
+        const agentDir = join(root, "agent");
+        const cwd = join(root, "project");
+        await mkdir(agentDir);
+        await mkdir(join(cwd, ".pi"), { recursive: true });
+        process.env.PI_CODING_AGENT_DIR = agentDir;
+        for (const [path, value, raw] of [
+          [join(agentDir, "settings.json"), scenario.global, scenario.rawGlobal],
+          [join(cwd, ".pi", "settings.json"), scenario.project, scenario.rawProject],
+        ]) {
+          if (value === undefined && raw === undefined) continue;
+          const contents = raw ?? JSON.stringify(value);
+          await writeFile(path, contents);
+          files.push([path, contents]);
+        }
+        harness.ctx.cwd = cwd;
+        harness.ctx.hasUI = scenario.hasUI ?? true;
+        harness.state.usingOAuth = scenario.oauth ?? true;
+        harness.state.projectTrusted = scenario.trusted ?? true;
+        if (scenario.noModel) harness.state.model = undefined;
+        else harness.state.model.provider = scenario.provider ?? "openai-codex";
+        gitFooterStatus(harness.pi);
+        await harness.emit("session_start", { reason: scenario.reason ?? "startup" });
+        assert.equal(harness.state.notifications.length, scenario.warn ? 1 : 0);
+        if (scenario.warn) {
+          assert.equal(harness.state.notifications[0].level, "warning");
+          assert.match(harness.state.notifications[0].message, /weekly usage.*select SSE transport in \/settings/);
+          await harness.emit("model_select", {});
+          await harness.emit("after_provider_response", { status: 200, headers: {} });
+          assert.equal(harness.state.notifications.length, 1, "no repeated warnings during requests or model changes");
+        }
+        if (harness.ctx.hasUI) assert.ok(harness.state.footerFactory, "settings failures must not block footer startup");
+        for (const [path, contents] of files) assert.equal(await readFile(path, "utf8"), contents);
+      } finally {
+        await harness.emit("session_shutdown", {});
+        if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+        else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 const CODEX_HEADERS = {
   "x-codex-primary-used-percent": "29",
   "x-codex-primary-window-minutes": "10080",
@@ -191,6 +272,32 @@ test("native footer suppresses the cd extension's duplicate cwd status", async (
   assert.match(lines, /Fast-mode: off/u, "unrelated extension statuses must remain visible");
 
   await harness.emit("session_shutdown", {});
+});
+
+test("native footer labels bare Codex fast-mode states without changing status data", async () => {
+  const harness = createHarness();
+  await startSession(harness);
+
+  try {
+    for (const value of ["off", "on"]) {
+      const statuses = new Map([
+        ["codex-fast-mode", value],
+        ["other-extension", "Other status"],
+      ]);
+      const lines = nativeLines(harness.state, harness.ctx, statuses).join("\n");
+      assert.ok(lines.includes(`Codex fast: ${value}`));
+      assert.ok(lines.includes("Other status"));
+      assert.equal(statuses.get("codex-fast-mode"), value);
+    }
+
+    const labeled = nativeLines(harness.state, harness.ctx, new Map([
+      ["codex-fast-mode", "Fast-mode: off"],
+    ])).join("\n");
+    assert.ok(labeled.includes("Fast-mode: off"));
+    assert.ok(!labeled.includes("Codex fast: Fast-mode:"));
+  } finally {
+    await harness.emit("session_shutdown", {});
+  }
 });
 
 test("openai-codex: captures usage and renders native segment and WebUI Usage chip", async () => {

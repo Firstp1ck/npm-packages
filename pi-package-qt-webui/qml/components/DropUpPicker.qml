@@ -282,27 +282,25 @@ Popup {
         Accessible.role: Accessible.Dialog
         Accessible.name: popup.title
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: popup.theme
             text: popup.title
-            textFormat: Text.PlainText
             color: popup.theme.heading
             font.pixelSize: popup.theme.typeBody + 1
             font.bold: true
-            elide: Text.ElideRight
             Accessible.role: Accessible.Heading
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: popup.message.length > 0
+            theme: popup.theme
             text: popup.message
-            textFormat: Text.PlainText
             color: popup.theme.muted
             font.pixelSize: popup.theme.typeSmall
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             maximumLineCount: 2
-            elide: Text.ElideRight
         }
 
         TextField {
@@ -339,11 +337,11 @@ Popup {
             }
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: popup.visibleCount === 0
+            theme: popup.theme
             text: popup.items.length === 0 ? popup.emptyText : "No matches"
-            textFormat: Text.PlainText
             color: popup.theme.muted
             font.pixelSize: popup.theme.typeBody
         }
@@ -397,6 +395,11 @@ Popup {
                 Accessible.focusable: true
                 Accessible.selected: index === popup.currentIndex
 
+                function activateRow() {
+                    popup.currentIndex = optionRow.index
+                    popup.pickCurrent()
+                }
+
                 RowLayout {
                     anchors.fill: parent
                     anchors.margins: popup.theme.spaceSm
@@ -407,24 +410,24 @@ Popup {
                         Layout.fillWidth: true
                         spacing: popup.theme.spaceXxs / 2
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
+                            theme: popup.theme
                             text: String(optionRow.modelData.label || "")
-                            textFormat: Text.PlainText
-                            elide: Text.ElideMiddle
                             color: optionRow.selected ? popup.theme.selectionForeground : popup.theme.foreground
                             font.pixelSize: popup.theme.typeBody
                             font.bold: optionRow.current
+                            onTapped: optionRow.activateRow()
                         }
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
                             visible: String(optionRow.modelData.detail || "").length > 0
+                            theme: popup.theme
                             text: String(optionRow.modelData.detail || "")
-                            textFormat: Text.PlainText
-                            elide: Text.ElideRight
                             color: popup.theme.muted
                             font.pixelSize: popup.theme.typeCaption
+                            onTapped: optionRow.activateRow()
                         }
                     }
 
@@ -486,18 +489,19 @@ Popup {
 
                 TapHandler {
                     id: optionTap
-                    onTapped: popup.pickIndex(optionRow.index)
+                    acceptedButtons: Qt.LeftButton
+                    gesturePolicy: TapHandler.DragThreshold
+                    onTapped: optionRow.activateRow()
                 }
             }
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: popup.theme
             text: popup.visibleCount + " of " + popup.items.length + (popup.reorderable ? (popup.reorderEnabled ? " · Drag ≡ or Ctrl+Shift+↑/↓ to reorder" : " · Clear the filter to reorder") : "") + " · Enter or Space chooses · Escape closes"
-            textFormat: Text.PlainText
             color: popup.theme.muted
             font.pixelSize: popup.theme.typeCaption
-            elide: Text.ElideRight
         }
     }
 }

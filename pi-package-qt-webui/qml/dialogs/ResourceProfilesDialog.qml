@@ -302,9 +302,9 @@ AppDialog {
             }
         }
         Item { Layout.fillWidth: true }
-        Label {
+        SelectableText {
+            theme: dialog.theme
             text: dialog.scopeLabel(dialog.scope)
-            textFormat: Text.PlainText
             color: dialog.theme.muted
             font.pixelSize: 11
         }
@@ -321,13 +321,13 @@ AppDialog {
         Accessible.role: Accessible.AlertMessage
         Accessible.name: availabilityLabel.text
 
-        Label {
+        SelectableText {
             id: availabilityLabel
             anchors.fill: parent
             anchors.margins: 8
+            theme: dialog.theme
             text: dialog.bridge.active ? "Pi is working. Resource controls stay disabled until the run ends." : dialog.unavailableMessage
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             color: dialog.theme.warningPanelForeground
             font.pixelSize: 12
         }
@@ -344,13 +344,13 @@ AppDialog {
         Accessible.role: Accessible.AlertMessage
         Accessible.name: durabilityLabel.text
 
-        Label {
+        SelectableText {
             id: durabilityLabel
             anchors.fill: parent
             anchors.margins: 8
+            theme: dialog.theme
             text: dialog.sessionDurabilityReason + " Changes apply now, but they are not saved durably."
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             color: dialog.theme.warningPanelForeground
             font.pixelSize: 12
         }
@@ -361,13 +361,12 @@ AppDialog {
         visible: dialog.available && dialog.section !== "sampling"
         spacing: 6
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: "Effective " + dialog.section + ": " + dialog.listSummary(dialog.effectiveList(dialog.section)) + " · source: " + dialog.effectiveSource(dialog.section)
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             maximumLineCount: 3
-            elide: Text.ElideRight
             color: dialog.theme.foreground
             font.pixelSize: 12
             Accessible.role: Accessible.StaticText
@@ -394,10 +393,10 @@ AppDialog {
                 enabled: dialog.controlsEnabled
                 onClicked: dialog.chooseNone()
             }
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
+                theme: dialog.theme
                 text: dialog.listMode === "inherit" ? "Stored here: inherit" : dialog.listDraft.length === 0 ? "Stored here: intentionally none" : "Stored here: " + dialog.listDraft.length + " enabled"
-                textFormat: Text.PlainText
                 color: dialog.theme.muted
                 font.pixelSize: 11
             }
@@ -438,10 +437,10 @@ AppDialog {
             }
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.visibleCount + " available (maximum " + dialog.bridge.maxResourceNames + ")"
-            textFormat: Text.PlainText
             color: dialog.theme.muted
             font.pixelSize: 10
         }
@@ -452,11 +451,11 @@ AppDialog {
         visible: dialog.available && dialog.section === "sampling"
         spacing: 5
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: "Blank values inherit. Unsupported stored values remain saved but are not sent to the provider."
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             color: dialog.theme.foreground
             font.pixelSize: 12
         }
@@ -473,10 +472,10 @@ AppDialog {
                 Accessible.role: Accessible.Grouping
                 Accessible.name: range.label + (supported ? "" : ", unavailable: " + dialog.samplingReason(modelData))
 
-                Label {
+                SelectableText {
                     Layout.preferredWidth: 130
+                    theme: dialog.theme
                     text: samplingRow.range.label
-                    textFormat: Text.PlainText
                     color: samplingRow.supported ? dialog.theme.foreground : dialog.theme.disabledForeground
                     font.pixelSize: 12
                 }
@@ -503,8 +502,9 @@ AppDialog {
                     }
                 }
 
-                Label {
+                SelectableText {
                     Layout.fillWidth: true
+                    theme: dialog.theme
                     text: {
                         const effective = dialog.samplingEffective(samplingRow.modelData)
                         const value = effective === undefined ? "Pi default" : String(effective)
@@ -513,10 +513,8 @@ AppDialog {
                         return "Effective " + value + " · source: " + dialog.samplingSource(samplingRow.modelData) + preserved
                             + (samplingRow.supported ? "" : " · " + dialog.samplingReason(samplingRow.modelData))
                     }
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
+                    wrapMode: TextEdit.Wrap
                     maximumLineCount: 3
-                    elide: Text.ElideRight
                     color: samplingRow.supported ? dialog.theme.muted : dialog.theme.warningPanelForeground
                     font.pixelSize: 10
                     Accessible.role: Accessible.StaticText
@@ -524,11 +522,11 @@ AppDialog {
             }
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: !dialog.samplingDraftValid
+            theme: dialog.theme
             text: dialog.samplingProblem()
-            textFormat: Text.PlainText
             color: dialog.theme.destructive
             font.pixelSize: 11
             Accessible.role: Accessible.AlertMessage

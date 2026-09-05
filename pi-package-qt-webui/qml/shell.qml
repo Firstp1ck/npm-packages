@@ -127,7 +127,7 @@ ShellRoot {
             ["new-tab", "New tab in this folder", "Ctrl+N"], ["open-folder", "Open a folder in a new tab", "Ctrl+O"], ["close-tab", "Close this tab", "Ctrl+W"], ["rename-tab", "Rename this tab", "F2"],
             ["resume-session", "Resume a saved session", "Ctrl+Shift+O"], ["new-session", "Start a new session", "Ctrl+Shift+N"], ["worktree", "Create a Git worktree", "Ctrl+Shift+B"],
             ["attach", "Attach files", "Ctrl+Shift+A"], ["sequences", "Saved prompt sequences", "Ctrl+Shift+S"], ["search", "Search the transcript", "Ctrl+F"],
-            ["toggle-thinking", (bridge.showThinking ? "Hide" : "Show") + " thinking sections", "Ctrl+T"], ["toggle-compact", bridge.compactTranscript ? "Use comfortable rows" : "Use compact rows", "Ctrl+Shift+M"],
+            ["toggle-thinking", (bridge.showThinking ? "Hide" : "Show") + " thinking sections", "Ctrl+T"],
             ["toggle-highlighting", bridge.syntaxHighlighting ? "Turn off syntax highlighting" : "Turn on syntax highlighting", ""], ["toggle-notifications", bridge.desktopNotifications ? "Turn off desktop notifications" : "Turn on desktop notifications", ""],
             ["choose-theme", "Theme: " + root.themeSelectionLabel(), ""], ["cycle-appearance", "Appearance: " + root.appearanceModeLabel(), ""], ["toggle-reduced-motion", bridge.reducedMotion ? "Use standard motion" : "Reduce motion", ""],
             ["session-settle-days", "Automatic settlement: " + bridge.sessionSettleDays + " days", ""],
@@ -274,7 +274,6 @@ ShellRoot {
         case "sequences": return root.openSequences()
         case "search": root.openSearch(); return true
         case "toggle-thinking": bridge.updateSetting("showThinking", !bridge.showThinking); return true
-        case "toggle-compact": bridge.updateSetting("compactTranscript", !bridge.compactTranscript); return true
         case "toggle-highlighting": bridge.updateSetting("syntaxHighlighting", !bridge.syntaxHighlighting); return true
         case "toggle-notifications": bridge.updateSetting("desktopNotifications", !bridge.desktopNotifications); return true
         case "choose-theme": return root.openThemePicker()
@@ -945,10 +944,6 @@ ShellRoot {
                 onActivated: bridge.updateSetting("showThinking", !bridge.showThinking)
             }
             Shortcut {
-                sequence: "Ctrl+Shift+M"
-                onActivated: bridge.updateSetting("compactTranscript", !bridge.compactTranscript)
-            }
-            Shortcut {
                 sequence: "Ctrl+Shift+X"
                 onActivated: bridge.abortRun()
             }
@@ -1082,8 +1077,14 @@ ShellRoot {
                 function onDraftKeyChanged() {
                     root.handleDraftKeyChanged()
                 }
-                function onTabSwitching() { root.beginDraftReplacement() }
-                function onSessionReplacing() { root.beginDraftReplacement() }
+                function onTabSwitching() {
+                    transcriptAutoScroll.stop()
+                    root.beginDraftReplacement()
+                }
+                function onSessionReplacing() {
+                    transcriptAutoScroll.stop()
+                    root.beginDraftReplacement()
+                }
                 function onSessionReplaced() { root.commitDraftReplacement() }
                 function onTabSwitched(tabId) {
                     root.invalidateComposerPickers()
@@ -1197,15 +1198,14 @@ ShellRoot {
                                 Accessible.name: "Qt WebUI identity mark"
                             }
 
-                            Label {
+                            SelectableText {
                                 Layout.fillWidth: true
+                                theme: appTheme
                                 text: "Qt WebUI"
-                                textFormat: Text.PlainText
                                 color: appTheme.heading
                                 font.family: appTheme.monospaceFamily
                                 font.pixelSize: appTheme.typeHeading
                                 font.bold: true
-                                elide: Text.ElideRight
                                 Accessible.role: Accessible.Heading
                             }
 
@@ -1218,10 +1218,10 @@ ShellRoot {
                             }
                         }
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
+                            theme: appTheme
                             text: "WORKSPACES"
-                            textFormat: Text.PlainText
                             color: appTheme.muted
                             font.family: appTheme.monospaceFamily
                             font.pixelSize: appTheme.typeCaption
@@ -1243,6 +1243,7 @@ ShellRoot {
                             homeDirectory: bridge.homeDirectory
                             loading: bridge.sessionCatalogLoading
                             errorText: bridge.sessionCatalogError
+                            warningText: bridge.sessionCatalogWarning
                             onSessionRequested: session => root.openCatalogSession(session)
                             onSettlementRequested: (sessionPath, settled) => bridge.setSessionSettled(sessionPath, settled)
                             onSettleAllRequested: bridge.settleAllSessions()
@@ -1356,24 +1357,22 @@ ShellRoot {
                                 Layout.fillWidth: true
                                 spacing: 1
 
-                                Label {
+                                SelectableText {
                                     Layout.fillWidth: true
+                                    theme: appTheme
                                     text: bridge.sessionName
-                                    textFormat: Text.PlainText
                                     color: appTheme.heading
                                     font.family: appTheme.monospaceFamily
                                     font.pixelSize: appTheme.typeTitle
                                     font.bold: true
-                                    elide: Text.ElideRight
                                     Accessible.role: Accessible.Heading
                                 }
 
-                                Label {
+                                SelectableText {
                                     Layout.fillWidth: true
+                                    theme: appTheme
                                     text: bridge.displayCwd
-                                    textFormat: Text.PlainText
                                     color: appTheme.muted
-                                    elide: Text.ElideMiddle
                                     font.family: appTheme.monospaceFamily
                                     font.pixelSize: appTheme.typeSmall
                                     Accessible.role: Accessible.StaticText
@@ -1418,14 +1417,14 @@ ShellRoot {
                                     Accessible.role: Accessible.AlertMessage
                                     Accessible.name: "Error: " + bridge.visibleError
 
-                                    Label {
+                                    SelectableText {
                                         id: errorLabel
                                         anchors.fill: parent
                                         anchors.margins: 10
+                                        theme: appTheme
                                         text: bridge.visibleError
                                         color: appTheme.errorPanelForeground
-                                        wrapMode: Text.Wrap
-                                        textFormat: Text.PlainText
+                                        wrapMode: TextEdit.Wrap
                                         font.pixelSize: 12
                                     }
                                 }
@@ -1463,26 +1462,73 @@ ShellRoot {
                                         boundsBehavior: Flickable.StopAtBounds
                                         cacheBuffer: 400
                                         property bool followOutput: true
-                                        property bool positioning: false
                                         Accessible.role: Accessible.List
                                         Accessible.name: "Conversation transcript"
 
                                         ScrollBar.vertical: ScrollBar {
+                                            id: transcriptScrollBar
                                             policy: ScrollBar.AsNeeded
+                                            onPressedChanged: {
+                                                if (pressed) transcriptList.followOutput = false
+                                                else transcriptList.resumeFollowingAtEnd()
+                                            }
+                                        }
+
+                                        WheelHandler {
+                                            target: null
+                                            blocking: true
+                                            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                                            onWheel: event => {
+                                                event.accepted = transcriptList.scrollWheel(event.angleDelta.y, event.pixelDelta.y)
+                                            }
+                                        }
+
+                                        TranscriptAutoScroll {
+                                            id: transcriptAutoScroll
+                                            parent: transcriptList
+                                            view: transcriptList
+                                            theme: appTheme
+                                        }
+
+                                        function scrollWheel(angleDelta, pixelDelta) {
+                                            if (angleDelta === 0 && pixelDelta === 0) return false
+                                            transcriptAutoScroll.stop()
+                                            cancelFlick()
+                                            followOutput = false
+                                            // Qt's wheel baseline is 24 pixels per configured scroll line.
+                                            const distance = pixelDelta !== 0 ? pixelDelta : angleDelta / 120 * Qt.styleHints.wheelScrollLines * 24
+                                            scrollByPixels(-distance * 2)
+                                            Qt.callLater(resumeFollowingAtEnd)
+                                            return true
+                                        }
+
+                                        function scrollByPixels(delta) {
+                                            const nextY = contentY + delta
+                                            const bottom = originY + Math.max(0, contentHeight - height)
+                                            if (nextY <= originY) positionViewAtBeginning()
+                                            else if (nextY >= bottom) positionViewAtEnd()
+                                            else contentY = nextY
                                         }
 
                                         function followToEnd() {
-                                            positioning = true
+                                            // A queued layout callback must not undo a later scroll gesture.
+                                            if (!followOutput || moving || transcriptScrollBar.pressed || transcriptAutoScroll.scrolling) return
                                             positionViewAtEnd()
-                                            positioning = false
+                                        }
+
+                                        function resumeFollowingAtEnd() {
+                                            if (!moving && !transcriptScrollBar.pressed && !transcriptAutoScroll.scrolling && atYEnd) followOutput = true
                                         }
 
                                         function jumpToLatest() {
+                                            transcriptAutoScroll.stop()
+                                            cancelFlick()
                                             followOutput = true
                                             followToEnd()
                                         }
 
-                                        onContentYChanged: if (!positioning) followOutput = contentHeight - (contentY + height) < 48
+                                        onMovementStarted: followOutput = false
+                                        onMovementEnded: resumeFollowingAtEnd()
                                         onContentHeightChanged: if (followOutput) Qt.callLater(followToEnd)
                                         onCountChanged: if (followOutput) Qt.callLater(followToEnd)
 
@@ -1546,17 +1592,16 @@ ShellRoot {
                                     Accessible.role: Accessible.StaticText
                                     Accessible.name: queueLabel.text
 
-                                    Label {
+                                    SelectableText {
                                         id: queueLabel
                                         anchors.fill: parent
                                         anchors.margins: 8
+                                        theme: appTheme
                                         text: (bridge.steeringQueue.length > 0 ? "Steering queued: " + bridge.steeringQueue.join(" · ") : "")
                                             + (bridge.steeringQueue.length > 0 && bridge.followUpQueue.length > 0 ? "\n" : "")
                                             + (bridge.followUpQueue.length > 0 ? "Follow-up queued: " + bridge.followUpQueue.join(" · ") : "")
-                                        textFormat: Text.PlainText
-                                        wrapMode: Text.Wrap
+                                        wrapMode: TextEdit.Wrap
                                         maximumLineCount: 4
-                                        elide: Text.ElideRight
                                         color: appTheme.muted
                                         font.pixelSize: 12
                                     }
@@ -1654,19 +1699,6 @@ ShellRoot {
                                         leftPadding: 8
                                         rightPadding: 8
                                         onClicked: root.compactContext()
-                                    }
-
-                                    AppButton {
-                                        theme: appTheme
-                                        variant: "ghost"
-                                        active: bridge.compactTranscript
-                                        text: bridge.compactTranscript ? "Compact" : "Detailed"
-                                        accessibleName: bridge.compactTranscript ? "Use comfortable transcript rows" : "Use compact transcript rows"
-                                        accessibleDescription: "Ctrl+Shift+M"
-                                        padding: 4
-                                        leftPadding: 8
-                                        rightPadding: 8
-                                        onClicked: bridge.updateSetting("compactTranscript", !bridge.compactTranscript)
                                     }
 
                                     AppButton {

@@ -4,13 +4,13 @@ Use Pi in a Linux desktop window built with Quickshell and Qt Quick.
 
 ## What you can do
 
-- Keep your prompt text until acceptance, and read assistant answers as they stream. Drag to select transcript text, including syntax-highlighted code; Markdown still renders headings, lists, tables, quotes, and links.
+- Keep your prompt text until acceptance, and read assistant answers as they stream. Drag to select readable text in transcripts, dialogs, paths, status details, and row metadata, including syntax-highlighted code; Markdown still renders headings, lists, tables, quotes, and links.
 - Attach text files and images to a prompt, complete `/` commands and `@` workspace paths while typing, keep an unsent draft per session, and save prompt sequences you run again later.
-- See what Pi is doing: thinking sections you can show or hide, and a card for every tool call with its status, duration, and output.
+- See what Pi is doing: thinking sections you can show or hide, and a single-line row for every tool call with muted argument details beside its name, status, duration, an expand arrow, and a copy-output icon.
 - Answer questions from Pi extensions in native dialogs: pick an option, confirm, type a value, or edit text.
 - Steer a running task, queue a follow-up, or abort it; restart Pi or the local backend after a failure.
 - Work in a focused violet-charcoal or light counterpart layout with a resizable workspace rail, a readable centered conversation, and a clearly framed prompt editor.
-- Search the transcript, copy any message, return to new output with **Latest**, and switch between Detailed and Compact transcript rows.
+- Search the compact transcript, use browser-style middle-click autoscroll, copy any message, and return to new output with **Latest**.
 - Get a desktop notification naming the relevant **Working** session when it finishes or Pi needs input; **Settled** sessions stay quiet until restored.
 - See the active provider, model ID, and thinking effort beside the prompt. Open **Status** when you want the full Pi, Git, usage, and extension details.
 - Choose a model from Pi's current scoped-model list, drag explicitly scoped models into a preferred order that persists across restarts, and set thinking effort from drop-ups above the prompt control strip; configure tool, skill, and sampling profiles or compact long conversations from the same strip.
@@ -58,9 +58,15 @@ By default, Qt WebUI also settles closed sessions after 30 days without activity
 
 Open **More options** and choose **Theme** to use Automatic, Light, Dark, or a Pi JSON theme from your normal Pi theme locations and installed packages. For example, themes from `@firstpick/pi-themes-bundle` appear after that package is installed and enabled in Pi. If a saved theme disappears or becomes invalid, Qt WebUI uses your last built-in appearance and retries the saved choice when the theme returns.
 
-Drag the rail's right edge to resize it, or focus that edge with `Tab` and press `Shift+Left` / `Shift+Right`. The rail can use the available window width instead of stopping at a fixed maximum. If you scroll up in a transcript, use **Latest** to return to the newest output and follow new messages again. Then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). The prompt control defaults to **Steer mode**. Switch it to **Follow-up mode** when you want `Enter` and the nearby run action to queue the next prompt instead; `Alt+Enter` always queues a follow-up. The **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. The three-line **More options** menu below the prompt holds Resources, automatic settlement, display preferences, Events, and Diagnostics without crowding the main window. **Status** opens the Pi, Git, usage, and extension details above the control strip, so those rows do not occupy the window while you are writing or reading. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
+Drag the rail's right edge to resize it, or focus that edge with `Tab` and press `Shift+Left` / `Shift+Right`. The rail can use the available window width instead of stopping at a fixed maximum. Middle-click the transcript to start autoscrolling. Move the pointer above or below the starting marker to scroll up or down; moving farther away increases the speed. Click again or press `Escape` to stop. If you scroll up in a transcript, use **Latest** to return to the newest output and follow new messages again. Then type in the prompt editor below the centered conversation and press `Enter` (`Shift+Enter` adds a new line). The prompt control defaults to **Steer mode**. Switch it to **Follow-up mode** when you want `Enter` and the nearby run action to queue the next prompt instead; `Alt+Enter` always queues a follow-up. The **Abort** button stops the run, and three animated dots under the last entry show that Pi is still working. The three-line **More options** menu below the prompt holds Resources, automatic settlement, display preferences, Events, and Diagnostics without crowding the main window. **Status** opens the Pi, Git, usage, and extension details above the control strip, so those rows do not occupy the window while you are writing or reading. When an extension asks a question, a dialog opens with the choices; `Escape` cancels it.
+
+Tool calls start collapsed. Click **▸** to reveal the argument summary, errors, and output, or **⧉** to copy the available output without expanding. The copy icon is disabled until output arrives. Failed calls stay marked **Failed** even when collapsed.
 
 Your prompt stays in the editor until accepted. Rejection keeps it available to edit. If a submission times out, its outcome is unknown, so check the session before trying again. Extension answers stay open while submitting and after rejection; a timeout never resends an answer automatically.
+
+You can drag to select readable dialog text, paths, status values, and list metadata without choosing an option or opening a link. Buttons and other controls still act normally. A long selectable field may clip to fit its space; focus it and press `Ctrl+A`, then `Ctrl+C`, to copy its complete original text.
+
+If the workspace list is incomplete, a small warning icon appears beside **Search workspaces**. Hover over it or focus it with `Tab` to read the warning; it does not appear in your session.
 
 ## Main window
 
@@ -68,11 +74,12 @@ Your prompt stays in the editor until accepted. Rejection keeps it available to 
 
 The screenshot uses the package's deterministic fake-session environment; it contains no real project or conversation data.
 
+Tool rows show argument details, such as a file path or command, beside the tool name, ending with `...` when they do not fit. Widen the window to see more, or use **▸** to expand the summary and output.
+
 Useful shortcuts:
 
 - `Ctrl+F` searches the transcript; `Enter` and `Shift+Enter` move between matches.
 - `Ctrl+T` shows or hides thinking sections.
-- `Ctrl+Shift+M` switches between **Detailed** and **Compact** transcript rows.
 - `Ctrl+L` returns focus to the prompt.
 - `Ctrl+M` opens Pi's scoped-model list above the model control. When Pi supplies an explicit scope, drag the **≡** handle or press `Ctrl+Shift+Up` / `Ctrl+Shift+Down` to reorder it. `Ctrl+E` opens thinking effort; `Ctrl+Shift+P` and `Ctrl+Shift+E` cycle through the model and effort lists.
 - `Ctrl+Shift+R` opens **Resources** from the **More options** menu for enabled tools, enabled skills, and model-supported sampling values.

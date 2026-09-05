@@ -17,6 +17,7 @@ Rectangle {
     property string homeDirectory: ""
     property bool loading: false
     property string errorText: ""
+    property string warningText: ""
     property bool settledExpanded: true
     property double ageClockMs: Date.now()
     property var orderedSessions: []
@@ -44,6 +45,38 @@ Rectangle {
     radius: theme.radiusMedium
     Accessible.role: Accessible.Grouping
     Accessible.name: (searchActive ? "Filtered workspaces, " : "") + workingSessions.length + " working sessions and " + settledSessions.length + " settled sessions"
+
+    component WorkspaceScrollBar: ScrollBar {
+        id: bar
+        required property QtObject theme
+        policy: ScrollBar.AsNeeded
+        implicitWidth: theme.spaceXl
+        padding: theme.spaceXxs
+        minimumSize: Math.min(1, theme.space4Xl / Math.max(1, height))
+        contentItem: Rectangle {
+            implicitWidth: bar.theme.spaceMd
+            implicitHeight: bar.theme.space4Xl
+            radius: bar.theme.radiusSmall
+            color: !bar.enabled ? bar.theme.muted : bar.pressed ? bar.theme.foreground
+                : bar.hovered ? bar.theme.accentForeground : bar.theme.accent
+        }
+        background: Rectangle {
+            color: bar.theme.surfaceRaised
+        }
+    }
+
+    function scrollWorkspace(view, angleDelta, pixelDelta) {
+        if (angleDelta === 0 && pixelDelta === 0) return false
+        view.cancelFlick()
+        // Match the transcript's doubled Qt wheel baseline and native touchpad pixel units.
+        const distance = pixelDelta !== 0 ? pixelDelta : angleDelta / 120 * Qt.styleHints.wheelScrollLines * 24
+        const nextY = view.contentY - distance * 2
+        const bottom = view.originY + Math.max(0, view.contentHeight - view.height)
+        if (nextY <= view.originY) view.positionViewAtBeginning()
+        else if (nextY >= bottom) view.positionViewAtEnd()
+        else view.contentY = nextY
+        return true
+    }
 
     function titleFor(session) {
         if (session.name && String(session.name).length > 0) return String(session.name)
@@ -280,6 +313,32 @@ Rectangle {
             Layout.fillWidth: true
             spacing: sessionList.theme.spaceXs
 
+            AppButton {
+                id: catalogWarningIcon
+                objectName: "catalogWarningIcon"
+                visible: sessionList.warningText.length > 0
+                Layout.preferredWidth: sessionList.theme.space4Xl
+                implicitWidth: sessionList.theme.space4Xl
+                theme: sessionList.theme
+                variant: "ghost"
+                text: "⚠"
+                accessibleName: "Incomplete workspace list"
+                accessibleDescription: sessionList.warningText
+                padding: 0
+                contentItem: Label {
+                    text: catalogWarningIcon.text
+                    textFormat: Text.PlainText
+                    color: sessionList.theme.warning
+                    font.family: sessionList.theme.monospaceFamily
+                    font.pixelSize: sessionList.theme.typeBody
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                ToolTip.visible: visible && (hovered || activeFocus)
+                ToolTip.text: sessionList.warningText
+                ToolTip.delay: 400
+            }
+
             TextField {
                 id: workspaceSearchField
                 Layout.fillWidth: true
@@ -337,16 +396,15 @@ Rectangle {
             Layout.fillWidth: true
             spacing: sessionList.theme.spaceXs
 
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
+                theme: sessionList.theme
                 text: "WORKING  " + sessionList.workingSessions.length
-                textFormat: Text.PlainText
                 color: sessionList.theme.muted
                 font.family: sessionList.theme.monospaceFamily
                 font.pixelSize: sessionList.theme.typeCaption
                 font.bold: true
                 font.letterSpacing: sessionList.theme.labelTracking
-                elide: Text.ElideRight
                 Accessible.role: Accessible.Heading
             }
 
@@ -363,29 +421,28 @@ Rectangle {
             }
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: (sessionList.loading && sessionList.sessions.length === 0) || sessionList.errorText.length > 0
+            theme: sessionList.theme
             text: sessionList.loading ? "Loading saved sessions…" : sessionList.errorText
-            textFormat: Text.PlainText
             color: sessionList.errorText.length > 0 ? sessionList.theme.errorForeground : sessionList.theme.muted
             font.family: sessionList.theme.monospaceFamily
             font.pixelSize: sessionList.theme.typeCaption
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             maximumLineCount: 2
-            elide: Text.ElideRight
             Accessible.role: sessionList.errorText.length > 0 ? Accessible.AlertMessage : Accessible.StaticText
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: sessionList.searchActive && sessionList.workingSessions.length === 0 && sessionList.settledSessions.length === 0
+            theme: sessionList.theme
             text: "No matching workspaces"
-            textFormat: Text.PlainText
             color: sessionList.theme.muted
             font.family: sessionList.theme.monospaceFamily
             font.pixelSize: sessionList.theme.typeCaption
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             Accessible.role: Accessible.StaticText
         }
 
@@ -407,7 +464,16 @@ Rectangle {
             Keys.onEnterPressed: if (currentItem) sessionList.openRow(currentItem.modelData)
             Keys.onSpacePressed: if (currentItem) sessionList.openRow(currentItem.modelData)
 
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: WorkspaceScrollBar {
+                id: workingScrollBar
+                theme: sessionList.theme
+            }
+            WheelHandler {
+                target: null
+                blocking: true
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: event => { event.accepted = sessionList.scrollWorkspace(workingList, event.angleDelta.y, event.pixelDelta.y) }
+            }
 
             delegate: Rectangle {
                 id: workingRow
@@ -416,10 +482,10 @@ Rectangle {
                 readonly property bool keyboardCursor: index === workingList.currentIndex && workingList.activeFocus
                 readonly property string ageText: sessionList.sessionAgeLabel(modelData)
                 readonly property string conditionText: sessionList.conditionDescription(modelData)
-                width: workingList.width
+                width: workingList.width - (workingScrollBar.visible ? workingScrollBar.width + sessionList.theme.spaceXs : 0)
                 height: 66
                 radius: sessionList.theme.radiusSmall
-                color: sessionList.theme.interactiveFill(modelData.current, keyboardCursor || workingRowMouseArea.containsMouse, workingRowMouseArea.pressed)
+                color: sessionList.theme.interactiveFill(modelData.current, keyboardCursor || workingRowHover.hovered, workingRowTap.pressed)
                 border.width: sessionList.theme.focusBorderWidth
                 border.color: sessionList.theme.interactiveBorder(modelData.current, keyboardCursor)
                 Accessible.role: Accessible.ListItem
@@ -428,20 +494,25 @@ Rectangle {
                 Accessible.selected: modelData.current
                 Accessible.onPressAction: sessionList.openRow(modelData)
 
-                ToolTip.visible: modelData.open && workingRowMouseArea.containsMouse
+                ToolTip.visible: modelData.open && workingRowHover.hovered
                 ToolTip.text: sessionList.statusTooltip(modelData)
                 ToolTip.delay: 500
 
-                MouseArea {
-                    id: workingRowMouseArea
-                    anchors.fill: parent
-                    acceptedButtons: Qt.LeftButton
-                    hoverEnabled: true
+                function activateRow() {
+                    workingList.currentIndex = workingRow.index
+                    sessionList.openRow(workingRow.modelData)
+                }
+
+                HoverHandler {
+                    id: workingRowHover
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        workingList.currentIndex = workingRow.index
-                        sessionList.openRow(workingRow.modelData)
-                    }
+                }
+
+                TapHandler {
+                    id: workingRowTap
+                    acceptedButtons: Qt.LeftButton
+                    gesturePolicy: TapHandler.DragThreshold
+                    onTapped: workingRow.activateRow()
                 }
 
                 ColumnLayout {
@@ -453,25 +524,26 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: sessionList.theme.spaceXs
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
+                            theme: sessionList.theme
                             text: workingRow.modelData.title
-                            textFormat: Text.PlainText
                             color: sessionList.theme.foreground
                             font.family: sessionList.theme.monospaceFamily
                             font.pixelSize: sessionList.theme.typeBody
                             font.bold: workingRow.modelData.current
-                            elide: Text.ElideRight
+                            onTapped: workingRow.activateRow()
                         }
 
-                        Label {
+                        SelectableText {
                             visible: workingRow.ageText.length > 0
+                            theme: sessionList.theme
                             text: workingRow.ageText
-                            textFormat: Text.PlainText
                             color: sessionList.theme.muted
                             font.family: sessionList.theme.monospaceFamily
                             font.pixelSize: sessionList.theme.typeCaption
+                            onTapped: workingRow.activateRow()
                         }
                     }
 
@@ -490,14 +562,14 @@ Rectangle {
                                 : sessionList.theme.muted
                         }
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
+                            theme: sessionList.theme
                             text: sessionList.statusFor(workingRow.modelData)
-                            textFormat: Text.PlainText
                             color: sessionList.theme.muted
                             font.family: sessionList.theme.monospaceFamily
                             font.pixelSize: sessionList.theme.typeCaption
-                            elide: Text.ElideMiddle
+                            onTapped: workingRow.activateRow()
                         }
 
                         AppButton {
@@ -561,7 +633,16 @@ Rectangle {
             Keys.onEnterPressed: if (currentItem) sessionList.openRow(currentItem.modelData)
             Keys.onSpacePressed: if (currentItem) sessionList.openRow(currentItem.modelData)
 
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.vertical: WorkspaceScrollBar {
+                id: settledScrollBar
+                theme: sessionList.theme
+            }
+            WheelHandler {
+                target: null
+                blocking: true
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: event => { event.accepted = sessionList.scrollWorkspace(settledList, event.angleDelta.y, event.pixelDelta.y) }
+            }
 
             delegate: Rectangle {
                 id: settledRow
@@ -569,10 +650,10 @@ Rectangle {
                 required property var modelData
                 readonly property bool keyboardCursor: index === settledList.currentIndex && settledList.activeFocus
                 readonly property string ageText: sessionList.sessionAgeLabel(modelData)
-                width: settledList.width
+                width: settledList.width - (settledScrollBar.visible ? settledScrollBar.width + sessionList.theme.spaceXs : 0)
                 height: 42
                 radius: sessionList.theme.radiusSmall
-                color: sessionList.theme.interactiveFill(modelData.current, keyboardCursor || settledRowMouseArea.containsMouse, settledRowMouseArea.pressed)
+                color: sessionList.theme.interactiveFill(modelData.current, keyboardCursor || settledRowHover.hovered, settledRowTap.pressed)
                 border.width: sessionList.theme.focusBorderWidth
                 border.color: sessionList.theme.interactiveBorder(modelData.current, keyboardCursor)
                 Accessible.role: Accessible.ListItem
@@ -580,16 +661,21 @@ Rectangle {
                 Accessible.selected: modelData.current
                 Accessible.onPressAction: sessionList.openRow(modelData)
 
-                MouseArea {
-                    id: settledRowMouseArea
-                    anchors.fill: parent
-                    acceptedButtons: Qt.LeftButton
-                    hoverEnabled: true
+                function activateRow() {
+                    settledList.currentIndex = settledRow.index
+                    sessionList.openRow(settledRow.modelData)
+                }
+
+                HoverHandler {
+                    id: settledRowHover
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        settledList.currentIndex = settledRow.index
-                        sessionList.openRow(settledRow.modelData)
-                    }
+                }
+
+                TapHandler {
+                    id: settledRowTap
+                    acceptedButtons: Qt.LeftButton
+                    gesturePolicy: TapHandler.DragThreshold
+                    onTapped: settledRow.activateRow()
                 }
 
                 RowLayout {
@@ -598,23 +684,24 @@ Rectangle {
                     anchors.rightMargin: sessionList.theme.spaceXs
                     spacing: sessionList.theme.spaceXs
 
-                    Label {
+                    SelectableText {
                         Layout.fillWidth: true
+                        theme: sessionList.theme
                         text: settledRow.modelData.title
-                        textFormat: Text.PlainText
                         color: sessionList.theme.foreground
                         font.family: sessionList.theme.monospaceFamily
                         font.pixelSize: sessionList.theme.typeBody
-                        elide: Text.ElideRight
+                        onTapped: settledRow.activateRow()
                     }
 
-                    Label {
+                    SelectableText {
                         visible: settledRow.ageText.length > 0
+                        theme: sessionList.theme
                         text: settledRow.ageText
-                        textFormat: Text.PlainText
                         color: sessionList.theme.muted
                         font.family: sessionList.theme.monospaceFamily
                         font.pixelSize: sessionList.theme.typeCaption
+                        onTapped: settledRow.activateRow()
                     }
 
                     AppButton {

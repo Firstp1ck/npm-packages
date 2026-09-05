@@ -101,10 +101,10 @@ Popup {
                 Layout.fillWidth: true
                 spacing: popup.theme.spaceXxs
 
-                Label {
+                SelectableText {
                     Layout.fillWidth: true
+                    theme: popup.theme
                     text: "SESSION DETAILS"
-                    textFormat: Text.PlainText
                     color: popup.theme.heading
                     font.family: popup.theme.monospaceFamily
                     font.pixelSize: popup.theme.typeSubtitle
@@ -113,11 +113,11 @@ Popup {
                     Accessible.role: Accessible.Heading
                 }
 
-                Label {
+                SelectableText {
                     Layout.fillWidth: true
+                    theme: popup.theme
                     text: popup.groups.length + (popup.groups.length === 1 ? " group" : " groups") + " · "
                         + popup.entryCount + (popup.entryCount === 1 ? " entry" : " entries")
-                    textFormat: Text.PlainText
                     color: popup.theme.muted
                     font.family: popup.theme.monospaceFamily
                     font.pixelSize: popup.theme.typeCaption
@@ -165,10 +165,10 @@ Popup {
                         Layout.fillWidth: true
                         spacing: popup.theme.spaceSm
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
+                            theme: popup.theme
                             text: String(groupSection.modelData.name || "Status").toUpperCase()
-                            textFormat: Text.PlainText
                             color: popup.theme.accentForeground
                             font.family: popup.theme.monospaceFamily
                             font.pixelSize: popup.theme.typeCaption
@@ -237,42 +237,42 @@ Popup {
                                                     font.pixelSize: popup.theme.typeSmall
                                                 }
 
-                                                Label {
+                                                SelectableText {
                                                     visible: statusEntry.entryLabel.length > 0
                                                     Layout.preferredWidth: 104
                                                     Layout.maximumWidth: 144
+                                                    theme: popup.theme
                                                     text: statusEntry.entryLabel
-                                                    textFormat: Text.PlainText
                                                     color: popup.theme.muted
                                                     font.family: popup.theme.monospaceFamily
                                                     font.pixelSize: popup.theme.typeSmall
-                                                    wrapMode: Text.Wrap
+                                                    wrapMode: TextEdit.Wrap
                                                 }
 
-                                                Label {
+                                                SelectableText {
                                                     Layout.fillWidth: true
+                                                    theme: popup.theme
                                                     text: statusEntry.entryValue
-                                                    textFormat: Text.PlainText
                                                     color: popup.valueColor(statusEntry.tone)
                                                     font.family: popup.theme.monospaceFamily
                                                     font.pixelSize: popup.theme.typeSmall
                                                     font.bold: true
-                                                    wrapMode: Text.WrapAnywhere
-                                                    horizontalAlignment: Text.AlignRight
+                                                    wrapMode: TextEdit.WrapAnywhere
+                                                    horizontalAlignment: TextEdit.AlignRight
                                                 }
                                             }
 
-                                            Label {
+                                            SelectableText {
                                                 visible: statusEntry.detailText.length > 0
                                                 Layout.fillWidth: true
                                                 Layout.leftMargin: String(statusEntry.modelData.icon || "").length > 0 ? popup.theme.space2Xl : 0
                                                 Layout.bottomMargin: popup.theme.spaceSm
+                                                theme: popup.theme
                                                 text: statusEntry.detailText
-                                                textFormat: Text.PlainText
                                                 color: popup.theme.muted
                                                 font.family: popup.theme.monospaceFamily
                                                 font.pixelSize: popup.theme.typeCaption
-                                                wrapMode: Text.WrapAnywhere
+                                                wrapMode: TextEdit.WrapAnywhere
                                             }
                                         }
                                     }
@@ -284,14 +284,14 @@ Popup {
             }
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: popup.theme
             text: "Escape or click outside to close"
-            textFormat: Text.PlainText
             color: popup.theme.muted
             font.family: popup.theme.monospaceFamily
             font.pixelSize: popup.theme.typeCaption
-            horizontalAlignment: Text.AlignRight
+            horizontalAlignment: TextEdit.AlignRight
         }
     }
 }

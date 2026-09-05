@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "../components"
 
 // Base modal dialog: dims the window, contains focus, gives the initial focus to one control,
 // closes on Escape, and returns focus to the item that owned it before opening.
@@ -51,27 +52,25 @@ Popup {
         Accessible.role: Accessible.Dialog
         Accessible.name: dialog.title
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.title
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             maximumLineCount: 3
-            elide: Text.ElideRight
             color: dialog.theme.heading
             font.pixelSize: dialog.theme.typeTitle + 1
             font.bold: true
             Accessible.role: Accessible.Heading
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: dialog.message.length > 0
+            theme: dialog.theme
             text: dialog.message
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             maximumLineCount: 12
-            elide: Text.ElideRight
             color: dialog.theme.foreground
             font.pixelSize: dialog.theme.typeBody + 1
         }

@@ -151,14 +151,13 @@ Column {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Label {
+                    SelectableText {
                         Layout.fillWidth: true
+                        theme: root.theme
                         text: (block.language && block.language.length > 0 ? block.language : "code") + (block.closed === false ? " · unterminated" : "")
-                        textFormat: Text.PlainText
                         color: root.theme.muted
                         font.pixelSize: root.theme.typeSmall
                         font.family: root.theme.monospaceFamily
-                        elide: Text.ElideRight
                     }
                     AppButton {
                         theme: root.theme

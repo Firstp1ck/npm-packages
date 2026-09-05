@@ -141,6 +141,11 @@ Rectangle {
                     + (current ? ", selected" : "")
                 Accessible.selected: current
 
+                function activateRow() {
+                    tabList.currentIndex = tabItem.index
+                    strip.selectRequested(tabItem.modelData.id)
+                }
+
                 ToolTip.visible: tabHover.hovered
                 ToolTip.text: strip.tooltipDescription(modelData)
                 ToolTip.delay: 500
@@ -152,10 +157,9 @@ Rectangle {
 
                 TapHandler {
                     id: tabTap
-                    onTapped: {
-                        tabList.currentIndex = tabItem.index
-                        strip.selectRequested(tabItem.modelData.id)
-                    }
+                    acceptedButtons: Qt.LeftButton
+                    gesturePolicy: TapHandler.DragThreshold
+                    onTapped: tabItem.activateRow()
                 }
 
                 RowLayout {
@@ -182,35 +186,35 @@ Rectangle {
                         Layout.fillWidth: strip.vertical
                         spacing: 0
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: strip.vertical
                             Layout.maximumWidth: strip.vertical ? Number.POSITIVE_INFINITY : 150
+                            theme: strip.theme
                             text: tabItem.label
-                            textFormat: Text.PlainText
-                            elide: Text.ElideMiddle
                             color: strip.theme.foreground
                             font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeBody
                             font.bold: tabItem.current
+                            onTapped: tabItem.activateRow()
                         }
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
                             visible: strip.vertical
+                            theme: strip.theme
                             text: strip.shortPath(tabItem.modelData.cwd)
-                            textFormat: Text.PlainText
-                            elide: Text.ElideMiddle
                             color: strip.theme.muted
                             font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
+                            onTapped: tabItem.activateRow()
                         }
                     }
 
-                    Label {
+                    SelectableText {
                         // The colored dot already carries idle state; the word would only squeeze horizontal titles.
                         visible: strip.vertical || tabItem.activityState !== "idle"
+                        theme: strip.theme
                         text: tabItem.activityState
-                        textFormat: Text.PlainText
                         color: tabItem.modelData.statusKind === "error" ? strip.theme.destructive
                             : tabItem.activityState === "blocked" ? strip.theme.warning
                             : tabItem.activityState === "working" ? strip.theme.runningForeground
@@ -218,6 +222,7 @@ Rectangle {
                             : strip.theme.muted
                         font.family: strip.theme.monospaceFamily
                         font.pixelSize: strip.theme.typeCaption
+                        onTapped: tabItem.activateRow()
                     }
 
                     Rectangle {
@@ -226,15 +231,16 @@ Rectangle {
                         implicitHeight: unreadLabel.implicitHeight + strip.theme.spaceXxs
                         radius: height / 2
                         color: strip.theme.accent
-                        Label {
+                        SelectableText {
                             id: unreadLabel
                             anchors.centerIn: parent
+                            theme: strip.theme
                             text: String(tabItem.modelData.unread)
-                            textFormat: Text.PlainText
                             color: strip.theme.primaryButtonForeground
                             font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
                             font.bold: true
+                            onTapped: tabItem.activateRow()
                         }
                     }
 
@@ -244,15 +250,16 @@ Rectangle {
                         implicitHeight: inputLabel.implicitHeight + strip.theme.spaceXxs
                         radius: strip.theme.radiusSmall
                         color: strip.theme.warning
-                        Label {
+                        SelectableText {
                             id: inputLabel
                             anchors.centerIn: parent
+                            theme: strip.theme
                             text: "input"
-                            textFormat: Text.PlainText
                             color: strip.theme.warningButtonForeground
                             font.family: strip.theme.monospaceFamily
                             font.pixelSize: strip.theme.typeCaption
                             font.bold: true
+                            onTapped: tabItem.activateRow()
                         }
                     }
 

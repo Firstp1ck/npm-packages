@@ -78,9 +78,9 @@ Item {
                 visible: row.kind !== "tool"
                 spacing: row.theme.spaceMd
 
-                Label {
+                SelectableText {
+                    theme: row.theme
                     text: row.roleLabel
-                    textFormat: Text.PlainText
                     color: row.fromUser ? row.theme.accentForeground
                         : row.kind === "thinking" ? row.theme.thinkingForeground : row.theme.muted
                     font.family: row.theme.monospaceFamily
@@ -90,29 +90,29 @@ Item {
                     font.letterSpacing: row.theme.labelTracking
                 }
 
-                Label {
+                SelectableText {
                     visible: row.modeLabel.length > 0
+                    theme: row.theme
                     text: row.modeLabel
-                    textFormat: Text.PlainText
                     color: row.theme.muted
                     font.family: row.theme.monospaceFamily
                     font.pixelSize: row.theme.typeSmall
                 }
 
-                Label {
+                SelectableText {
                     visible: row.streaming
+                    theme: row.theme
                     text: "streaming…"
-                    textFormat: Text.PlainText
                     color: row.theme.muted
                     font.family: row.theme.monospaceFamily
                     font.pixelSize: row.theme.typeSmall
                     font.italic: true
                 }
 
-                Label {
+                SelectableText {
                     visible: row.truncated
+                    theme: row.theme
                     text: "shortened"
-                    textFormat: Text.PlainText
                     color: row.theme.warning
                     font.family: row.theme.monospaceFamily
                     font.pixelSize: row.theme.typeSmall
@@ -146,15 +146,14 @@ Item {
                 font.pixelSize: row.compact ? 13 : 14
             }
 
-            Label {
+            SelectableText {
                 id: attachmentLabel
                 Layout.fillWidth: true
                 visible: row.hasAttachments
+                theme: row.theme
                 text: "Attached: " + row.attachments
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
+                wrapMode: TextEdit.Wrap
                 maximumLineCount: 2
-                elide: Text.ElideRight
                 color: row.theme.muted
                 font.pixelSize: row.theme.typeSmall
             }

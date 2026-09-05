@@ -182,12 +182,12 @@ AppDialog {
         }
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: (dialog.branchType.length > 0 || dialog.branchName.length > 0) && dialog.problem.length > 0
+        theme: dialog.theme
         text: dialog.problem
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         color: dialog.theme.destructive
         font.pixelSize: 11
     }

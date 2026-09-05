@@ -6,6 +6,10 @@ function keyMatches(data, keybinding, fallback) {
   return keybindings.matches(data, keybinding) || matchesKey(data, fallback);
 }
 
+function normalizeSortValue(value) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 export class TuiResourceSelectorComponent extends Container {
   constructor(config, theme, callbacks) {
     super();
@@ -60,7 +64,11 @@ export class TuiResourceSelectorComponent extends Container {
 
   footer() {
     const text = `  Enter toggle · Ctrl+X Disable all · Ctrl+A Enable all · Ctrl+S save · Esc Back · Ctrl+C Close · ${this.enabled.size}/${this.resources.length} enabled`;
-    return this.isDirty ? `${this.theme.fg("dim", text)} ${this.theme.fg("warning", "(unsaved)")}` : this.theme.fg("dim", text);
+    const status = this.isDirty ? `${this.theme.fg("dim", text)} ${this.theme.fg("warning", "(unsaved)")}` : this.theme.fg("dim", text);
+    const preference = this.getSortPreference(this.searchInput.getValue());
+    return preference
+      ? `${status}\n${this.theme.fg("dim", `  Sort only by ${preference.column}; bulk actions affect all rows`)}`
+      : status;
   }
 
   displayLabel(name) {
@@ -75,15 +83,47 @@ export class TuiResourceSelectorComponent extends Container {
     return `${value}${" ".repeat(Math.max(0, width - visibleWidth(value)))}`;
   }
 
-  searchText(name) {
-    const item = this.presentation.get(name);
-    return [name, item?.label, item?.discovery, item?.description].filter(Boolean).join(" ");
+  getSortPreference(query) {
+    const value = normalizeSortValue(query);
+    if (value === "enabled" || value === "disabled") {
+      return { column: "Status", matches: (name) => this.enabled.has(name) === (value === "enabled") };
+    }
+    if (value === "auto" || value === "pi built-in") {
+      return { column: "Discovery", matches: (name) => normalizeSortValue(this.discoveryLabel(name)) === value };
+    }
+    return undefined;
   }
 
-  refresh() {
+  filterResources(query) {
+    if (!query.trim()) return [...this.resources];
+    const preference = this.getSortPreference(query);
+    if (preference) {
+      return [...this.resources].sort((a, b) => Number(preference.matches(b)) - Number(preference.matches(a)));
+    }
+
+    let remaining = this.resources.map((name) => {
+      const item = this.presentation.get(name);
+      return {
+        name,
+        fields: [[name, item?.label].filter(Boolean).join(" "), item?.discovery, item?.description],
+      };
+    });
+    const ranked = [];
+    // Cumulative fields preserve queries whose terms span name, source, and description.
+    for (let fieldCount = 1; fieldCount <= 3; fieldCount++) {
+      const matches = fuzzyFilter(remaining, query, (item) => item.fields.slice(0, fieldCount).filter(Boolean).join(" "));
+      const matchedNames = new Set(matches.map((item) => item.name));
+      ranked.push(...matchedNames);
+      remaining = remaining.filter((item) => !matchedNames.has(item.name));
+    }
+    return ranked;
+  }
+
+  refresh(selectedName) {
     const query = this.searchInput.getValue();
-    this.filteredResources = query ? fuzzyFilter(this.resources, query, (name) => this.searchText(name)) : [...this.resources];
-    this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredResources.length - 1));
+    this.filteredResources = this.filterResources(query);
+    const selectedIndex = selectedName === undefined ? this.selectedIndex : this.filteredResources.indexOf(selectedName);
+    this.selectedIndex = Math.max(0, Math.min(selectedIndex, this.filteredResources.length - 1));
     this.updateList();
     this.footerText.setText(this.footer());
     this.callbacks.onRender?.();
@@ -166,7 +206,7 @@ export class TuiResourceSelectorComponent extends Container {
         if (this.enabled.has(name)) this.enabled.delete(name);
         else this.enabled.add(name);
         this.isDirty = true;
-        this.refresh();
+        this.refresh(name);
       }
       return;
     }

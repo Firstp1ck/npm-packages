@@ -32,6 +32,7 @@ AppDialog {
         textFormat: TextEdit.PlainText
         readOnly: true
         selectByMouse: true
+        selectByKeyboard: true
         wrapMode: TextEdit.WrapAnywhere
         color: dialog.theme.foreground
         selectionColor: dialog.theme.selection
@@ -41,11 +42,11 @@ AppDialog {
         Accessible.name: "Link address " + dialog.url
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
+        theme: dialog.theme
         text: "The link opens in your default application."
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         color: dialog.theme.muted
         font.pixelSize: 12
     }

@@ -25,17 +25,16 @@ Rectangle {
         hideTimer.restart()
     }
 
-    Label {
+    SelectableText {
         id: label
         anchors.left: parent.left
         anchors.right: dismiss.left
         anchors.verticalCenter: parent.verticalCenter
         anchors.margins: bar.theme.spaceLg
+        theme: bar.theme
         text: bar.message
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         maximumLineCount: 3
-        elide: Text.ElideRight
         color: bar.theme.noticeForeground(bar.level)
         font.pixelSize: bar.theme.typeBody
     }

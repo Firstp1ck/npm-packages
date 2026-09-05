@@ -47,14 +47,13 @@ Item {
             }
         }
 
-        Label {
+        SelectableText {
             anchors.verticalCenter: parent.verticalCenter
+            theme: indicator.theme
             text: indicator.statusText.length > 0 && indicator.statusText !== "Running" ? indicator.statusText : "Pi is working…"
-            textFormat: Text.PlainText
             color: indicator.theme.muted
             font.pixelSize: indicator.theme.typeBody
             font.italic: true
-            elide: Text.ElideRight
         }
     }
 }

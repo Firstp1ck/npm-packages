@@ -159,11 +159,11 @@ AppDialog {
 
     // ---- list view -------------------------------------------------------------------------
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.mode === "list" && dialog.count === 0
+        theme: dialog.theme
         text: dialog.busy ? "Loading…" : "No saved sequences yet. Create one to reuse a series of prompts."
-        textFormat: Text.PlainText
         color: dialog.theme.muted
         font.pixelSize: 12
     }
@@ -216,23 +216,23 @@ AppDialog {
                 anchors.margins: dialog.theme.spaceSm + 1
                 spacing: dialog.theme.spaceXxs
 
-                Label {
+                SelectableText {
                     Layout.fillWidth: true
+                    theme: dialog.theme
                     text: String(sequenceRow.modelData.name)
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
                     color: sequenceRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
                     font.pixelSize: dialog.theme.typeBody + 1
                     font.bold: true
+                    onTapped: optionList.currentIndex = sequenceRow.index
                 }
 
-                Label {
+                SelectableText {
                     Layout.fillWidth: true
+                    theme: dialog.theme
                     text: sequenceRow.modelData.entries.length + (sequenceRow.modelData.entries.length === 1 ? " prompt · " : " prompts · ") + String(sequenceRow.modelData.entries[0] || "").replace(/\s+/g, " ")
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
                     color: dialog.theme.muted
                     font.pixelSize: dialog.theme.typeSmall
+                    onTapped: optionList.currentIndex = sequenceRow.index
                 }
             }
 
@@ -243,6 +243,8 @@ AppDialog {
 
             TapHandler {
                 id: sequenceTap
+                acceptedButtons: Qt.LeftButton
+                gesturePolicy: TapHandler.DragThreshold
                 onTapped: optionList.currentIndex = sequenceRow.index
             }
         }
@@ -371,10 +373,10 @@ AppDialog {
         visible: dialog.mode === "edit"
         spacing: 8
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.splitEntries(entriesArea.text).length + " of " + dialog.maxEntries + " prompts"
-            textFormat: Text.PlainText
             color: dialog.theme.muted
             font.pixelSize: 11
         }

@@ -70,12 +70,12 @@ AppDialog {
         onAccepted: dialog.submit()
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: field.text.length > 0 && dialog.problem.length > 0
+        theme: dialog.theme
         text: dialog.problem
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         color: dialog.theme.destructive
         font.pixelSize: 11
     }

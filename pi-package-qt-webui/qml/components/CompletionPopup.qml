@@ -42,20 +42,19 @@ Rectangle {
         anchors.margins: popup.theme.spaceSm
         spacing: popup.theme.spaceXs
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: popup.theme
             text: popup.kind === "command" ? "Commands · Tab or Enter completes, Escape closes" : "Workspace paths · Tab or Enter completes, Escape closes"
-            textFormat: Text.PlainText
             color: popup.theme.muted
             font.pixelSize: popup.theme.typeSmall
-            elide: Text.ElideRight
         }
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
             visible: popup.count === 0 && popup.emptyText.length > 0
+            theme: popup.theme
             text: popup.emptyText
-            textFormat: Text.PlainText
             color: popup.theme.muted
             font.pixelSize: popup.theme.typeBody
         }
@@ -91,29 +90,34 @@ Rectangle {
                 Accessible.name: String(modelData.label || "") + (String(modelData.detail || "").length > 0 ? ", " + String(modelData.detail) : "")
                 Accessible.selected: index === popup.currentIndex
 
+                function activateRow() {
+                    popup.currentIndex = entry.index
+                    popup.accepted(entry.index)
+                }
+
                 RowLayout {
                     id: entryRow
                     anchors.fill: parent
                     anchors.margins: popup.theme.spaceXs
                     spacing: popup.theme.spaceMd
 
-                    Label {
+                    SelectableText {
+                        theme: popup.theme
                         text: String(entry.modelData.label || "")
-                        textFormat: Text.PlainText
                         color: entry.selected ? popup.theme.selectionForeground : popup.theme.foreground
                         font.family: popup.theme.monospaceFamily
                         font.pixelSize: popup.theme.typeBody
-                        elide: Text.ElideMiddle
                         Layout.maximumWidth: entryRow.width * 0.6
+                        onTapped: entry.activateRow()
                     }
 
-                    Label {
+                    SelectableText {
                         Layout.fillWidth: true
+                        theme: popup.theme
                         text: String(entry.modelData.detail || "")
-                        textFormat: Text.PlainText
                         color: popup.theme.muted
                         font.pixelSize: popup.theme.typeSmall
-                        elide: Text.ElideRight
+                        onTapped: entry.activateRow()
                     }
                 }
 
@@ -124,7 +128,9 @@ Rectangle {
 
                 TapHandler {
                     id: entryTap
-                    onTapped: popup.accepted(entry.index)
+                    acceptedButtons: Qt.LeftButton
+                    gesturePolicy: TapHandler.DragThreshold
+                    onTapped: entry.activateRow()
                 }
             }
         }

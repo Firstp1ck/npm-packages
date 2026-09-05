@@ -97,19 +97,20 @@ AppDialog {
         onActivated: dialog.cancel()
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.submissionState !== "open" || dialog.submissionError.length > 0
+        theme: dialog.theme
         text: dialog.submissionError || (dialog.submissionState === "unknown" ? "Outcome unknown. Your answer has been kept; it will not be resent automatically." : "Submitting…")
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         color: dialog.theme.muted
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: request && request.timeoutMs > 0
+        theme: dialog.theme
         text: request && request.timeoutMs > 0 ? "This request expires after " + Math.round(request.timeoutMs / 1000) + " seconds" : ""
-        textFormat: Text.PlainText
         color: dialog.theme.muted
         font.pixelSize: 11
     }
@@ -150,15 +151,21 @@ AppDialog {
             Accessible.focusable: true
             Accessible.selected: ListView.isCurrentItem
 
-            Label {
+            function activateRow() {
+                optionList.currentIndex = optionRow.index
+                dialog.selectCurrent()
+            }
+
+            SelectableText {
                 id: optionLabel
                 anchors.fill: parent
                 anchors.margins: dialog.theme.spaceMd
+                theme: dialog.theme
                 text: String(optionRow.modelData)
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
+                wrapMode: TextEdit.Wrap
                 color: optionRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
                 font.pixelSize: dialog.theme.typeBody + 1
+                onTapped: optionRow.activateRow()
             }
 
             HoverHandler {
@@ -168,10 +175,9 @@ AppDialog {
 
             TapHandler {
                 id: optionTap
-                onTapped: {
-                    optionList.currentIndex = optionRow.index
-                    dialog.selectCurrent()
-                }
+                acceptedButtons: Qt.LeftButton
+                gesturePolicy: TapHandler.DragThreshold
+                onTapped: optionRow.activateRow()
             }
         }
     }

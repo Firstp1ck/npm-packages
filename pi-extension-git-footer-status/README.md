@@ -8,7 +8,7 @@ Shows Git state, token use, context use, and model information in Pi’s footer.
 
 - Shows the current Git branch and changed-file state.
 - Displays model, context, token, cost, and every available provider subscription-usage window.
-- Warns about ongoing Git operations or sync state.
+- Warns about ongoing Git operations, sync state, and Codex Auto transport that can hide subscription usage.
 - Refreshes automatically and can also be refreshed on demand.
 
 ## Install
@@ -22,6 +22,8 @@ pi install npm:@firstpick/pi-extension-git-footer-status
 Restart Pi if the package does not appear in your current session.
 
 ## How to use it
+
+For Codex subscription usage, select SSE transport in `/settings`, then send a model request. If your active model uses a Codex subscription with Auto transport, the footer warns you at startup and when you use `/new`.
 
 The footer appears automatically and updates as you work. In the Web UI, click **SYNC** to apply pending remote changes: when both pull and push are available, it attempts the fast-forward-only pull first and offers the push only after that pull succeeds. If **Push** discovers new incoming commits, it switches to the same pull-first workflow instead of offering a force-push. Pull failures open a native popup with deduplicated, selectable, and copyable error output. If local and remote histories diverged, the popup explains that conflicts are not yet known and offers **Merge changes** (the default), **Rebase commits**, or **Review changes**; merge and rebase each require confirmation, and actual conflicts open the Git Changes panel.
 

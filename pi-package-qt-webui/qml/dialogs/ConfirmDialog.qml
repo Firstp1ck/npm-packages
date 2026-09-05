@@ -53,14 +53,13 @@ AppDialog {
         }
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.detail.length > 0
+        theme: dialog.theme
         text: dialog.detail
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
+        wrapMode: TextEdit.Wrap
         maximumLineCount: 8
-        elide: Text.ElideRight
         color: dialog.theme.foreground
         font.family: dialog.theme.monospaceFamily
         font.pixelSize: 12

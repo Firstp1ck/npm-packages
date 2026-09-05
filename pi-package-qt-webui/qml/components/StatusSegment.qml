@@ -80,30 +80,28 @@ Rectangle {
                         font.pixelSize: segment.theme.typeSmall
                     }
 
-                    Label {
+                    SelectableText {
                         visible: String(entry.modelData.label || "").length > 0
                         Layout.maximumWidth: Math.max(48, entry.width * 0.35)
+                        theme: segment.theme
                         text: String(entry.modelData.label || "")
-                        textFormat: Text.PlainText
                         color: segment.theme.muted
                         font.family: segment.theme.monospaceFamily
                         font.pixelSize: segment.theme.typeSmall
-                        elide: Text.ElideRight
                     }
 
-                    Label {
+                    SelectableText {
                         id: valueLabel
                         Layout.fillWidth: true
                         Layout.minimumWidth: 48
+                        theme: segment.theme
                         text: entry.valueText
-                        textFormat: Text.PlainText
                         color: entry.tone === "error" ? segment.theme.errorForeground
                             : entry.tone === "warning" ? segment.theme.toolForeground
                             : entry.tone === "ok" ? segment.theme.readyForeground : segment.theme.foreground
                         font.family: segment.theme.monospaceFamily
                         font.pixelSize: segment.theme.typeSmall
                         font.bold: true
-                        elide: Text.ElideRight
                     }
                 }
 

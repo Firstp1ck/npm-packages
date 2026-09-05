@@ -124,11 +124,11 @@ AppDialog {
         }
     }
 
-    Label {
+    SelectableText {
         Layout.fillWidth: true
         visible: dialog.visibleCount === 0
+        theme: dialog.theme
         text: dialog.items.length === 0 ? dialog.emptyText : "No matches"
-        textFormat: Text.PlainText
         color: dialog.theme.muted
         font.pixelSize: 12
     }
@@ -174,6 +174,11 @@ AppDialog {
             Accessible.focusable: true
             Accessible.selected: ListView.isCurrentItem
 
+            function activateRow() {
+                optionList.currentIndex = optionRow.index
+                dialog.pickCurrent()
+            }
+
             RowLayout {
                 anchors.fill: parent
                 anchors.margins: dialog.theme.spaceSm + 1
@@ -188,34 +193,35 @@ AppDialog {
                         Layout.fillWidth: true
                         spacing: dialog.theme.spaceSm
 
-                        Label {
+                        SelectableText {
                             visible: String(optionRow.modelData.group || "").length > 0
+                            theme: dialog.theme
                             text: String(optionRow.modelData.group || "")
-                            textFormat: Text.PlainText
                             color: dialog.theme.accentForeground
                             font.pixelSize: dialog.theme.typeCaption
                             font.bold: true
+                            onTapped: optionRow.activateRow()
                         }
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
+                            theme: dialog.theme
                             text: String(optionRow.modelData.label || "")
-                            textFormat: Text.PlainText
-                            elide: Text.ElideMiddle
                             color: optionRow.selected ? dialog.theme.selectionForeground : dialog.theme.foreground
                             font.pixelSize: dialog.theme.typeBody + 1
                             font.bold: optionRow.current
+                            onTapped: optionRow.activateRow()
                         }
                     }
 
-                    Label {
+                    SelectableText {
                         Layout.fillWidth: true
                         visible: String(optionRow.modelData.detail || "").length > 0
+                        theme: dialog.theme
                         text: String(optionRow.modelData.detail || "")
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
                         color: dialog.theme.muted
                         font.pixelSize: dialog.theme.typeSmall
+                        onTapped: optionRow.activateRow()
                     }
                 }
 
@@ -235,7 +241,9 @@ AppDialog {
 
             TapHandler {
                 id: optionTap
-                onTapped: dialog.pickIndex(optionRow.index)
+                acceptedButtons: Qt.LeftButton
+                gesturePolicy: TapHandler.DragThreshold
+                onTapped: optionRow.activateRow()
             }
         }
     }
@@ -244,10 +252,10 @@ AppDialog {
         Layout.fillWidth: true
         spacing: 8
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.visibleCount + " of " + dialog.items.length
-            textFormat: Text.PlainText
             color: dialog.theme.muted
             font.pixelSize: 11
         }

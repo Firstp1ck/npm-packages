@@ -35,9 +35,15 @@ Changes made with `/git-footer-visibility` or the WebUI Git-footer Visibility di
 
 Useful keys include metric cards (`tokens`, `cache`, `pi`, `speed`, `cost`, `context`, `usage`), metadata cards (`cwd`, `git`, `git-state`, `sync`, `changes`, `git-extra`, `worktree`, `model`, `thinking`), git subitems (`git-branch-indicator`, `git-ahead`, `git-behind`, `git-staged`, `git-unstaged`, `git-untracked`, `git-conflicted`, `git-clean`, `git-stash`, `git-submodules`, `git-worktrees`, `git-tag`, `git-last-commit-age`, `git-signing-mismatch`), native footer areas (`cwd-branch`, `git-status`, `extension-statuses`), and Web UI affordances (`webui-fetch-state`, `webui-refresh-button`, `webui-details-button`, `webui-cwd-picker`, `webui-pi-calibration`, `webui-context-auto-compaction`, `webui-branch-picker`, `webui-git-init`, `webui-sync-push`, `webui-changes-modal`, `webui-git-tools-modal`, `webui-model-picker`, `webui-thinking-picker`, `webui-changed-files-popover`).
 
+When the Codex Fast Mode extension is enabled, the native footer labels its setting as `Codex fast: on` or `Codex fast: off`. This shows the session preference, not confirmation that OpenAI accepted priority processing.
+
 The initial prompt estimate and session-usage recompute run lazily after the TUI is ready, so the footer should not block startup.
 
 Provider subscription usage is captured from response headers after a model request. Codex primary and secondary windows are handled independently: if the provider returns only one valid window, that window remains visible instead of hiding the whole Usage item. The footer does not guess a missing window or label.
+
+For Codex subscriptions, select SSE transport in `/settings` and send another model request to receive usage data when the provider supplies it. Auto can choose WebSocket, which currently does not supply usage to this footer. When the active model uses Codex subscription authentication and saved transport is Auto, including the default, a warning appears at startup and on `/new`. Reloads, resumes, forks, and model switches do not repeat it. Explicit SSE or WebSocket settings do not trigger this Auto-specific warning.
+
+The check uses global settings and trusted project overrides without changing them. It skips the warning if settings cannot be read reliably. SDK-only in-memory transport overrides are not visible to this check.
 
 ## Git sync safety
 

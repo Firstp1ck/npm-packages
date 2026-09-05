@@ -79,6 +79,7 @@ AppDialog {
             readOnly: true
             selectByMouse: true
             selectByKeyboard: true
+            persistentSelection: true
             wrapMode: TextEdit.WrapAnywhere
             color: dialog.theme.foreground
             selectionColor: dialog.theme.selection
@@ -93,10 +94,10 @@ AppDialog {
         Layout.fillWidth: true
         spacing: 8
 
-        Label {
+        SelectableText {
             Layout.fillWidth: true
+            theme: dialog.theme
             text: dialog.loading ? "Refreshing…" : ""
-            textFormat: Text.PlainText
             color: dialog.theme.muted
             font.pixelSize: 11
         }

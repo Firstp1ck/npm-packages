@@ -223,9 +223,9 @@ Rectangle {
         RowLayout {
             Layout.fillWidth: true
 
-            Label {
+            SelectableText {
+                theme: composer.theme
                 text: "PROMPT"
-                textFormat: Text.PlainText
                 color: composer.theme.muted
                 font.family: composer.theme.monospaceFamily
                 font.pixelSize: composer.theme.typeCaption
@@ -237,9 +237,9 @@ Rectangle {
 
             Item { Layout.fillWidth: true }
 
-            Label {
+            SelectableText {
+                theme: composer.theme
                 text: composer.active ? (composer.busyPromptMode === "steer" ? "STEER" : "FOLLOW-UP") : "READY"
-                textFormat: Text.PlainText
                 color: composer.active ? composer.theme.accentForeground : composer.theme.success
                 font.family: composer.theme.monospaceFamily
                 font.pixelSize: composer.theme.typeCaption
@@ -326,26 +326,24 @@ Rectangle {
                         anchors.rightMargin: composer.theme.spaceSm
                         spacing: composer.theme.spaceSm
 
-                        Label {
+                        SelectableText {
                             Layout.fillWidth: true
                             Layout.minimumWidth: 48
                             Layout.maximumWidth: 240
+                            theme: composer.theme
                             text: String(chip.modelData.kind === "image" ? "🖼 " : "📄 ") + String(chip.modelData.name)
-                            textFormat: Text.PlainText
                             color: composer.theme.foreground
                             font.family: composer.theme.monospaceFamily
                             font.pixelSize: composer.theme.typeBody
-                            elide: Text.ElideMiddle
                         }
 
-                        Label {
+                        SelectableText {
                             Layout.maximumWidth: 76
+                            theme: composer.theme
                             text: composer.sizeLabel(chip.modelData.size) + (chip.modelData.edited ? " · edited" : "")
-                            textFormat: Text.PlainText
                             color: composer.theme.muted
                             font.family: composer.theme.monospaceFamily
                             font.pixelSize: composer.theme.typeSmall
-                            elide: Text.ElideRight
                         }
 
                         AppButton {
@@ -379,22 +377,21 @@ Rectangle {
             Layout.fillWidth: true
             spacing: composer.theme.spaceMd
 
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
+                theme: composer.theme
                 text: composer.overLimit ? "Prompt exceeds " + composer.maxCharacters + " characters"
                     : composer.active ? "Pi is working · Enter " + (composer.busyPromptMode === "steer" ? "steers" : "queues a follow-up") + " · Alt+Enter queues a follow-up · Shift+Enter new line"
                     : composer.ready ? "Enter to send · Shift+Enter for a new line" : "Pi is not available"
-                textFormat: Text.PlainText
                 color: composer.overLimit ? composer.theme.destructive : composer.theme.muted
                 font.family: composer.theme.monospaceFamily
                 font.pixelSize: composer.theme.typeBody
-                elide: Text.ElideRight
             }
 
-            Label {
+            SelectableText {
                 visible: prompt.text.length > composer.maxCharacters * 0.8
+                theme: composer.theme
                 text: prompt.text.length + " / " + composer.maxCharacters
-                textFormat: Text.PlainText
                 color: composer.overLimit ? composer.theme.destructive : composer.theme.muted
                 font.family: composer.theme.monospaceFamily
                 font.pixelSize: composer.theme.typeSmall

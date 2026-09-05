@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-// Lifecycle card for one tool call: name, safe argument summary, status, duration, and bounded output.
 Rectangle {
     id: card
 
@@ -21,7 +20,7 @@ Rectangle {
 
     signal copyRequested(string text)
 
-    implicitHeight: layout.implicitHeight + theme.space4Xl - theme.spaceXs
+    implicitHeight: layout.implicitHeight + theme.spaceXs * 2
     radius: theme.radiusLarge
     color: theme.surface
     border.width: theme.borderWidth
@@ -32,36 +31,93 @@ Rectangle {
     ColumnLayout {
         id: layout
         anchors.fill: parent
-        anchors.margins: card.theme.spaceLg
+        anchors.leftMargin: card.theme.spaceMd
+        anchors.rightMargin: card.theme.spaceMd
+        anchors.topMargin: card.theme.spaceXs
+        anchors.bottomMargin: card.theme.spaceXs
         spacing: card.theme.spaceSm
 
         RowLayout {
             Layout.fillWidth: true
             spacing: card.theme.spaceMd
 
-            Label {
-                text: "Tool"
-                textFormat: Text.PlainText
-                color: card.theme.muted
-                font.pixelSize: card.theme.typeSmall
-                font.bold: true
+            AppButton {
+                theme: card.theme
+                variant: "ghost"
+                implicitWidth: card.theme.controlHeight
+                implicitHeight: card.theme.controlHeight
+                text: card.expanded ? "▾" : "▸"
+                accessibleName: (card.expanded ? "Collapse" : "Expand") + " tool " + card.toolName
+                active: card.expanded
+                enabled: card.toolSummary.length > 0 || card.toolError.length > 0 || card.toolOutput.length > 0
+                ToolTip.visible: hovered || activeFocus
+                ToolTip.text: accessibleName
+                onClicked: card.expanded = !card.expanded
             }
 
-            Label {
+            Item {
+                id: toolHeading
                 Layout.fillWidth: true
-                text: card.toolName
-                textFormat: Text.PlainText
-                color: card.theme.foreground
-                font.family: card.theme.monospaceFamily
-                font.pixelSize: card.theme.typeBody + 1
-                font.bold: true
-                elide: Text.ElideRight
+                Layout.minimumWidth: 0
+                implicitWidth: toolNameLabel.implicitWidth
+                implicitHeight: Math.max(toolNameLabel.implicitHeight, inlineSummaryLabel.implicitHeight)
+
+                SelectableText {
+                    id: toolNameLabel
+                    objectName: "toolNameLabel"
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: Math.min(implicitWidth, parent.width)
+                    maximumLineCount: 1
+                    theme: card.theme
+                    text: card.toolName
+                    color: card.theme.foreground
+                    font.family: card.theme.monospaceFamily
+                    font.pixelSize: card.theme.typeBody + 1
+                    font.bold: true
+                }
+
+                SelectableText {
+                    id: inlineSummaryLabel
+                    objectName: "inlineToolSummary"
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: toolNameLabel.width + card.theme.spaceSm
+                    width: Math.max(0, parent.width - x)
+                    readonly property bool truncated: summaryMetrics.advanceWidth > width
+                    visible: text.length > 0 && width > 0 && (!truncated || width >= summaryDots.implicitWidth)
+                    maximumLineCount: 1
+                    rightPadding: truncated ? Math.min(width, summaryDots.implicitWidth) : 0
+                    theme: card.theme
+                    text: card.toolSummary.replace(/\s+/g, " ").trim()
+                    color: card.theme.muted
+                    font.family: card.theme.monospaceFamily
+                    font.pixelSize: card.theme.typeBody
+
+                    TextMetrics {
+                        id: summaryMetrics
+                        font: inlineSummaryLabel.font
+                        text: inlineSummaryLabel.text
+                    }
+
+                    // Reserve the suffix separately so selection still copies the full summary.
+                    Text {
+                        id: summaryDots
+                        objectName: "inlineToolSummaryDots"
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: inlineSummaryLabel.truncated
+                        text: "..."
+                        textFormat: Text.PlainText
+                        font: inlineSummaryLabel.font
+                        color: inlineSummaryLabel.color
+                    }
+                }
             }
 
-            Label {
+            SelectableText {
                 visible: card.durationLabel.length > 0
+                theme: card.theme
                 text: card.durationLabel
-                textFormat: Text.PlainText
                 color: card.theme.muted
                 font.pixelSize: card.theme.typeSmall
             }
@@ -70,19 +126,32 @@ Rectangle {
                 theme: card.theme
                 kind: card.toolStatus === "ok" ? "ok" : card.toolStatus === "error" ? "error" : "tool"
                 text: card.statusLabel
-                fontSize: 11
+                fontSize: card.theme.typeSmall
+            }
+
+            AppButton {
+                theme: card.theme
+                variant: "ghost"
+                implicitWidth: card.theme.controlHeight
+                implicitHeight: card.theme.controlHeight
+                text: "⧉"
+                accessibleName: "Copy output of tool " + card.toolName
+                enabled: card.toolOutput.length > 0
+                ToolTip.visible: hovered || activeFocus
+                ToolTip.text: enabled ? accessibleName : "No tool output to copy"
+                onClicked: card.copyRequested(card.toolOutput)
             }
         }
 
-        Label {
+        SelectableText {
             id: toolSummaryLabel
+            objectName: "expandedToolSummary"
             Layout.fillWidth: true
-            visible: card.toolSummary.length > 0 && !card.compact
+            visible: card.expanded && card.toolSummary.length > 0
+            theme: card.theme
             text: card.toolSummary
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
+            wrapMode: TextEdit.Wrap
             maximumLineCount: 3
-            elide: Text.ElideRight
             color: card.theme.muted
             font.family: card.theme.monospaceFamily
             font.pixelSize: card.theme.typeBody
@@ -91,7 +160,7 @@ Rectangle {
         TextEdit {
             id: toolErrorLabel
             Layout.fillWidth: true
-            visible: card.toolError.length > 0
+            visible: card.expanded && card.toolError.length > 0
             text: card.toolError
             textFormat: TextEdit.PlainText
             readOnly: true
@@ -102,27 +171,6 @@ Rectangle {
             selectedTextColor: card.theme.selectionForeground
             color: card.theme.errorPanelForeground
             font.pixelSize: card.theme.typeBody
-        }
-
-        RowLayout {
-            Layout.fillWidth: true
-            visible: card.toolOutput.length > 0
-
-            AppButton {
-                theme: card.theme
-                variant: "ghost"
-                text: card.expanded ? "Hide output" : "Show output (" + card.toolOutput.length + " chars)"
-                accessibleName: (card.expanded ? "Hide" : "Show") + " output of tool " + card.toolName
-                onClicked: card.expanded = !card.expanded
-            }
-
-            AppButton {
-                theme: card.theme
-                variant: "ghost"
-                text: "Copy output"
-                accessibleName: "Copy output of tool " + card.toolName
-                onClicked: card.copyRequested(card.toolOutput)
-            }
         }
 
         Rectangle {

@@ -14,6 +14,20 @@ Periodic status refreshes and auxiliary Git probes are read-only background work
 
 Run `node --test tests/git-snapshot.test.mjs` from this package directory after changing Git snapshot behavior.
 
+## Extension status labels
+
+The native footer renders bare `on` and `off` values under `codex-fast-mode` as `Codex fast: on` and `Codex fast: off`. It leaves already-labeled values, unrelated statuses, and the source status map unchanged, preserving the Fast Mode extension's WebUI contract.
+
+Run `node --experimental-strip-types --test tests/provider-usage-integration.test.mjs` to verify both states and prevent duplicate prefixes.
+
+## Codex Auto transport warning
+
+The `session_start` handler checks `startup` and `new` reasons, `ctx.hasUI`, active `openai-codex` provider, and `modelRegistry.isUsingOAuth`. It lazily imports Pi's `SettingsManager`, reads saved transport with the current cwd and `ctx.isProjectTrusted()`, and warns only for Auto with no settings-load errors. It never calls a settings setter. Errors in this advisory check must not prevent footer initialization.
+
+`ExtensionContext` does not expose the live transport setting. This check therefore observes saved global/trusted-project settings, not SDK-only in-memory overrides. It does not change provider usage capture or add network requests.
+
+`tests/provider-usage-integration.test.mjs` uses the real Pi settings reader with temporary settings files to cover Auto defaults, explicit transports, trusted project precedence, malformed settings, auth/UI/lifecycle gates, warning text, and unchanged file contents. Run `node --experimental-strip-types --test tests/*.test.mjs` from this package directory.
+
 ## Additional implementation details
 
 - Shows compact runtime metrics in the footer:

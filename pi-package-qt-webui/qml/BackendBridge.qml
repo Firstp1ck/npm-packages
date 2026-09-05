@@ -50,6 +50,7 @@ Scope {
     property int maxCatalogRows: 2000
     property bool sessionCatalogLoading: false
     property string sessionCatalogError: ""
+    property string sessionCatalogWarning: ""
     property int sessionCatalogGeneration: 0
     property var sessionSettlementPending: ({})
     property bool sessionSettleAllPending: false
@@ -104,7 +105,7 @@ Scope {
     property bool restarting: false
     property var steeringQueue: []
     property var followUpQueue: []
-    property bool compactTranscript: false
+    readonly property bool compactTranscript: true
     property bool showThinking: true
     property bool desktopNotifications: true
     property string appearanceMode: "automatic"
@@ -727,7 +728,6 @@ Scope {
 
     function applySettings(settings) {
         if (!settings || typeof settings !== "object") return
-        if (typeof settings.compactTranscript === "boolean") compactTranscript = settings.compactTranscript
         if (typeof settings.showThinking === "boolean") showThinking = settings.showThinking
         if (typeof settings.desktopNotifications === "boolean") desktopNotifications = settings.desktopNotifications
         if (typeof settings.syntaxHighlighting === "boolean") syntaxHighlighting = settings.syntaxHighlighting
@@ -1253,7 +1253,8 @@ Scope {
             sessionCatalog = merged
             sessionCatalogLoading = false
             sessionCatalogError = ""
-            if (response.data.truncated) postNotice("warning", "Session discovery reached its scan or retention limit; this catalog is incomplete")
+            sessionCatalogWarning = response.data.truncated
+                ? "Session discovery reached its scan or retention limit; this catalog is incomplete" : ""
             sessionCatalogLoaded(merged)
         }, false)
     }

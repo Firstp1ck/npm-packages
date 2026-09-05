@@ -65,10 +65,10 @@ Rectangle {
             }
         }
 
-        Label {
+        SelectableText {
+            theme: bar.theme
             text: bar.matchCount === 0 ? (field.text.length > 0 ? "No matches" : "")
                 : (bar.currentIndex + 1) + " of " + bar.matchCount
-            textFormat: Text.PlainText
             color: bar.theme.muted
             font.pixelSize: bar.theme.typeBody
             Accessible.role: Accessible.StaticText

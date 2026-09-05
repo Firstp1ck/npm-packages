@@ -342,8 +342,7 @@ export function formatPatchStatusSummary(
     .join("; ");
 }
 
-export function shouldNotifyAnthropicCompatibility(summary: string, registry: AnthropicSubscriptionRegistryLike): boolean {
-  if (!/applicable|drifted|unsupported/iu.test(summary)) return false;
+function hasAnthropicSubscriptionLogin(registry: AnthropicSubscriptionRegistryLike): boolean {
   const model = registry.getAvailable().find((candidate) => candidate.provider === "anthropic");
   return Boolean(
     model
@@ -351,6 +350,10 @@ export function shouldNotifyAnthropicCompatibility(summary: string, registry: An
     && registry.isUsingOAuth(model)
     && registry.getProvider("anthropic")?.auth?.oauth?.isSubscription === true,
   );
+}
+
+export function shouldNotifyAnthropicCompatibility(summary: string, registry: AnthropicSubscriptionRegistryLike): boolean {
+  return /applicable|drifted|unsupported/iu.test(summary) && hasAnthropicSubscriptionLogin(registry);
 }
 
 async function runPatchStatus(files: RecoveryFiles): Promise<{ ok: boolean; summary: string; payload?: unknown }> {
@@ -405,6 +408,8 @@ export default function anthropicSubscriptionAuthRecovery(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (startupChecked || !ctx.hasUI) return;
     startupChecked = true;
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+    if (!hasAnthropicSubscriptionLogin(ctx.modelRegistry as unknown as AnthropicSubscriptionRegistryLike)) return;
     const discovery = await inspectRecoveryFiles(process.env, ctx.cwd);
     if (!discovery.files) {
       ctx.ui.setStatus(STATUS_KEY, `Anthropic recovery unavailable: ${discovery.missing.join(" + ")}`);

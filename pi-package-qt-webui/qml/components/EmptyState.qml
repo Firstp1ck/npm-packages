@@ -61,41 +61,41 @@ Item {
                 }
             }
 
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
+                theme: empty.theme
                 text: !empty.sessionOpen ? "NO SESSION OPEN" : empty.ready ? "SESSION READY" : "WORKSPACE STARTUP"
-                textFormat: Text.PlainText
                 color: empty.theme.muted
                 font.family: empty.theme.monospaceFamily
                 font.pixelSize: empty.theme.typeCaption
                 font.bold: true
                 font.letterSpacing: empty.theme.labelTracking
-                horizontalAlignment: Text.AlignHCenter
+                horizontalAlignment: TextEdit.AlignHCenter
             }
 
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
+                theme: empty.theme
                 text: !empty.sessionOpen ? "Choose where to continue" : empty.ready ? "Start a conversation" : empty.backendReady ? "Starting Pi…" : "Starting Qt WebUI…"
-                textFormat: Text.PlainText
                 color: empty.theme.heading
                 font.family: empty.theme.monospaceFamily
                 font.pixelSize: empty.theme.typeDisplay
                 font.bold: true
-                horizontalAlignment: Text.AlignHCenter
+                horizontalAlignment: TextEdit.AlignHCenter
                 Accessible.role: Accessible.Heading
             }
 
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
+                theme: empty.theme
                 text: !empty.sessionOpen
                     ? "Select a session from the workspace list, start a new one, or open another folder."
                     : empty.ready ? "Ask about this workspace, resume earlier work, or open another folder." : "Your workspace will be ready shortly."
-                textFormat: Text.PlainText
                 color: empty.theme.muted
                 font.family: empty.theme.monospaceFamily
                 font.pixelSize: empty.theme.typeBody
-                wrapMode: Text.Wrap
-                horizontalAlignment: Text.AlignHCenter
+                wrapMode: TextEdit.Wrap
+                horizontalAlignment: TextEdit.AlignHCenter
             }
 
             Flow {
@@ -132,16 +132,16 @@ Item {
                 }
             }
 
-            Label {
+            SelectableText {
                 Layout.fillWidth: true
                 visible: empty.sessionOpen && empty.ready
+                theme: empty.theme
                 text: "Enter sends  ·  Shift+Enter adds a line  ·  Ctrl+F searches  ·  Ctrl+K opens the palette"
-                textFormat: Text.PlainText
                 color: empty.theme.muted
                 font.family: empty.theme.monospaceFamily
                 font.pixelSize: empty.theme.typeSmall
-                wrapMode: Text.Wrap
-                horizontalAlignment: Text.AlignHCenter
+                wrapMode: TextEdit.Wrap
+                horizontalAlignment: TextEdit.AlignHCenter
             }
 
             AppButton {

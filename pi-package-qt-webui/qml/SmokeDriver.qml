@@ -697,17 +697,17 @@ Item {
         waitFor("usage loaded", () => bridge.usage !== null && bridge.usage.context && bridge.usage.context.percent === 30 && bridge.usage.tokens.total === 105000, () => {
             if (!shell.statusGroups.some(group => group.name === "Usage" && group.entries.some(entry => entry.label === "context" && entry.value === "30%"))) return fail("usage segment")
             log("QT_WEBUI_SMOKE_USAGE_LOADED")
-            const wasCompact = bridge.compactTranscript
+            const wasShowingThinking = bridge.showThinking
             if (!shell.openPalette()) return fail("palette refused")
             const picker = shell.pickerDialog
             waitFor("palette groups", () => picker.opened && picker.items.some(item => item.group === "Model") && picker.items.some(item => item.group === "Pi command") && picker.items.some(item => item.group === "Skill"), () => {
-                picker.setFilter(wasCompact ? "comfortable rows" : "compact rows")
-                if (picker.visibleCount !== 1 || picker.visibleItems[0].value !== "action:toggle-compact") return fail("palette filter " + picker.visibleCount)
+                picker.setFilter(wasShowingThinking ? "Hide thinking sections" : "Show thinking sections")
+                if (picker.visibleCount !== 1 || picker.visibleItems[0].value !== "action:toggle-thinking") return fail("palette filter " + picker.visibleCount)
                 if (!picker.pickCurrent()) return fail("palette pick refused")
-                waitFor("palette action", () => bridge.compactTranscript !== wasCompact && bridge.recentActions.indexOf("action:toggle-compact") === 0, () => {
+                waitFor("palette action", () => bridge.showThinking !== wasShowingThinking && bridge.recentActions.indexOf("action:toggle-thinking") === 0, () => {
                     log("QT_WEBUI_SMOKE_PALETTE_ACTION")
                     if (!shell.openPalette()) return fail("palette reopen refused")
-                    waitFor("palette recents", () => picker.opened && picker.items.length > 0 && picker.items[0].group === "Recent" && picker.items[0].value === "action:toggle-compact", () => {
+                    waitFor("palette recents", () => picker.opened && picker.items.length > 0 && picker.items[0].group === "Recent" && picker.items[0].value === "action:toggle-thinking", () => {
                         picker.close()
                         paletteEvents()
                     })
@@ -970,7 +970,8 @@ Item {
                 break
             case "settings":
                 driver.phase = "settings"
-                driver.bridge.updateSetting("compactTranscript", true)
+                if (!driver.bridge.compactTranscript) return driver.fail("compact layout must ignore the legacy false setting")
+                driver.bridge.updateSetting("showThinking", false)
                 break
             case "composer":
                 driver.startComposer()
@@ -1143,8 +1144,8 @@ Item {
             }
         }
 
-        function onCompactTranscriptChanged() {
-            if (driver.phase === "settings" && driver.bridge.compactTranscript) {
+        function onShowThinkingChanged() {
+            if (driver.phase === "settings" && !driver.bridge.showThinking) {
                 driver.log("QT_WEBUI_SMOKE_SETTINGS_PERSISTED")
                 driver.startAppearanceChecks()
             }

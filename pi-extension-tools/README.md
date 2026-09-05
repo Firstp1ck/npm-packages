@@ -6,7 +6,7 @@ Choose which tools Pi can use for a session, by default, or with a specific mode
 
 ## What you can do
 
-- Lists every tool available to the current Pi session and shows where it came from.
+- Lists available tools, searches names first, and sorts by status or discovery keywords.
 - Saves a selection for the current session branch.
 - Sets a global default or an exact provider/model profile.
 - Applies model profiles when the active model changes.
@@ -28,7 +28,9 @@ Run `/tools`, then choose where the selection applies:
 - **Global default** applies when no session or model selection overrides it.
 - **Model default** applies to one exact provider/model pair.
 
-The resource list has separate **Name**, **Discovery**, and **Status** columns. Discovery shows how Pi found the tool, such as `auto`, while Status shows `enabled` or `disabled`. The selected tool's description appears below the list. Type to search by name, discovery value, or description, use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+The resource list has separate **Name**, **Discovery**, and **Status** columns. Discovery shows how Pi found the tool, such as `auto`, while Status shows `enabled` or `disabled`. The selected tool's description appears below the list. Type to fuzzy-search by name, discovery value, or description. Name matches appear first, then source matches, then description matches. Use the arrow keys to move, press `Enter` to toggle, `Ctrl+X` to disable all matching tools, `Ctrl+A` to enable all matching tools, and `Ctrl+S` to save. `Escape` returns to the previous setup screen. From the scope screen it closes the setup flow. `Ctrl+C` closes the entire setup flow immediately.
+
+To keep all tools visible but move a group to the top, enter `enabled`, `disabled`, `auto`, or `Pi built-in` as the whole search. The first two sort by Status; the others sort by Discovery. In these sort-only modes, **Ctrl+A and Ctrl+X affect all tools**, not just the group at the top.
 
 ## Before you start
 
